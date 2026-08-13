@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a round | HashCow</title>
+<meta name="description" content="Check any HashCow game round against the record anchored on BNB Chain. Runs entirely in your browser.">
+<link rel="canonical" href="https://verify.hash-cow.io/">
+<style>
+:root{
+  --bg:#0A0E14; --surface:#0E131C; --surface-2:#131822; --surface-3:#1A2030;
+  --line:rgba(232,236,242,.10); --line-2:rgba(232,236,242,.18);
+  --ink:#E8ECF2; --ink-2:#8895AB; --ink-3:#5A6679; --ink-inv:#0A0E14;
+  --mint:#00E5A0; --blue:#1E90FF; --amber:#FFB547; --red:#FF5C7C;
+  --grad:linear-gradient(135deg,#00E5A0 0%,#1E90FF 100%);
+  --r:12px; --ease:cubic-bezier(.16,.84,.32,1);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.55 'Manrope',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:840px;margin:0 auto;padding:0 20px}
+a{color:var(--mint);text-decoration:none}
+code,pre,input,textarea{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace}
+
+header{border-bottom:1px solid var(--line);background:rgba(10,14,20,.8);backdrop-filter:blur(12px)}
+.nav{display:flex;align-items:center;gap:10px;height:60px}
+.mark{width:22px;height:22px;border-radius:6px;background:var(--grad)}
+.nav b{font-weight:800;letter-spacing:-.02em}
+.nav .sp{flex:1}
+.nav a{color:var(--ink-2);font-size:14px;font-weight:600}
+
+h1{margin:38px 0 10px;font-size:clamp(26px,4.5vw,38px);line-height:1.1;letter-spacing:-.03em;font-weight:800}
+h1 em{font-style:normal;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{margin:0 0 6px;color:var(--ink-2);max-width:62ch}
+.note{margin:0 0 26px;color:var(--ink-3);font-size:13.5px;max-width:70ch}
+
+label{display:block;font-size:12px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);margin:18px 0 7px}
+textarea,input{width:100%;background:var(--surface);color:var(--ink);border:1px solid var(--line);
+  border-radius:var(--r);padding:12px 14px;font-size:13px;outline:none;transition:border-color .15s var(--ease)}
+textarea{min-height:190px;resize:vertical;line-height:1.5}
+textarea:focus,input:focus{border-color:rgba(0,229,160,.5)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
+button{border:0;border-radius:10px;padding:12px 22px;font:800 14px/1 'Manrope',sans-serif;cursor:pointer;
+  background:var(--grad);color:var(--ink-inv);transition:filter .15s var(--ease)}
+button:hover{filter:brightness(1.07)}
+button.ghost{background:transparent;border:1px solid var(--line-2);color:var(--ink-2)}
+button:disabled{opacity:.5;cursor:default}
+
+.checks{margin:26px 0 0;display:grid;gap:10px}
+.chk{display:flex;gap:13px;align-items:flex-start;padding:15px 16px;border-radius:var(--r);
+  background:var(--surface-2);border:1px solid var(--line)}
+.chk .icon{flex:0 0 auto;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;
+  font-size:13px;font-weight:800;background:var(--surface-3);color:var(--ink-3)}
+.chk.pass{border-color:rgba(0,229,160,.34);background:rgba(0,229,160,.07)}
+.chk.pass .icon{background:var(--mint);color:var(--ink-inv)}
+.chk.fail{border-color:rgba(255,92,124,.34);background:rgba(255,92,124,.07)}
+.chk.fail .icon{background:var(--red);color:#fff}
+.chk.warn{border-color:rgba(255,181,71,.34);background:rgba(255,181,71,.07)}
+.chk.warn .icon{background:var(--amber);color:var(--ink-inv)}
+.chk h3{margin:0 0 3px;font-size:14.5px;letter-spacing:-.01em}
+.chk p{margin:0;color:var(--ink-2);font-size:13px;word-break:break-all}
+
+.verdict{margin-top:20px;padding:18px;border-radius:var(--r);font-weight:800;font-size:15px;text-align:center;display:none}
+.verdict.ok{display:block;background:rgba(0,229,160,.12);border:1px solid rgba(0,229,160,.4);color:var(--mint)}
+.verdict.no{display:block;background:rgba(255,92,124,.12);border:1px solid rgba(255,92,124,.4);color:var(--red)}
+
+details{margin-top:22px;border-top:1px solid var(--line);padding-top:16px}
+summary{cursor:pointer;color:var(--ink-2);font-size:13.5px;font-weight:700}
+details pre{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px;
+  font-size:11.5px;overflow-x:auto;color:var(--ink-2);line-height:1.55}
+.adv{display:grid;gap:10px;margin-top:12px}
+.adv label{margin:0}
+
+footer{margin-top:52px;border-top:1px solid var(--line);padding:24px 0 50px;color:var(--ink-3);font-size:12.5px}
+footer a{color:var(--ink-2);margin-right:18px;font-weight:600}
+</style>
+</head>
+<body>
+
+<header><div class="wrap nav">
+  <span class="mark"></span><b>HashCow</b>
+  <span class="sp"></span>
+  <a href="https://games.hash-cow.io">Games</a>
+</div></header>
+
+<main class="wrap">
+  <h1>Check a round. <em>Without trusting us.</em></h1>
+  <p class="lede">Paste the receipt from any round. This page recomputes the record hash, checks the seed that was published before the round was played, and compares the result against the anchor stored on BNB Chain.</p>
+  <p class="note">Everything runs in your browser. No library is loaded from anywhere. The only network request is a read call to a public BNB Chain node, and you can point it at your own node below. The full record format is published so you can write your own checker instead of using this one.</p>
+
+  <label for="receipt">Round receipt</label>
+  <textarea id="receipt" spellcheck="false" placeholder='{"epoch":0,"record":{...},"proof":["0x..."]}'></textarea>
+
+  <div class="row">
+    <button id="go">Verify</button>
+    <button class="ghost" id="sample">Load an example</button>
+    <button class="ghost" id="clear">Clear</button>
+  </div>
+
+  <div class="checks" id="checks"></div>
+  <div class="verdict" id="verdict"></div>
+
+  <details>
+    <summary>Settings and record format</summary>
+    <div class="adv">
+      <label for="rpc">BNB Chain RPC endpoint</label>
+      <input id="rpc" value="https://bsc-dataseed.binance.org">
+      <label for="addr">HCOWLedger contract</label>
+      <input id="addr" placeholder="0x... (published after deployment)">
+    </div>
+    <p class="note" style="margin-top:14px">A record is hashed as <code>keccak256(domain + canonical)</code> where canonical is the nine fields of that record kind, in this exact order, joined with tab characters and ending in a newline. Backslash, tab and newline inside a value are escaped as <code>\\\\</code>, <code>\\t</code>, <code>\\n</code>.</p>
+    <pre>skill    HCOWs1|   gameId  roundId  playerRef  mode  level  score  durationMs  outcome  endedAt
+seeded   HCOWv1|   gameId  roundId  playerRef  serverSeedHash  serverSeed  clientSeed  nonce  outcome  timestamp</pre>
+    <p class="note">Leaves are combined with sorted pair keccak hashing. A proof is the list of sibling hashes from the leaf to the root, with no direction bits.</p>
+  </details>
+</main>
+
+<footer><div class="wrap">
+  <a href="https://hash-cow.io">hash-cow.io</a>
+  <a href="https://games.hash-cow.io">Games</a>
+  <a href="https://hashcow.gitbook.io/hashcow-docs-2">Docs</a>
+  <a href="https://github.com/hcowadmin/hcow-contracts">Source</a>
+  <p style="margin:14px 0 0">HashCow Labs Inc.</p>
+</div></footer>
+
+<script>
+/* ============================ keccak256 ============================ */
+const RC=[0x0000000000000001n,0x0000000000008082n,0x800000000000808an,0x8000000080008000n,
+0x000000000000808bn,0x0000000080000001n,0x8000000080008081n,0x8000000000008009n,
+0x000000000000008an,0x0000000000000088n,0x0000000080008009n,0x000000008000000an,
+0x000000008000808bn,0x800000000000008bn,0x8000000000008089n,0x8000000000008003n,
+0x8000000000008002n,0x8000000000000080n,0x000000000000800an,0x800000008000000an,
+0x8000000080008081n,0x8000000000008080n,0x0000000080000001n,0x8000000080008008n];
+const ROT=[0n,1n,62n,28n,27n,36n,44n,6n,55n,20n,3n,10n,43n,25n,39n,41n,45n,15n,21n,8n,18n,2n,61n,56n,14n];
+const M=(1n<<64n)-1n, rotl=(x,n)=>n===0n?x:((x<<n)|(x>>(64n-n)))&M;
+function keccakF(A){for(let r=0;r<24;r++){
+  const C=[];for(let x=0;x<5;x++)C[x]=A[x]^A[x+5]^A[x+10]^A[x+15]^A[x+20];
+  for(let x=0;x<5;x++){const D=C[(x+4)%5]^rotl(C[(x+1)%5],1n);for(let y=0;y<25;y+=5)A[x+y]^=D;}
+  const B=new Array(25).fill(0n);
+  for(let x=0;x<5;x++)for(let y=0;y<5;y++)B[y+5*((2*x+3*y)%5)]=rotl(A[x+5*y],ROT[x+5*y]);
+  for(let y=0;y<25;y+=5)for(let x=0;x<5;x++)A[x+y]=B[x+y]^(~B[((x+1)%5)+y]&M&B[((x+2)%5)+y]);
+  A[0]^=RC[r];} return A;}
+function keccakBytes(msg){const RATE=136,pad=RATE-(msg.length%RATE);
+  const p=new Uint8Array(msg.length+pad);p.set(msg);p[msg.length]|=0x01;p[p.length-1]|=0x80;
+  const A=new Array(25).fill(0n);
+  for(let o=0;o<p.length;o+=RATE){for(let i=0;i<RATE/8;i++){let l=0n;
+    for(let b=7;b>=0;b--)l=(l<<8n)|BigInt(p[o+i*8+b]);A[i]^=l;}keccakF(A);}
+  const out=new Uint8Array(32);
+  for(let i=0;i<4;i++){let l=A[i];for(let b=0;b<8;b++){out[i*8+b]=Number(l&0xffn);l>>=8n;}}
+  return out;}
+const hx=b=>'0x'+Array.from(b,x=>x.toString(16).padStart(2,'0')).join('');
+const unhx=h=>{const s=h.startsWith('0x')?h.slice(2):h;const o=new Uint8Array(s.length/2);
+  for(let i=0;i<o.length;i++)o[i]=parseInt(s.substr(i*2,2),16);return o;};
+const kUtf8=s=>hx(keccakBytes(new TextEncoder().encode(s)));
+const kHex=h=>hx(keccakBytes(unhx(h)));
+
+/* ========================= record and merkle ========================= */
+const KINDS={
+  skill:{domain:'HCOWs1|',
+    fields:['gameId','roundId','playerRef','mode','level','score','durationMs','outcome','endedAt'],
+    ints:['level','score','durationMs','endedAt']},
+  seeded:{domain:'HCOWv1|',
+    fields:['gameId','roundId','playerRef','serverSeedHash','serverSeed','clientSeed','nonce','outcome','timestamp'],
+    ints:['nonce','timestamp']}
+};
+function canonical(rec,kind){
+  const k=KINDS[kind]; if(!k) throw new Error('unknown record kind: '+kind);
+  for(const f of k.fields){
+    if(!(f in rec)) throw new Error('missing field: '+f);
+    if(k.ints.includes(f)){ if(!Number.isInteger(rec[f])||rec[f]<0) throw new Error(f+' must be a non negative integer'); }
+    else if(typeof rec[f]!=='string'||!rec[f].length) throw new Error(f+' must be a non empty string');
+  }
+  const extra=Object.keys(rec).filter(x=>!k.fields.includes(x));
+  if(extra.length) throw new Error('unexpected field(s): '+extra.join(', '));
+  return k.fields.map(f=>String(rec[f]).replace(/\\/g,'\\\\').replace(/\t/g,'\\t').replace(/\n/g,'\\n')).join('\t')+'\n';
+}
+const leafOf=(rec,kind)=>kUtf8(KINDS[kind].domain+canonical(rec,kind));
+const pair=(a,b)=>a.toLowerCase()<=b.toLowerCase()?kHex(a+b.slice(2)):kHex(b+a.slice(2));
+function rootFrom(leaf,proof){let h=leaf.toLowerCase();for(const p of proof)h=pair(h,p.toLowerCase());return h;}
+
+/* =============================== chain =============================== */
+async function readEpochRoot(rpc,addr,epoch){
+  const sel='0x12a02c82'; // getEpoch(uint64)
+  const arg=BigInt(epoch).toString(16).padStart(64,'0');
+  const res=await fetch(rpc,{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:addr,data:sel+arg},'latest']})});
+  const j=await res.json();
+  if(j.error) throw new Error(j.error.message||'rpc error');
+  const d=(j.result||'').replace(/^0x/,'');
+  if(d.length<192) throw new Error('unexpected response from the contract');
+  return {root:'0x'+d.slice(0,64), recordCount:BigInt('0x'+d.slice(64,128)).toString(),
+          anchoredAt:Number(BigInt('0x'+d.slice(128,192)))};
+}
+
+/* ================================ ui ================================ */
+const $=id=>document.getElementById(id);
+function render(items){
+  $('checks').innerHTML=items.map(i=>
+    `<div class="chk ${i.state}"><span class="icon">${i.state==='pass'?'✓':i.state==='fail'?'✕':'!'}</span>
+     <div><h3>${i.title}</h3><p>${i.body}</p></div></div>`).join('');
+}
+function verdict(okAll,msg){const v=$('verdict');v.className='verdict '+(okAll?'ok':'no');v.textContent=msg;}
+
+$('sample').onclick=()=>{
+  const rec={gameId:'tint',roundId:'r-000001',playerRef:'p_8f21c4',mode:'campaign',
+    level:12,score:8400,durationMs:64210,outcome:'cleared',endedAt:1755000000};
+  $('receipt').value=JSON.stringify({epoch:0,kind:'skill',record:rec,proof:[]},null,2);
+};
+$('clear').onclick=()=>{$('receipt').value='';$('checks').innerHTML='';$('verdict').className='verdict';};
+
+$('go').onclick=async()=>{
+  const out=[];$('verdict').className='verdict';
+  let parsed;
+  try{ parsed=JSON.parse($('receipt').value); }
+  catch(e){ render([{state:'fail',title:'Receipt could not be read',body:'This is not valid JSON. '+e.message}]); return; }
+
+  const rec=parsed.record, proof=parsed.proof||[], epoch=parsed.epoch;
+  const kind=parsed.kind||'seeded';
+
+  // 1. record hash
+  let leaf=null;
+  try{ leaf=leafOf(rec,kind);
+    out.push({state:'pass',title:'Record is well formed',body:kind+' record. Leaf hash '+leaf});
+  }catch(e){
+    out.push({state:'fail',title:'Record is not well formed',body:e.message});
+    render(out); verdict(false,'This receipt cannot be checked.'); return;
+  }
+
+  // 2. seed commitment, for rounds that carry one
+  if(kind==='seeded'){
+    const committed=kUtf8(rec.serverSeed).toLowerCase()===String(rec.serverSeedHash).toLowerCase();
+    out.push(committed
+      ? {state:'pass',title:'Seed matches the commitment published before the round',
+         body:'keccak256 of the revealed seed equals serverSeedHash, so the outcome could not have been chosen after you played.'}
+      : {state:'fail',title:'Seed does not match the commitment',
+         body:'The revealed seed does not hash to serverSeedHash. Please report this receipt to us.'});
+  }
+
+  // 3. anchor on chain
+  const computed=rootFrom(leaf,proof);
+  const addr=$('addr').value.trim(), rpc=$('rpc').value.trim();
+  if(!/^0x[0-9a-fA-F]{40}$/.test(addr)){
+    out.push({state:'warn',title:'Contract address not set',
+      body:'Computed Merkle root '+computed+'. Enter the HCOWLedger address under Settings to compare it against the chain.'});
+    render(out); verdict(false,'Checked locally. The on chain comparison has not run.'); return;
+  }
+  try{
+    const on=await readEpochRoot(rpc,addr,epoch);
+    const match=on.root.toLowerCase()===computed.toLowerCase();
+    out.push(match
+      ? {state:'pass',title:'Matches the root anchored on BNB Chain',
+         body:'Epoch '+epoch+' holds '+on.recordCount+' records, anchored '+new Date(on.anchoredAt*1000).toISOString().replace('T',' ').slice(0,19)+' UTC. Root '+on.root}
+      : {state:'fail',title:'Does not match the anchored root',
+         body:'Computed '+computed+' but the chain holds '+on.root+'. Either the receipt was altered or the proof belongs to a different epoch.'});
+    render(out);
+    const all=out.every(i=>i.state==='pass');
+    verdict(all,all?'This round is exactly as it was recorded. Nothing was changed afterwards.':'This round did not verify.');
+  }catch(e){
+    out.push({state:'warn',title:'Could not reach the chain',body:e.message+'. Try a different RPC endpoint under Settings.'});
+    render(out); verdict(false,'Checked locally. The on chain comparison could not run.');
+  }
+};
+</script>
+</body>
+</html>

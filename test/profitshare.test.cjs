@@ -1,0 +1,343 @@
+'use strict';
+/* Run: npx hardhat run test/profitshare.test.cjs */
+
+const hre = require('hardhat');
+const { ethers } = require('ethers');
+
+let pass = 0, fail = 0;
+const results = [];
+let IFACE = null;
+
+function ok(name, cond, detail) {
+  if (cond) { pass++; results.push(['ok', name, '']); }
+  else { fail++; results.push(['XX', name, detail || '']); }
+}
+const eq = (name, a, b) => ok(name, String(a) === String(b), `got ${a}, want ${b}`);
+/** Float comparison for values that pass through 18 decimal accumulators. */
+const near = (name, a, b, tol = 1e-9) =>
+  ok(name, Math.abs(a - b) <= tol, `got ${a}, want ${b}`);
+async function reverts(name, p, needle) {
+  try { await p; ok(name, false, 'did not revert'); }
+  catch (e) {
+    const data = e.data ?? e.info?.error?.data ?? e.error?.data ?? null;
+    let named = '';
+    if (data && IFACE) { try { named = IFACE.parseError(data)?.name ?? ''; } catch (_) {} }
+    const hay = named || e.message;
+    ok(name, !needle || hay.includes(needle), `wrong revert: ${hay.slice(0, 110)}`);
+  }
+}
+/**
+ * Assert a revert with an explicit sender.
+ * ethers omits `from` when estimating gas through BrowserProvider, which makes
+ * msg.sender the zero address and can surface the wrong error. For a contract
+ * that moves money the sender must never be ambiguous, so call it directly.
+ */
+async function rv(name, c, signer, fn, args, expected) {
+  const from = await signer.getAddress();
+  const to = await c.getAddress();
+  const data = c.interface.encodeFunctionData(fn, args);
+  try {
+    await hre.network.provider.send('eth_call', [{ from, to, data }, 'latest']);
+    ok(name, false, 'did not revert');
+  } catch (e) {
+    const raw = e.data ?? e.error?.data ?? null;
+    let named = '';
+    if (raw) { try { named = c.interface.parseError(raw)?.name ?? ''; } catch (_) {} }
+    ok(name, !expected || named === expected,
+       `got ${named || (e.message || '').slice(0, 70)}, want ${expected}`);
+  }
+}
+
+const E = (n) => ethers.parseEther(String(n));
+const D = (v) => Number(ethers.formatEther(v));
+
+async function deploy(name, signer, args = []) {
+  const art = await hre.artifacts.readArtifact(name);
+  const c = await new ethers.ContractFactory(art.abi, art.bytecode, signer).deploy(...args);
+  await c.waitForDeployment();
+  return c;
+}
+
+process.on('unhandledRejection', (e) => {
+  console.error('UNHANDLED REJECTION at step:', STEP, e?.shortMessage || e?.message || e);
+  process.exit(1);
+});
+let STEP = 'start';
+const step = (s) => { STEP = s; };
+
+async function main() {
+  const provider = new ethers.BrowserProvider(hre.network.provider);
+  const S = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => provider.getSigner(i)));
+  const [deployerS, settlerS, aliceS, bobS, gameCoS, teamS] = S;
+  const [deployer, settler, alice, bob, gameCo, teamAddr] =
+    await Promise.all(S.map((s) => s.getAddress()));
+
+  const hcow = await deploy('MockHCOW', deployerS);
+  const usdt = await deploy('MockUSDT', deployerS);
+
+  const ps = await deploy('HCOWProfitShare', deployerS, [
+    await hcow.getAddress(), await usdt.getAddress(),
+    deployer, settler, gameCo, teamAddr,
+  ]);
+  IFACE = ps.interface;
+  const psAddr = await ps.getAddress();
+
+  // fund participants and the settler
+  await (await hcow.transfer(alice, E(10_000))).wait();
+  await (await hcow.transfer(bob, E(30_000))).wait();
+  await (await usdt.transfer(settler, E(1_000_000))).wait();
+  await (await hcow.connect(aliceS).approve(psAddr, ethers.MaxUint256)).wait();
+  await (await hcow.connect(bobS).approve(psAddr, ethers.MaxUint256)).wait();
+  await (await usdt.connect(settlerS).approve(psAddr, ethers.MaxUint256)).wait();
+
+  // ---------------- deployment ----------------
+  eq('owner set', await ps.owner(), deployer);
+  eq('settler set', await ps.settler(), settler);
+  eq('gameCompany set', await ps.gameCompany(), gameCo);
+  eq('team set', await ps.team(), teamAddr);
+  eq('opex cap is 40%', await ps.OPEX_CAP_BPS(), 4000);
+  eq('split is 50/25/25',
+    `${await ps.PARTICIPANT_BPS()}/${await ps.GAME_COMPANY_BPS()}/${await ps.TEAM_BPS()}`,
+    '5000/2500/2500');
+  eq('nextEpoch starts at 0', await ps.nextEpoch(), 0);
+
+  await reverts('zero address rejected in constructor',
+    deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      ethers.ZeroAddress, settler, gameCo, teamAddr]), 'ZeroAddress');
+
+  // ---------------- bonding ----------------
+  await rv('cannot bond zero', ps, aliceS, 'bond', [0], 'ZeroAmount');
+
+  await (await ps.connect(aliceS).bond(E(1_000))).wait();
+  eq('alice bonded 1000', D(await ps.bondedOf(alice)), 1000);
+  eq('first bond mints 1:1 shares', D(await ps.totalShares()), 1000);
+
+  await (await ps.connect(bobS).bond(E(3_000))).wait();
+  eq('bob bonded 3000', D(await ps.bondedOf(bob)), 3000);
+  eq('pool is 4000', D(await ps.totalBondedHcow()), 4000);
+
+  // ---------------- opex cap ----------------
+  // gross 100,000  direct 10,000  ->  net 90,000  ->  cap 36,000
+  eq('cap helper matches', D(await ps.opexCapFor(E(100_000), E(10_000))), 36000);
+  await rv('opex above the cap is rejected', ps, settlerS, 'settleEpoch', [0, E(100_000), E(10_000), E(36_001), 0], 'OpexAboveCap');
+  await rv('direct costs above revenue rejected', ps, settlerS, 'settleEpoch', [0, E(100), E(101), 0, 0], 'CostsExceedRevenue');
+
+  // ---------------- rule 4 ----------------
+  // net 100 - opex 100 is above the cap, so build a zero-profit epoch legally:
+  // gross 100, direct 100 -> net 0, cap 0, opex 0, profit 0
+  await rv('no profit means no deduction', ps, settlerS, 'settleEpoch', [0, E(100), E(100), 0, E(1)], 'DeductionWithoutDistribution');
+
+  await rv('non settler cannot settle', ps, aliceS, 'settleEpoch', [0, E(100), E(100), 0, 0], 'NotSettler');
+  await rv('epoch must be sequential', ps, settlerS, 'settleEpoch', [3, E(100), E(100), 0, 0], 'WrongEpoch');
+
+  // a genuinely empty epoch settles, and deducts nothing
+  await (await ps.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+  eq('empty epoch settled', await ps.nextEpoch(), 1);
+  eq('pool untouched by empty epoch', D(await ps.totalBondedHcow()), 4000);
+  await rv('a settled epoch cannot be re-settled', ps, settlerS, 'settleEpoch', [0, E(100), E(100), 0, 0], 'WrongEpoch');
+
+  step('distribution'); // ---------------- a real distribution ----------------
+  // gross 100,000  direct 10,000  opex 36,000  ->  profit 54,000
+  // participants 27,000   gameCo 13,500   team 13,500
+  const gcBefore = await usdt.balanceOf(gameCo);
+  const tmBefore = await usdt.balanceOf(teamAddr);
+
+  await (await ps.connect(settlerS).settleEpoch(1, E(100_000), E(10_000), E(36_000), E(400))).wait();
+
+  eq('game company got 25%', D((await usdt.balanceOf(gameCo)) - gcBefore), 13500);
+  eq('team got 25%', D((await usdt.balanceOf(teamAddr)) - tmBefore), 13500);
+  eq('participants pool got 50%', D(await ps.totalUsdtDistributed()), 27000);
+
+  eq('alice claimable is her quarter', D(await ps.claimableOf(alice)), 6750);
+  eq('bob claimable is his three quarters', D(await ps.claimableOf(bob)), 20250);
+
+  // deduction shrinks everyone by the same proportion
+  eq('pool shrank by the deduction', D(await ps.totalBondedHcow()), 3600);
+  eq('alice principal shrank 10%', D(await ps.bondedOf(alice)), 900);
+  eq('bob principal shrank 10%', D(await ps.bondedOf(bob)), 2700);
+  eq('deducted hcow was burned',
+    D(await hcow.balanceOf(psAddr)), 3600);
+  eq('total deducted recorded', D(await ps.totalHcowDeducted()), 400);
+
+  const st = await ps.getSettlement(1);
+  eq('settlement stored gross', D(st.grossReceivedUsdt), 100000);
+  eq('settlement stored profit', D(st.distributableProfitUsdt), 54000);
+  eq('settlement stored snapshot', D(st.snapshotBondedHcow), 4000);
+
+  step('claiming'); // ---------------- claiming ----------------
+  const aliceUsdtBefore = await usdt.balanceOf(alice);
+  await (await ps.connect(aliceS).claimUsdt()).wait();
+  eq('alice received her usdt', D((await usdt.balanceOf(alice)) - aliceUsdtBefore), 6750);
+  eq('alice claimable now zero', D(await ps.claimableOf(alice)), 0);
+  await rv('claiming twice reverts', ps, aliceS, 'claimUsdt', [], 'NothingToClaim');
+
+  step('late joiner'); // ---------------- late joiner ----------------
+  const carolS = await provider.getSigner(6);
+  const carol = await carolS.getAddress();
+  await (await hcow.transfer(carol, E(3_600))).wait();
+  await (await hcow.connect(carolS).approve(psAddr, ethers.MaxUint256)).wait();
+  await (await ps.connect(carolS).bond(E(3_600))).wait();
+  eq('carol bonded 3600', D(await ps.bondedOf(carol)), 3600);
+  eq('carol has no retroactive claim', D(await ps.claimableOf(carol)), 0);
+  eq('bob keeps his unclaimed balance', D(await ps.claimableOf(bob)), 20250);
+
+  // second distribution splits by current weight: pool 7200, carol holds half
+  await (await ps.connect(settlerS).settleEpoch(2, E(20_000), 0, E(8_000), 0)).wait();
+  // profit 12,000 -> participants 6,000. carol 50%, alice 12.5%, bob 37.5%
+  eq('carol earned half of the new epoch', D(await ps.claimableOf(carol)), 3000);
+  eq('alice earned an eighth', D(await ps.claimableOf(alice)), 750);
+  eq('bob earned three eighths', D(await ps.claimableOf(bob)), 20250 + 2250);
+
+  step('unbonding'); // ---------------- unbonding ----------------
+  await rv('cannot cancel without a pending unbond', ps, aliceS, 'cancelUnbond', [], 'NoPendingUnbond');
+  await rv('cannot withdraw without a pending unbond', ps, aliceS, 'withdrawUnbonded', [], 'NoPendingUnbond');
+  await rv('cannot unbond more than owned', ps, aliceS, 'requestUnbond', [E(10_000)], 'InsufficientBonded');
+
+  step('alice requestUnbond');
+  await (await ps.connect(aliceS).requestUnbond(E(900))).wait();
+  eq('alice principal left the pool', D(await ps.bondedOf(alice)), 0);
+  eq('pending unbond recorded', D(await ps.totalPendingUnbond()), 900);
+  await rv('only one unbond at a time', ps, aliceS, 'requestUnbond', [E(1)], 'UnbondAlreadyPending');
+  await rv('cooldown blocks withdrawal', ps, aliceS, 'withdrawUnbonded', [], 'CooldownActive');
+
+  // a deduction while alice is exiting must not touch her pending amount
+  const poolBefore = await ps.totalBondedHcow();
+  await (await ps.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), E(600))).wait();
+  eq('pool absorbed the deduction', D(await ps.totalBondedHcow()), D(poolBefore) - 600);
+  eq('pending unbond untouched by deduction', D(await ps.totalPendingUnbond()), 900);
+  eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 750);
+
+  step('time travel');
+  await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
+  await provider.send('evm_mine', []);
+
+  console.log('  DBG now:', (await provider.getBlock('latest')).timestamp);
+  console.log('  DBG accountOf(aliceS):', (await ps.accountOf(await aliceS.getAddress())).map(String).join(' | '));
+  step('alice withdrawUnbonded');
+  const aliceHcowBefore = await hcow.balanceOf(alice);
+  // explicit gas limit for the same reason: estimation would run without a
+  // sender and take the wrong branch. The transaction itself is fine.
+  await (await ps.connect(aliceS).withdrawUnbonded({ gasLimit: 300_000 })).wait();
+  step('after alice withdraw');
+  eq('alice got her principal back', D((await hcow.balanceOf(alice)) - aliceHcowBefore), 900);
+  eq('pending unbond cleared', D(await ps.totalPendingUnbond()), 0);
+
+  // cancel path
+  step('bob requestUnbond');
+  await (await ps.connect(bobS).requestUnbond(E(1_000))).wait();
+  const bobBondedDuring = D(await ps.bondedOf(bob));
+  step('bob cancelUnbond');
+  await (await ps.connect(bobS).cancelUnbond()).wait();
+  ok('cancel restores the position',
+    Math.abs(D(await ps.bondedOf(bob)) - (bobBondedDuring + 1000)) < 1e-9,
+    `got ${D(await ps.bondedOf(bob))}`);
+  eq('nothing left pending after cancel', D(await ps.totalPendingUnbond()), 0);
+
+  step('no participants'); // ---------------- no participants ----------------
+  const ps2 = await deploy('HCOWProfitShare', deployerS, [
+    await hcow.getAddress(), await usdt.getAddress(),
+    deployer, settler, gameCo, teamAddr,
+  ]);
+  await (await usdt.connect(settlerS).approve(await ps2.getAddress(), ethers.MaxUint256)).wait();
+  const settlerBefore = await usdt.balanceOf(settler);
+  await (await ps2.connect(settlerS).settleEpoch(0, E(1_000), 0, E(400), 0)).wait();
+  // profit 600: 150 gameCo, 150 team, 300 returned because nobody is bonded
+  eq('participant share returned when nobody is bonded',
+    D(settlerBefore - (await usdt.balanceOf(settler))), 300);
+  eq('empty pool records zero participants', D((await ps2.getSettlement(0)).participantsUsdt), 0);
+
+  step('funding required'); // ----------------
+  const ps3 = await deploy('HCOWProfitShare', deployerS, [
+    await hcow.getAddress(), await usdt.getAddress(),
+    deployer, settler, gameCo, teamAddr,
+  ]);
+  await rv('unfunded settlement reverts', ps3, settlerS, 'settleEpoch', [0, E(1_000), 0, 0, 0], '');
+
+  step('administration'); // ----------------
+  await rv('stranger cannot set settler', ps, aliceS, 'setSettler', [alice], 'NotOwner');
+  await (await ps.setRecipients(gameCo, gameCo)).wait();
+  eq('recipients may be the same address', await ps.team(), gameCo);
+  await (await ps.setRecipients(gameCo, teamAddr)).wait();
+  await rv('recipients cannot be zero', ps, deployerS, 'setRecipients', [ethers.ZeroAddress, teamAddr], 'ZeroAddress');
+
+  step('lifetime accounting and participant count'); // ----------------
+  // A fresh pool so the numbers are exact rather than inherited from the
+  // scenarios above. Two bonders, one settlement, one full exit.
+  const ps4 = await deploy('HCOWProfitShare', deployerS, [
+    await hcow.getAddress(), await usdt.getAddress(),
+    deployer, settler, gameCo, teamAddr,
+  ]);
+  const ps4Addr = await ps4.getAddress();
+  await (await usdt.connect(settlerS).approve(ps4Addr, ethers.MaxUint256)).wait();
+
+  eq('empty pool has no participants', Number(await ps4.participantCount()), 0);
+
+  await (await hcow.connect(aliceS).approve(ps4Addr, ethers.MaxUint256)).wait();
+  await (await hcow.connect(bobS).approve(ps4Addr, ethers.MaxUint256)).wait();
+
+  await (await ps4.connect(aliceS).bond(E(3_000))).wait();
+  eq('first bond counts one participant', Number(await ps4.participantCount()), 1);
+  await (await ps4.connect(aliceS).bond(E(1_000))).wait();
+  eq('a top up does not double count', Number(await ps4.participantCount()), 1);
+  await (await ps4.connect(bobS).bond(E(1_000))).wait();
+  eq('second bonder counts', Number(await ps4.participantCount()), 2);
+
+  // profit 800 on a 4000/1000 pool. deduction 500 splits 400/100.
+  await (await ps4.connect(settlerS).settleEpoch(0, E(1_000), 0, E(200), E(500))).wait();
+
+  const aLife = await ps4.lifetimeOf(alice);
+  const bLife = await ps4.lifetimeOf(bob);
+  near('deduction is attributed by share, alice', D(aLife[0]), 400);
+  near('deduction is attributed by share, bob', D(bLife[0]), 100);
+  eq('nothing claimed yet', D(aLife[1]), 0);
+  near('attributed deduction sums to the pool total',
+    D(aLife[0]) + D(bLife[0]), D(await ps4.totalHcowDeducted()));
+
+  await (await ps4.connect(aliceS).claimUsdt()).wait();
+  near('lifetime claimed usdt recorded', D((await ps4.lifetimeOf(alice))[1]), 320);
+  near('claiming does not touch the deduction total', D((await ps4.lifetimeOf(alice))[0]), 400);
+
+  // A second settlement must accumulate, not overwrite.
+  await (await ps4.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), E(450))).wait();
+  near('deduction accumulates across epochs', D((await ps4.lifetimeOf(alice))[0]), 400 + 360);
+
+  // Full exit clears the participant slot but keeps the history.
+  const bobOwned = await ps4.bondedOf(bob);
+  await (await ps4.connect(bobS).requestUnbond(bobOwned)).wait();
+  eq('a full unbond removes the participant', Number(await ps4.participantCount()), 1);
+  ok('history survives the exit', D((await ps4.lifetimeOf(bob))[0]) > 0,
+    `got ${D((await ps4.lifetimeOf(bob))[0])}`);
+  await (await ps4.connect(bobS).cancelUnbond()).wait();
+  eq('cancelling restores the participant', Number(await ps4.participantCount()), 2);
+
+  await rv('deduction still cannot run without distribution', ps4, settlerS,
+    'settleEpoch', [2, E(1_000), E(1_000), 0, E(1)], 'DeductionWithoutDistribution');
+
+  step('solvency'); // ----------------
+  const owedUsdt = (await ps.claimableOf(bob)) + (await ps.claimableOf(carol))
+    + (await ps.claimableOf(alice));
+  const heldUsdt = await usdt.balanceOf(psAddr);
+  ok('contract holds at least what it owes in usdt', heldUsdt >= owedUsdt,
+    `holds ${D(heldUsdt)}, owes ${D(owedUsdt)}`);
+
+  const heldHcow = await hcow.balanceOf(psAddr);
+  const accountedHcow = (await ps.totalBondedHcow()) + (await ps.totalPendingUnbond());
+  eq('hcow held equals bonded plus pending', D(heldHcow), D(accountedHcow));
+
+  // ---------------- report ----------------
+  step('report');
+  const w = Math.max(...results.map((r) => r[1].length));
+  for (const [s, n, d] of results) console.log(`  ${s}  ${n.padEnd(w)}  ${d}`);
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail) process.exit(1);
+}
+
+main().catch((e) => {
+  console.error('FAILED at step:', STEP);
+  console.error(e.shortMessage || e.message);
+  const d = e.data ?? e.info?.error?.data;
+  if (d && IFACE) { try { console.error('error:', IFACE.parseError(d)?.name); } catch (_) {} }
+  console.error(e.info?.error?.message || '');
+  process.exit(1);
+});
