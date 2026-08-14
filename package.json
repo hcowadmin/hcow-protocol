@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "hardhat compile",
-    "flatten": "mkdir -p flat && hardhat flatten contracts/HCOWLedger.sol > flat/HCOWLedger.flat.sol && hardhat flatten contracts/HCOWProfitShare.sol > flat/HCOWProfitShare.flat.sol && hardhat flatten contracts/HCOWStaking.sol > flat/HCOWStaking.flat.sol && hardhat flatten contracts/test/Mocks.sol > flat/TestTokens.flat.sol && node scripts/checkflat.cjs",
+    "flatten": "mkdir -p flat && hardhat flatten contracts/HCOWLedger.sol > flat/HCOWLedger.flat.sol && hardhat flatten contracts/HCOWProfitShare.sol > flat/HCOWProfitShare.flat.sol && hardhat flatten contracts/HCOWStaking.sol > flat/HCOWStaking.flat.sol && hardhat flatten contracts/HCOWFaucet.sol > flat/HCOWFaucet.flat.sol && hardhat flatten contracts/test/Mocks.sol > flat/TestTokens.flat.sol && node scripts/checkflat.cjs",
     "check:flat": "node scripts/checkflat.cjs",
     "deploy:testnet": "hardhat run scripts/deploy.cjs --network bscTestnet",
     "smoke:testnet": "hardhat run scripts/smoke.cjs --network bscTestnet",
@@ -19,7 +19,8 @@
     "test:e2e": "hardhat run test/anchor.check.cjs",
     "test:profitshare": "hardhat run test/profitshare.test.cjs",
     "test:staking": "hardhat run test/staking.test.cjs",
-    "test:all": "hardhat compile && hardhat run test/ledger.test.cjs && hardhat run test/profitshare.test.cjs && hardhat run test/staking.test.cjs && node test/keccak.check.cjs && node test/web.check.cjs && hardhat run test/anchor.check.cjs"
+    "test:faucet": "hardhat run test/faucet.test.cjs",
+    "test:all": "hardhat compile && hardhat run test/ledger.test.cjs && hardhat run test/profitshare.test.cjs && hardhat run test/staking.test.cjs && hardhat run test/faucet.test.cjs && node test/keccak.check.cjs && node test/web.check.cjs && hardhat run test/anchor.check.cjs"
   },
   "keywords": [],
   "author": "",

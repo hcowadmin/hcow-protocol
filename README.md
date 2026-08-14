@@ -1,12 +1,13 @@
 # HCOW contracts
 
-Three contracts and the tooling around them.
+The contracts and the tooling around them.
 
 | | |
 |---|---|
 | `HCOWLedger` | public integrity anchor for game results |
 | `HCOWProfitShare` | Bonded Deposit. net profit distributed in USDT each epoch |
 | `HCOWStaking` | delegated staking with representatives and commission |
+| `HCOWFaucet` | test token faucet. testnet only, never deployed to mainnet |
 
 `HCOWProfitShare` and `HCOWStaking` are what the dApp's data adapter calls.
 Twelve of its twenty six methods land on these two.
@@ -78,6 +79,7 @@ ever wants to feed us records.
 contracts/HCOWLedger.sol             the anchor contract
 contracts/HCOWProfitShare.sol        bonded deposit and epoch distribution
 contracts/HCOWStaking.sol            delegated staking
+contracts/HCOWFaucet.sol             test token faucet, testnet only
 contracts/test/Mocks.sol             stand in HCOW and USDT, testnet only
 flat/                                single file builds for Remix
 scripts/deploy.cjs                   deploys the whole set, records addresses
@@ -109,6 +111,7 @@ npm run test:all
 | `HCOWLedger` | 67 passed, 0 failed |
 | `HCOWProfitShare` | 81 passed, 0 failed |
 | `HCOWStaking` | 64 passed, 0 failed |
+| `HCOWFaucet` | 33 passed, 0 failed |
 | keccak256 against a reference | 318 of 318 match |
 | browser page against the libraries | every vector and proof matches |
 | end to end anchoring | 47 receipts verified, tampering rejected |
@@ -261,6 +264,23 @@ the contracts depends on the chain id.
 
 The deploy script prints a warning whenever owner equals the deploy key,
 because that is exactly the configuration that must never reach mainnet.
+
+---
+
+## HCOWFaucet
+
+Testnet only. Hands out test HCOW and test USDT, one claim per address per
+day, so a tester can actually bond and claim rather than only look at a
+dashboard. It holds what was put into it and has no mint path, so a bug here
+cannot inflate anything.
+
+It does not dispense gas. Calling `claim` already costs gas, so a faucet that
+paid for gas could never be reached by the person who needs it. Testers get
+their first tBNB from the public BNB Chain faucet or from the team.
+
+The dApp attaches it as `adapter.faucet`, which is `undefined` unless a faucet
+address is configured. On a mainnet build the claim button does not exist,
+rather than existing and failing.
 
 ---
 
