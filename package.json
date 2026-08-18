@@ -20,7 +20,9 @@
     "test:profitshare": "hardhat run test/profitshare.test.cjs",
     "test:staking": "hardhat run test/staking.test.cjs",
     "test:faucet": "hardhat run test/faucet.test.cjs",
-    "test:all": "hardhat compile && hardhat run test/ledger.test.cjs && hardhat run test/profitshare.test.cjs && hardhat run test/staking.test.cjs && hardhat run test/faucet.test.cjs && node test/keccak.check.cjs && node test/web.check.cjs && hardhat run test/anchor.check.cjs"
+    "test:all": "hardhat compile && hardhat run test/ledger.test.cjs && hardhat run test/profitshare.test.cjs && hardhat run test/staking.test.cjs && hardhat run test/faucet.test.cjs && node test/keccak.check.cjs && node test/web.check.cjs && hardhat run test/anchor.check.cjs && hardhat run test/invariant.profitshare.cjs && hardhat run test/invariant.staking.cjs",
+    "test:invariant": "hardhat run test/invariant.profitshare.cjs && hardhat run test/invariant.staking.cjs",
+    "analyze": "slither . --ignore-compile --exclude-dependencies"
   },
   "keywords": [],
   "author": "",
