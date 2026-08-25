@@ -94,6 +94,10 @@ contract HCOWStaking is ReentrancyGuard {
         bool    exists;
         uint256 totalDelegated;
         uint256 delegatorCount;
+        /// Accounts with nothing staked here but a pending unstake that can
+        /// still be cancelled back into it. They hold no weight, so the three
+        /// balance figures all read empty while the record is still in use.
+        uint256 pendingDelegators;
         /// Net-of-commission accumulator, frozen at the last commission change.
         uint256 accNetBase;
         /// Global accumulator at that same moment.
@@ -163,7 +167,7 @@ contract HCOWStaking is ReentrancyGuard {
     event Staked(address indexed account, bytes32 indexed repId, uint256 amount);
     event Redelegated(address indexed account, bytes32 indexed fromRep, bytes32 indexed toRep, uint256 amount);
     event UnstakeRequested(address indexed account, uint256 amount, uint64 readyAt);
-    event UnstakeCancelled(address indexed account, uint256 amount);
+    event UnstakeCancelled(address indexed account, bytes32 indexed repId, uint256 amount);
     event Unstaked(address indexed account, uint256 amount);
     event RewardsClaimed(address indexed account, uint256 amount);
     event CommissionClaimed(bytes32 indexed repId, address indexed payout, uint256 amount);
@@ -231,6 +235,15 @@ contract HCOWStaking is ReentrancyGuard {
         r.isFoundation = isFoundation;
         r.exists = true;
         r.name = name;
+        // An id can be deregistered and registered again. Nothing from the
+        // previous life may survive: accNetBase in particular would silently
+        // wipe an existing delegator's accrued rewards.
+        r.accNetBase = 0;
+        r.totalDelegated = 0;
+        r.delegatorCount = 0;
+        r.pendingDelegators = 0;
+        r.commissionAccrued = 0;
+        r.lifetimeRewards = 0;
         _updateGlobal();
         r.accNetAnchor = accRewardPerShare;
         r.commAnchor = accRewardPerShare;
@@ -254,7 +267,10 @@ contract HCOWStaking is ReentrancyGuard {
         if (!r.exists) revert UnknownRepresentative(id);
         _updateGlobal();
         _accrueRepCommission(r);
-        if (r.totalDelegated != 0 || r.delegatorCount != 0 || r.commissionAccrued != 0) {
+        if (
+            r.totalDelegated != 0 || r.delegatorCount != 0
+            || r.commissionAccrued != 0 || r.pendingDelegators != 0
+        ) {
             revert RepresentativeNotEmpty(id);
         }
 
@@ -397,7 +413,11 @@ contract HCOWStaking is ReentrancyGuard {
         r.totalDelegated -= amount;
         totalStaked -= amount;
 
-        if (d.amount == 0) r.delegatorCount -= 1;
+        if (d.amount == 0) {
+            r.delegatorCount -= 1;
+            // Still pointing here: cancelUnstake can put it back.
+            r.pendingDelegators += 1;
+        }
 
         d.pendingUnstake = amount.toUint128();
         d.unstakeReadyAt = uint64(block.timestamp + UNSTAKE_COOLDOWN);
@@ -416,6 +436,7 @@ contract HCOWStaking is ReentrancyGuard {
         // would let the owner convert a cancellable request into a forced exit
         // by deactivating the representative mid cooldown.
         Representative storage r = _reps[d.repId];
+        if (!r.exists) revert UnknownRepresentative(d.repId);
 
         _harvest(d);
         _accrueRepCommission(r);
@@ -425,13 +446,16 @@ contract HCOWStaking is ReentrancyGuard {
         d.unstakeReadyAt = 0;
         totalPendingUnstake -= amount;
 
-        if (d.amount == 0) r.delegatorCount += 1;
+        if (d.amount == 0) {
+            r.delegatorCount += 1;
+            r.pendingDelegators -= 1;
+        }
         d.amount += amount.toUint128();
         r.totalDelegated += amount;
         totalStaked += amount;
 
         _bookmark(d, r);
-        emit UnstakeCancelled(msg.sender, amount);
+        emit UnstakeCancelled(msg.sender, d.repId, amount);
     }
 
     function withdrawUnstaked() external nonReentrant {
@@ -443,6 +467,7 @@ contract HCOWStaking is ReentrancyGuard {
         d.pendingUnstake = 0;
         d.unstakeReadyAt = 0;
         totalPendingUnstake -= amount;
+        if (d.amount == 0) _reps[d.repId].pendingDelegators -= 1;
 
         hcow.safeTransfer(msg.sender, amount);
         emit Unstaked(msg.sender, amount);
@@ -500,14 +525,13 @@ contract HCOWStaking is ReentrancyGuard {
      */
     function fundRewards(uint256 amount, uint64 duration) external nonReentrant {
         if (msg.sender != rewardFunder) revert NotFunder();
-        // A period may be opened on carried funds alone. Without this, seconds
-        // that elapsed with nothing staked are unreachable unless somebody
-        // finds fresh tokens, and there is no sweep.
-        if (amount == 0 && undistributed == 0) revert ZeroAmount();
-        if (duration < MIN_REWARD_DURATION || duration > MAX_REWARD_DURATION) {
-            revert BadDuration(duration);
-        }
+        if (duration > MAX_REWARD_DURATION) revert BadDuration(duration);
 
+        // Advance first. Seconds that elapsed with nothing staked only become
+        // visible in undistributed when some call runs the accumulator, and
+        // opening a period on carried funds is exactly the state where nobody
+        // has. Reading it before this ran rejected the call for having nothing
+        // to carry, in the one case the path exists for.
         _updateGlobal();
 
         uint256 received;
@@ -524,6 +548,15 @@ contract HCOWStaking is ReentrancyGuard {
         uint256 leftover = block.timestamp < periodFinish
             ? (uint256(periodFinish) - block.timestamp) * rewardRate
             : 0;
+        if (received == 0 && undistributed == 0) revert ZeroAmount();
+
+        // The floor applies to a fresh period. A live one may be extended to
+        // its own end date, which can be nearer than the floor.
+        uint256 minDuration = block.timestamp < periodFinish
+            ? uint256(periodFinish) - block.timestamp
+            : MIN_REWARD_DURATION;
+        if (duration < minDuration) revert BadDuration(duration);
+
         uint256 pool = received + leftover + undistributed;
         undistributed = 0;
 
@@ -542,7 +575,6 @@ contract HCOWStaking is ReentrancyGuard {
             // or add time. It may never redistribute what is already promised.
             uint256 minRate = leftover / (uint256(periodFinish) - block.timestamp);
             if (newRate < minRate) revert BadDuration(duration);
-            if (uint256(block.timestamp) + duration < periodFinish) revert BadDuration(duration);
         }
         if (newRate == 0) revert BadDuration(duration);
         rewardRate = newRate;
@@ -742,7 +774,11 @@ contract HCOWStaking is ReentrancyGuard {
             ? uint64(block.timestamp)
             : periodFinish;
         if (t > lastUpdateTime && totalStaked >= MIN_STAKE_FOR_ACCRUAL) {
-            owed += uint256(t - lastUpdateTime) * rewardRate;
+            uint256 released = uint256(t - lastUpdateTime) * rewardRate;
+            // Mirror _updateGlobal exactly: a window too small to move the
+            // accumulator is carried, not owed, and counting it here would
+            // double it against undistributed.
+            if (Math.mulDiv(released, ACC_PRECISION, totalStaked) > 0) owed += released;
         }
         return owed;
     }

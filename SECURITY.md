@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-306 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+313 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. Revert assertions are made with a raw `eth_call` carrying an explicit
 sender, because gas estimation through a browser provider omits `from` and can
@@ -44,7 +44,7 @@ classified:
 | `pragma`, `cyclomatic-complexity`, `missing-inheritance` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in sections 4 to 9**, which is the honest measure of what it is worth.
+in sections 4 to 10**, which is the honest measure of what it is worth.
 
 ### 3. Invariant (property) tests
 
@@ -190,7 +190,23 @@ work from the previous round.
 | A-10 | Medium | `MAX_REPRESENTATIVES` was a permanent ceiling with no deregistration: a typo'd id or ordinary churn consumed slots for good. | An empty representative may be removed, which is exactly the safety property that made removal unsafe in general. |
 | A-11 | Low | `lifetimeOf` reported none of the principal a position lost through the unbond path, so a dashboard built on it showed zero while a tenth of the position had been burned. Accumulator precision was 1e18 against an 18 decimal token, stranding whole distributions when the participant leg was small. `commissionOf` returned zero for an unregistered id where its sibling reverts. | Forfeits fold into the per account figure; precision raised to 1e24 with mulDiv throughout; unknown ids revert. |
 
-### 10. Open, not yet fixed
+### 10. Review of the audit pass fixes
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| B-1 | Critical | `deregisterRepresentative` checked that a representative held no weight, no delegators and no commission. A full unstake produces exactly that state while the delegation still points at the record and can be cancelled back into it. Removing it there let `cancelUnstake` recreate a representative outside the registry, at zero commission, with 1,000 HCOW of live stake attributed to nobody. Re-registering the same id then wiped the delegator's accrued rewards: measured, 1,296,000 HCOW gone in one transaction. | A `pendingDelegators` counter makes a pending unstake count as occupancy, `cancelUnstake` refuses a record that no longer exists, and registration clears every field so a reused id inherits nothing. |
+| B-2 | High | Stopping the pending-unbond charge at the cooldown made the withdraw door strictly cheaper than the cancel door for the same end state, so the step-out-and-return dodge was free again and the forfeit in `cancelUnbond` became unreachable. Measured: dodger keeps 100,000 HCOW where an honest holder keeps 94,119. Charging every settlement forever, which is what it replaced, was equally wrong in the other direction. | Exactly one settlement is charged, the first after the request, priced identically at both doors. |
+| B-3 | High | The thirty day ceiling was metered as a movement in `poolIndex`, which says nothing about how much HCOW was destroyed. With most of the pool in pending unbonds, two settlements at the cap burned 30 HCOW of a 1,001,000 reserve and exhausted the window, locking the settler out of any deduction for thirty days. A dominant holder could trigger that deliberately and repeat it. | The window is metered in HCOW against the whole reserve, bonded plus pending, recorded when the window opens. |
+| B-4 | High | The carried-funds path read `undistributed` before advancing the accumulator, so it rejected the call in exactly the state it exists for: a pool that emptied and was left idle has the carried seconds only implicitly until some call materialises them. | The check runs after `_updateGlobal` and after the transfer. |
+| B-5 | Medium | `MIN_REWARD_DURATION` was applied to the absolute duration while the extension rule demanded a duration reaching the current end date. In the last day of a period the two had no intersection unless the funder supplied an outsized top-up. | The floor applies to a fresh period; a live one may be extended to its own end date. |
+| B-6 | Low | `totalRewardsOwed()` counted seconds that `_updateGlobal` would carry rather than reserve, double counting them against `undistributed`. | The view mirrors the state machine's condition exactly. |
+
+The decay window is fixed rather than sliding, so two adjacent windows can pack
+their allowances back to back and a rolling thirty days can reach close to
+twice `MAX_DECAY_PER_WINDOW_PPM`. That is stated in the contract rather than
+rounded down.
+
+### 11. Open, not yet fixed
 
 
 
@@ -221,7 +237,7 @@ Stated here rather than discovered later.
   repository.** Confirming that the deployed HCOW burns from `msg.sender` with
   no fee and no allowlist is a mainnet deployment gate.
 
-### 11. Deployed-bytecode parity
+### 12. Deployed-bytecode parity
 
 `scripts/checkflat.cjs` compiles each flattened source standalone and compares
 creation bytecode against the Hardhat artifact, stripping the trailing

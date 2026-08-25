@@ -266,11 +266,11 @@ async function main() {
   // sender and take the wrong branch. The transaction itself is fine.
   await (await ps.connect(aliceS).withdrawUnbonded({ gasLimit: 300_000 })).wait();
   step('after alice withdraw');
-  // Her cooldown ran out before epoch 3 settled, so she was no longer in the
-  // pool for it and pays nothing. A position is charged for the settlements it
-  // was present for, not for every settlement that ever happens afterwards.
-  near('a matured unbond stops being charged',
-    D((await hcow.balanceOf(alice)) - aliceHcowBefore), 980);
+  // Exactly one settlement is charged, whichever door the position leaves by,
+  // and only one. Charging none would make withdrawing strictly cheaper than
+  // cancelling; charging all of them would bill a slow holder forever.
+  near('exactly one settlement is charged on the way out',
+    D((await hcow.balanceOf(alice)) - aliceHcowBefore), 980 * 0.98);
   eq('pending unbond cleared', D(await ps.totalPendingUnbond()), 0);
 
   // cancel path
@@ -472,14 +472,14 @@ async function main() {
   await provider.send('evm_mine', []);
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
   await (await ps5.connect(settlerS).settleEpoch(2, E(1_000), 0, E(200), 20_000)).wait();
-  near('a settlement past the cooldown does not reach it',
-    D(await ps5.pendingUnbondOf(bob)), 480);
+  near('the pending view reports that one charge',
+    D(await ps5.pendingUnbondOf(bob)), 470.4);
   await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
   await provider.send('evm_mine', []);
   const bobHcowBefore = await hcow.balanceOf(bob);
   await (await ps5.connect(bobS).withdrawUnbonded({ gasLimit: 400_000 })).wait();
-  near('and the withdrawal pays the full reserved amount',
-    D((await hcow.balanceOf(bob)) - bobHcowBefore), 480);
+  near('and waiting out the cooldown does not dodge it',
+    D((await hcow.balanceOf(bob)) - bobHcowBefore), 470.4);
   eq('books still balance after a forfeited withdrawal',
     D(await hcow.balanceOf(ps5Addr)),
     D((await ps5.totalBondedHcow()) + (await ps5.totalPendingUnbond())));
@@ -509,16 +509,33 @@ async function main() {
   eq('and the bonded side pays the same', D(await ps7.bondedOf(bob)), 980);
 
   step('decay window'); // ---- the cumulative ceiling holds ----
-  eq('window ceiling is 3%', Number(await ps7.MAX_DECAY_PER_WINDOW_PPM()), 30_000);
-  eq('window is thirty days', Number(await ps7.DECAY_WINDOW()), 30 * 86_400);
-  // 2% has been consumed. A second 2% inside the same window would take it to
-  // 3.96%, past the ceiling, so it is refused however the settler dresses it.
+  const ps8 = await deploy('HCOWProfitShare', deployerS, [
+    await hcow.getAddress(), await usdt.getAddress(),
+    deployer, settler, gameCo, teamAddr,
+  ]);
+  await (await usdt.connect(settlerS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
+  await (await hcow.connect(aliceS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
+  await (await hcow.connect(bobS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
+  eq('window ceiling is 3%', Number(await ps8.MAX_DECAY_PER_WINDOW_PPM()), 30_000);
+  eq('window is thirty days', Number(await ps8.DECAY_WINDOW()), 30 * 86_400);
+
+  await (await ps8.connect(aliceS).bond(E(1_000))).wait();
+  await (await ps8.connect(bobS).bond(E(1_000))).wait();
   await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
-  await rv('a campaign cannot outrun the window ceiling', ps7, settlerS, 'settleEpoch',
-    [2, E(1_000), 0, E(200), 20_000], 'DecayWindowExhausted');
+  await (await ps8.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+
+  // Window opens on a 2,000 reserve, so the ceiling is 60 HCOW. Two
+  // settlements at the maximum rate come to 79.2 and the second is refused.
+  await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+  await (await ps8.connect(settlerS).settleEpoch(1, E(10_000), 0, E(4_000), 20_000)).wait();
+  near('the window is metered in HCOW', D(await ps8.decayWindowBurned()), 40);
+  eq('and measured against the whole reserve', D(await ps8.decayWindowBase()), 2000);
+  await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+  await rv('a campaign cannot outrun the window ceiling', ps8, settlerS, 'settleEpoch',
+    [2, E(10_000), 0, E(4_000), 20_000], 'DecayWindowExhausted');
   // the honest rate is far below it and still goes through
-  await (await ps7.connect(settlerS).settleEpoch(2, E(1_000), 0, E(200), 5_000)).wait();
-  eq('an honest rate is unaffected', D(await ps7.bondedOf(bob)), 980 * 0.995);
+  await (await ps8.connect(settlerS).settleEpoch(2, E(10_000), 0, E(4_000), 5_000)).wait();
+  near('an honest rate is unaffected', D(await ps8.bondedOf(bob)), 980 * 0.995);
 
   step('solvency'); // ----------------
   const owedUsdt = (await ps.claimableOf(bob)) + (await ps.claimableOf(carol))

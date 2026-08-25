@@ -123,6 +123,11 @@ contract HCOWProfitShare is ReentrancyGuard {
      * published usage rule decays roughly half a percent a month, so three
      * percent leaves six times the headroom an honest settler needs and puts a
      * hard floor under the worst case a compromised one can reach.
+     *
+     * The window is fixed, not sliding, so two adjacent windows can pack their
+     * allowances back to back and a rolling thirty days can therefore reach
+     * close to twice this figure. That is the honest bound; it is stated here
+     * rather than rounded down in the documentation.
      */
     uint32 public constant MAX_DECAY_PER_WINDOW_PPM = 30_000;
     uint256 public constant DECAY_WINDOW = 30 days;
@@ -197,16 +202,25 @@ contract HCOWProfitShare is ReentrancyGuard {
     /// @notice Timestamp of the last settlement.
     uint64 public lastSettledAt;
 
-    /// @notice poolIndex at the start of the current decay window, and when
-    ///         that window opened.
-    uint256 public decayCheckpoint;
-    uint64 public decayCheckpointAt;
+    /**
+     * @notice The current decay window: when it opened, the reserve it is
+     *         measured against, and how much of it has been consumed.
+     *
+     * Measured in HCOW against the whole reserve rather than as a movement in
+     * poolIndex. A rate says nothing about how much was actually destroyed:
+     * with most of the pool sitting in pending unbonds, two settlements at the
+     * cap burn a rounding error and still exhaust a window expressed as a
+     * rate, which hands everyone a thirty day holiday from usage costs and
+     * locks the settler out. Metering the tokens makes the ceiling mean what
+     * it says.
+     */
+    uint64 public decayWindowAt;
+    uint256 public decayWindowBase;
+    uint256 public decayWindowBurned;
 
-    /// @notice poolIndex and wall clock immediately after each settled epoch.
-    ///         A pending unbond is charged only for the settlements that fell
-    ///         inside its cooldown, and these are what bound that walk.
+    /// @notice poolIndex immediately after each settled epoch. A pending
+    ///         unbond is priced against the first of these that follows it.
     mapping(uint64 => uint256) public poolIndexAtEpoch;
-    mapping(uint64 => uint64) public settledAtEpoch;
 
     /**
      * @notice Deduction accumulator, the mirror of accUsdtPerShare.
@@ -303,7 +317,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     error DeductionWithoutDistribution();
     error DeductionRateAboveCap(uint32 requested, uint32 cap);
     error EpochTooSoon(uint64 readyAt);
-    error DecayWindowExhausted(uint256 floorIndex, uint256 wouldBe);
+    error DecayWindowExhausted(uint256 windowCap, uint256 wouldBe);
     error ProfitNotFunded(uint256 expected, uint256 arrived);
     error NothingBonded();
     error InsufficientBonded(uint256 requested, uint256 available);
@@ -444,9 +458,7 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         uint256 amount = a.pendingUnbond;
         uint256 startIndex = a.unbondIndex;
-        // A cancel rejoins the pool, so it pays for every settlement since the
-        // request, including any past its cooldown: it never actually left.
-        uint256 endIndex = poolIndex;
+        uint256 endIndex = _chargeIndex(a);
         a.pendingUnbond = 0;
         a.unbondReadyAt = 0;
         a.unbondIndex = 0;
@@ -646,16 +658,18 @@ contract HCOWProfitShare is ReentrancyGuard {
             if (nextIndex == 0) nextIndex = 1;
 
             // Roll the window forward first, then hold the settlement to the
-            // floor it implies. A per settlement cap bounds a mistake; this is
-            // what bounds a campaign.
-            if (decayCheckpointAt == 0 || block.timestamp >= decayCheckpointAt + DECAY_WINDOW) {
-                decayCheckpoint = poolIndex;
-                decayCheckpointAt = uint64(block.timestamp);
+            // ceiling it implies. A per settlement cap bounds a mistake; this
+            // is what bounds a campaign.
+            if (decayWindowAt == 0 || block.timestamp >= decayWindowAt + DECAY_WINDOW) {
+                decayWindowAt = uint64(block.timestamp);
+                decayWindowBase = totalBondedHcow + totalPendingUnbond;
+                decayWindowBurned = 0;
             }
-            uint256 floorIndex = Math.mulDiv(
-                decayCheckpoint, PPM_DENOM - MAX_DECAY_PER_WINDOW_PPM, PPM_DENOM
-            );
-            if (nextIndex < floorIndex) revert DecayWindowExhausted(floorIndex, nextIndex);
+            uint256 windowCap =
+                Math.mulDiv(decayWindowBase, MAX_DECAY_PER_WINDOW_PPM, PPM_DENOM);
+            uint256 wouldBe = decayWindowBurned + hcowToDeduct;
+            if (wouldBe > windowCap) revert DecayWindowExhausted(windowCap, wouldBe);
+            decayWindowBurned = wouldBe;
             poolIndex = nextIndex;
             totalBondedHcow -= hcowToDeduct;
             totalHcowDeducted += hcowToDeduct;
@@ -667,7 +681,6 @@ contract HCOWProfitShare is ReentrancyGuard {
         // later without losing the epochs in between.
         accAtEpoch[epoch] = accUsdtPerShare;
         poolIndexAtEpoch[epoch] = poolIndex;
-        settledAtEpoch[epoch] = uint64(block.timestamp);
         totalNewShares = 0;
         lastSettledAt = uint64(block.timestamp);
 
@@ -864,26 +877,22 @@ contract HCOWProfitShare is ReentrancyGuard {
     }
 
     /**
-     * @dev poolIndex as of the last settlement that fell inside a pending
-     *      position's cooldown.
+     * @dev poolIndex as of the first settlement after the unbond was
+     *      requested. Exactly one, and the same one whichever door the
+     *      position leaves by.
      *
-     * A position pays for the settlements it was present for. Once its
-     * cooldown has run out it is no longer present: its HCOW is out of the
-     * bonded pool, it earns nothing, and it backs none of the usage a later
-     * settlement is charging for. Charging past that point is unbounded, and
-     * a holder who is simply slow to press withdraw would pay it. The walk is
-     * bounded by MIN_EPOCH_INTERVAL against UNBOND_COOLDOWN, so at most two
-     * settlements can fall inside the window.
+     * Two failure modes sit either side of this. Charging every settlement
+     * forever punishes a holder who is simply slow to press withdraw, without
+     * bound, for usage their HCOW did not back. Charging none of them makes
+     * the withdraw door strictly cheaper than the cancel door, so nobody ever
+     * cancels and stepping out around a settlement becomes free again, which
+     * is the dodge the whole mechanism exists to close. One settlement,
+     * priced the same both ways, is the only version that is neither.
      */
     function _chargeIndex(Account storage a) private view returns (uint256) {
-        uint256 idx = a.unbondIndex;
-        uint64 readyAt = a.unbondReadyAt;
-        for (uint64 e = a.unbondEpoch; e < nextEpoch; ++e) {
-            uint64 t = settledAtEpoch[e];
-            if (t == 0 || t >= readyAt) break;
-            idx = poolIndexAtEpoch[e];
-        }
-        return idx;
+        uint64 e = a.unbondEpoch;
+        if (e < nextEpoch && poolIndexAtEpoch[e] != 0) return poolIndexAtEpoch[e];
+        return a.unbondIndex;
     }
 
     /// @dev Record freshly minted shares as this epoch's arrivals. Call after

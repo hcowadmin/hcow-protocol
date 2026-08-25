@@ -305,6 +305,25 @@ async function main() {
   await rv('an occupied representative cannot be removed', st3, ownerS,
     'deregisterRepresentative', [A], 'RepresentativeNotEmpty');
 
+  // A full unstake leaves totalDelegated, delegatorCount and commission all at
+  // zero while the delegation still points at the representative and can be
+  // cancelled back into it. Removing it there would recreate the record on
+  // cancel, outside the registry, with commission silently at zero.
+  const D2 = ethers.encodeBytes32String('busy');
+  await (await st3.registerRepresentative(D2, 'busy', repAPayout, 1000, false)).wait();
+  await (await hcow.connect(bobS).approve(a3, ethers.MaxUint256)).wait();
+  await (await st3.connect(bobS).stake(E(500), D2)).wait();
+  await (await st3.connect(bobS).requestUnstake(E(500))).wait();
+  eq('a full unstake leaves no weight', D((await st3.representativeOf(D2))[5]), 0);
+  eq('and no delegators', (await st3.representativeOf(D2))[6], 0n);
+  await rv('but a pending unstake still occupies it', st3, ownerS,
+    'deregisterRepresentative', [D2], 'RepresentativeNotEmpty');
+  await (await st3.connect(bobS).cancelUnstake()).wait();
+  eq('cancelling restores the weight to the same representative',
+    D((await st3.representativeOf(D2))[5]), 500);
+  eq('and totals still reconcile', D(await st3.totalStaked()),
+    D((await st3.representativeOf(A))[5]) + D((await st3.representativeOf(D2))[5]));
+
   // ---------------- solvency ----------------
   let owed = 0n;
   for (const who of [alice, bob, carol, dave]) owed += await st.pendingRewardOf(who);
