@@ -89,6 +89,7 @@ async function runSeed(seed, opCount) {
   // Running expectations the contract must never contradict.
   let lastAccUsdt = 0n;
   let lastAccDeducted = 0n;
+  let lastPoolIndex = (1n << 60n) * (1n << 60n);
   let lastDistributed = 0n;
   let lastDeducted = 0n;
   // Every USDT the settler has actually deposited for participants.
@@ -102,6 +103,7 @@ async function runSeed(seed, opCount) {
       'withdrawUnbonded',
       'claimUsdt', 'claimUsdt',
       'settle', 'settle',
+      'dodge',
       'warp',
     ]);
     const actor = pick(actors);
@@ -129,17 +131,37 @@ async function runSeed(seed, opCount) {
         // Stay at or under the cap most of the time, breach it sometimes so
         // the refusal path is exercised too.
         const opexBps = rnd() < 0.15 ? int(4001, 9000) : int(0, 4000);
-        const opex = (net * BigInt(opexBps)) / 10_000n;
+        let opex = (net * BigInt(opexBps)) / 10_000n;
+        // Dust profit with a maximum deduction. This is the shape that buys a
+        // full size burn for a payout that rounds to nothing, and uniform
+        // sampling never generates it.
+        const dustProfit = rnd() < 0.1 && net > 0n;
+        if (dustProfit) opex = net - 1n;
         const profit = net - opex;
-        const bonded = await ps.totalBondedHcow();
-        const deduct = bonded > 0n && profit > 0n && rnd() < 0.6
-          ? (bonded * BigInt(int(1, 20))) / 1000n
-          : 0n;
-        await (await ps.connect(settler).settleEpoch(epoch, gross, direct, opex, deduct)).wait();
+        // Sometimes exceed the rate cap so the refusal path is exercised.
+        const ppm = profit > 0n && rnd() < 0.6
+          ? (rnd() < 0.1 ? int(20_001, 60_000) : int(1, 20_000))
+          : 0;
+        await (await ps.connect(settler).settleEpoch(epoch, gross, direct, opex, ppm)).wait();
         const s = await ps.getSettlement(epoch);
         creditedToParticipants += s.participantsUsdt;
+      } else if (action === 'dodge') {
+        // requestUnbond -> settle -> cancelUnbond by the same actor, in order.
+        // Independent random actions never produce this triple, and it is the
+        // sequence that used to make the deduction optional.
+        const addr = await actor.getAddress();
+        const owned = await ps.bondedOf(addr);
+        if (owned > 0n) {
+          await (await ps.connect(actor).requestUnbond(owned)).wait();
+          const epoch = await ps.nextEpoch();
+          const gross = E(int(1, 50_000));
+          const opex = (gross * BigInt(int(0, 4000))) / 10_000n;
+          await (await ps.connect(settler).settleEpoch(epoch, gross, 0n, opex, 20_000)).wait();
+          creditedToParticipants += (await ps.getSettlement(epoch)).participantsUsdt;
+          await (await ps.connect(actor).cancelUnbond()).wait();
+        }
       } else if (action === 'warp') {
-        await hre.network.provider.send('evm_increaseTime', [int(1, 10) * 86400]);
+        await hre.network.provider.send('evm_increaseTime', [int(1, 10) * (rnd() < 0.5 ? 3600 : 86400)]);
         await hre.network.provider.send('evm_mine', []);
       }
       bump(action + ':ok');
@@ -230,10 +252,24 @@ async function runSeed(seed, opCount) {
       sumClaimable + sumLifetimeClaimed <= creditedToParticipants,
       `owed+paid=${sumClaimable + sumLifetimeClaimed} credited=${creditedToParticipants}`);
 
+    // I14 Nothing is stranded. I7 only bounds the view from above, so a
+    //     truncating cast could leave real HCOW behind shares nobody holds and
+    //     I7 would still pass. Attribution must also be tight from below:
+    //     the gap is rounding only, at most one wei per holder.
+    must(seed, op, 'I14 bonded HCOW is fully attributed',
+      totalBonded - sumBondedOf <= BigInt(actors.length),
+      `unattributed=${totalBonded - sumBondedOf} holders=${holders}`);
+
+    // I15 The pool decay index never rises, and never reaches zero.
+    const idx = await ps.poolIndex();
+    must(seed, op, 'I15 poolIndex monotonic and live',
+      idx <= lastPoolIndex && idx > 0n, `${idx} vs ${lastPoolIndex}`);
+
     // I13 Reported pending equals the pool reserve.
     must(seed, op, 'I13 pending reserve exact', sumPending === totalPending,
       `sum=${sumPending} total=${totalPending}`);
 
+    lastPoolIndex = idx;
     lastAccUsdt = accUsdt;
     lastAccDeducted = accDed;
     lastDistributed = distributed;

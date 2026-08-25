@@ -126,7 +126,7 @@ async function main() {
   // ---------------- rule 4 ----------------
   // net 100 - opex 100 is above the cap, so build a zero-profit epoch legally:
   // gross 100, direct 100 -> net 0, cap 0, opex 0, profit 0
-  await rv('no profit means no deduction', ps, settlerS, 'settleEpoch', [0, E(100), E(100), 0, E(1)], 'DeductionWithoutDistribution');
+  await rv('no profit means no deduction', ps, settlerS, 'settleEpoch', [0, E(100), E(100), 0, 1], 'DeductionWithoutDistribution');
 
   await rv('non settler cannot settle', ps, aliceS, 'settleEpoch', [0, E(100), E(100), 0, 0], 'NotSettler');
   await rv('epoch must be sequential', ps, settlerS, 'settleEpoch', [3, E(100), E(100), 0, 0], 'WrongEpoch');
@@ -143,7 +143,7 @@ async function main() {
   const gcBefore = await usdt.balanceOf(gameCo);
   const tmBefore = await usdt.balanceOf(teamAddr);
 
-  await (await ps.connect(settlerS).settleEpoch(1, E(100_000), E(10_000), E(36_000), E(80))).wait();
+  await (await ps.connect(settlerS).settleEpoch(1, E(100_000), E(10_000), E(36_000), 20_000)).wait();
 
   eq('game company got 25%', D((await usdt.balanceOf(gameCo)) - gcBefore), 13500);
   eq('team got 25%', D((await usdt.balanceOf(teamAddr)) - tmBefore), 13500);
@@ -160,13 +160,24 @@ async function main() {
     D(await hcow.balanceOf(psAddr)), 3920);
   eq('total deducted recorded', D(await ps.totalHcowDeducted()), 80);
 
-  // ---------------- rule 5, the per settlement deduction cap ----------------
-  eq('cap constant is 2%', Number(await ps.MAX_DEDUCT_BPS()), 200);
-  // pool is 3920, so one basis point over 2% must be refused
-  await rv('deduction above the cap is rejected', ps, settlerS, 'settleEpoch',
-    [2, E(100_000), E(10_000), E(36_000), E(78.41)], 'DeductionAboveCap');
-  await rv('the whole pool cannot be deducted at once', ps, settlerS, 'settleEpoch',
-    [2, E(100_000), E(10_000), E(36_000), E(3_920)], 'DeductionAboveCap');
+  // ---------------- rule 5 and rule 6, the deduction limits ----------------
+  eq('rate cap constant is 2%', Number(await ps.MAX_DEDUCT_PPM()), 20_000);
+  eq('deduction cooldown is one day', Number(await ps.DEDUCT_COOLDOWN()), 86400);
+  eq('the rate helper matches what was applied', D(await ps.deductionFor(20_000)), 78.4);
+  await rv('a rate above the cap is rejected', ps, settlerS, 'settleEpoch',
+    [2, E(100_000), E(10_000), E(36_000), 20_001], 'DeductionRateAboveCap');
+  await rv('the whole pool cannot be requested', ps, settlerS, 'settleEpoch',
+    [2, E(100_000), E(10_000), E(36_000), 1_000_000], 'DeductionRateAboveCap');
+  await rv('a second deduction inside the cooldown is rejected', ps, settlerS,
+    'settleEpoch', [2, E(100_000), E(10_000), E(36_000), 20_000], 'DeductionTooSoon');
+  ok('cooldown is reported', Number(await ps.deductionReadyAt()) > 0, 'expected a future readyAt');
+
+  step('rule 6'); // -------- one wei of profit cannot buy a deduction --------
+  await provider.send('evm_increaseTime', [86_401]);
+  await provider.send('evm_mine', []);
+  await rv('a deduction needs a real participant payout', ps, settlerS, 'settleEpoch',
+    [2, 1n, 0, 0, 20_000], 'DeductionWithoutDistribution');
+  eq('pool untouched by the refused settlement', D(await ps.totalBondedHcow()), 3920);
 
   const st = await ps.getSettlement(1);
   eq('settlement stored gross', D(st.grossReceivedUsdt), 100000);
@@ -191,6 +202,7 @@ async function main() {
   eq('bob keeps his unclaimed balance', D(await ps.claimableOf(bob)), 20250);
 
   // second distribution splits by current weight: pool 7840, carol holds half
+  // (epoch 2 deducts nothing, so the cooldown from epoch 1 is irrelevant here)
   await (await ps.connect(settlerS).settleEpoch(2, E(20_000), 0, E(8_000), 0)).wait();
   // profit 12,000 -> participants 6,000. carol 50%, alice 12.5%, bob 37.5%
   eq('carol earned half of the new epoch', D(await ps.claimableOf(carol)), 3000);
@@ -211,8 +223,10 @@ async function main() {
 
   // a deduction while alice is exiting must not touch her pending amount
   const poolBefore = await ps.totalBondedHcow();
-  await (await ps.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), E(100))).wait();
-  eq('pool absorbed the deduction', D(await ps.totalBondedHcow()), D(poolBefore) - 100);
+  await provider.send('evm_increaseTime', [86_401]);
+  await provider.send('evm_mine', []);
+  await (await ps.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), 20_000)).wait();
+  eq('pool absorbed the deduction', D(await ps.totalBondedHcow()), D(poolBefore) * 0.98);
   eq('pending unbond untouched by deduction', D(await ps.totalPendingUnbond()), 980);
   eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 750);
 
@@ -291,9 +305,8 @@ async function main() {
   await (await ps4.connect(bobS).bond(E(1_000))).wait();
   eq('second bonder counts', Number(await ps4.participantCount()), 2);
 
-  // profit 800 on a 4000/1000 pool. the cap is 2% of 5000, so 100, and it
-  // splits 80/20 by share.
-  await (await ps4.connect(settlerS).settleEpoch(0, E(1_000), 0, E(200), E(100))).wait();
+  // profit 800 on a 4000/1000 pool. 2% of 5000 is 100, and it splits 80/20.
+  await (await ps4.connect(settlerS).settleEpoch(0, E(1_000), 0, E(200), 20_000)).wait();
 
   const aLife = await ps4.lifetimeOf(alice);
   const bLife = await ps4.lifetimeOf(bob);
@@ -308,9 +321,11 @@ async function main() {
   near('claiming does not touch the deduction total', D((await ps4.lifetimeOf(alice))[0]), 80);
 
   // A second settlement must accumulate, not overwrite.
-  // pool is 4900 now, so the cap is 98. alice holds four fifths of it.
-  await (await ps4.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), E(90))).wait();
-  near('deduction accumulates across epochs', D((await ps4.lifetimeOf(alice))[0]), 80 + 72);
+  // pool is 4900 now, so 2% is 98. alice holds four fifths of it.
+  await provider.send('evm_increaseTime', [86_401]);
+  await provider.send('evm_mine', []);
+  await (await ps4.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), 20_000)).wait();
+  near('deduction accumulates across epochs', D((await ps4.lifetimeOf(alice))[0]), 80 + 78.4);
 
   // Full exit clears the participant slot but keeps the history.
   const bobOwned = await ps4.bondedOf(bob);
@@ -322,7 +337,41 @@ async function main() {
   eq('cancelling restores the participant', Number(await ps4.participantCount()), 2);
 
   await rv('deduction still cannot run without distribution', ps4, settlerS,
-    'settleEpoch', [2, E(1_000), E(1_000), 0, E(1)], 'DeductionWithoutDistribution');
+    'settleEpoch', [2, E(1_000), E(1_000), 0, 1], 'DeductionWithoutDistribution');
+
+  step('deduction dodge'); // ---- stepping out around a settlement costs ----
+  // A participant who requests an unbond before a settlement and cancels it
+  // afterwards used to pay nothing while everyone else absorbed the whole
+  // deduction. Rejoining is now priced at the pool decay that happened while
+  // the position sat pending.
+  const ps5 = await deploy('HCOWProfitShare', deployerS, [
+    await hcow.getAddress(), await usdt.getAddress(),
+    deployer, settler, gameCo, teamAddr,
+  ]);
+  const ps5Addr = await ps5.getAddress();
+  await (await usdt.connect(settlerS).approve(ps5Addr, ethers.MaxUint256)).wait();
+  await (await hcow.connect(aliceS).approve(ps5Addr, ethers.MaxUint256)).wait();
+  await (await hcow.connect(bobS).approve(ps5Addr, ethers.MaxUint256)).wait();
+  await (await ps5.connect(aliceS).bond(E(1_000))).wait();
+  await (await ps5.connect(bobS).bond(E(1_000))).wait();
+
+  await (await ps5.connect(aliceS).requestUnbond(E(1_000))).wait();   // step out
+  await (await ps5.connect(settlerS).settleEpoch(0, E(1_000), 0, E(200), 20_000)).wait();
+  const burnedThisEpoch = D(await ps5.totalHcowDeducted());
+  await (await ps5.connect(aliceS).cancelUnbond()).wait();            // step back
+
+  near('the dodger pays the deduction anyway', D(await ps5.bondedOf(alice)), 980);
+  near('the honest participant pays the same', D(await ps5.bondedOf(bob)), 980);
+  near('the forfeited amount was burned too',
+    D(await ps5.totalHcowDeducted()), burnedThisEpoch + 20);
+  eq('hcow held still matches the books', D(await hcow.balanceOf(ps5Addr)),
+    D((await ps5.totalBondedHcow()) + (await ps5.totalPendingUnbond())));
+
+  // an honest exit is not penalised: no settlement happens while pending
+  await (await ps5.connect(bobS).requestUnbond(E(500))).wait();
+  await (await ps5.connect(bobS).cancelUnbond()).wait();
+  near('cancelling without a settlement in between is free',
+    D(await ps5.bondedOf(bob)), 980);
 
   step('solvency'); // ----------------
   const owedUsdt = (await ps.claimableOf(bob)) + (await ps.claimableOf(carol))

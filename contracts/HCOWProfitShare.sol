@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 interface IBurnable {
     function burn(uint256 amount) external;
@@ -19,9 +20,16 @@ interface IBurnable {
  *   - The 50 / 25 / 25 split is computed here. It is never passed in.
  *   - The opex cap is checked here. Operating costs above OPEX_CAP_BPS of net
  *     revenue are rejected, so the cap cannot be quietly exceeded.
- *   - Rule 5, the per settlement deduction cap. No single settlement can
- *     consume more than MAX_DEDUCT_BPS of the bonded pool, so the worst case
- *     for a participant is bounded by the code and not by trust.
+ *   - Rule 5, the deduction rate limit. The settler no longer passes an HCOW
+ *     amount. It passes a rate in parts per million, capped at MAX_DEDUCT_PPM,
+ *     and the contract computes the amount from its own pool figure. A second
+ *     deduction cannot follow inside DEDUCT_COOLDOWN. The worst case is
+ *     therefore 2% per day, so a participant who reacts within the seven day
+ *     unbond cooldown cannot lose more than about 13% of principal. That is a
+ *     bound the code enforces, not a promise.
+ *   - Rule 6, a deduction requires a real distribution. The participant leg of
+ *     the epoch must be non-zero. An epoch that pays participants nothing
+ *     cannot consume their principal, however it is arithmetically dressed up.
  *   - Rule 4, no distribution no deduction. If an epoch produces zero
  *     distributable profit, bonded principal cannot be deducted for it. The
  *     spec says to enforce this at the contract level, so it is enforced here
@@ -48,6 +56,7 @@ interface IBurnable {
  */
 contract HCOWProfitShare is ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using SafeCast for uint256;
 
     // ------------------------------------------------------------------
     // constants
@@ -60,12 +69,17 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint16 public constant GAME_COMPANY_BPS = 2500; // 25%
     uint16 public constant TEAM_BPS = 2500; // 25%
 
-    /// @notice Bonded principal deductible in a single settlement, as a share
-    ///         of the pool. 2%. This is a hard ceiling, not a target. The
-    ///         settler computes the deduction off chain from the value rule
-    ///         published in the protocol documents, and this cap bounds the
-    ///         worst case regardless of what that computation returns.
-    uint16 public constant MAX_DEDUCT_BPS = 200;
+    /// @notice Deduction rate ceiling for one settlement, in parts per
+    ///         million of the bonded pool. 20,000 ppm is 2%. Parts per million
+    ///         rather than basis points so that a small, honest deduction does
+    ///         not truncate to nothing on a large pool.
+    uint32 public constant MAX_DEDUCT_PPM = 20_000;
+
+    uint256 private constant PPM_DENOM = 1_000_000;
+
+    /// @notice Minimum wait between two deductions. Settlements themselves are
+    ///         not rate limited; only the consumption of principal is.
+    uint256 public constant DEDUCT_COOLDOWN = 1 days;
 
     uint256 private constant ACC_PRECISION = 1e18;
 
@@ -95,6 +109,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 deductDebt;      // deduction accumulator bookmark
         uint256 settledDeducted; // deduction already folded into the total below
         uint256 lifetimeClaimedUsdt;
+        uint256 unbondIndex;     // poolIndex at the moment the unbond was requested
     }
 
     mapping(address => Account) private _accounts;
@@ -118,6 +133,18 @@ contract HCOWProfitShare is ReentrancyGuard {
      * every deduction, without a per-account write at settlement time.
      */
     uint256 public accDeductedPerShare;
+
+    /**
+     * @notice Cumulative pool decay factor, 1e18 at genesis, falling with every
+     *         deduction. A pending unbond records the value at request time, so
+     *         cancelling one settles the deductions it sat out. Without this a
+     *         participant could step out before a settlement and step back in
+     *         after it, and never pay for usage at all.
+     */
+    uint256 public poolIndex = ACC_PRECISION;
+
+    /// @notice Timestamp of the last settlement that consumed principal.
+    uint64 public lastDeductionAt;
 
     /// @notice Accounts currently holding shares. A pending unbond is not counted.
     uint256 public participantCount;
@@ -184,7 +211,8 @@ contract HCOWProfitShare is ReentrancyGuard {
     error CostsExceedRevenue();
     error OpexAboveCap(uint256 submitted, uint256 cap);
     error DeductionWithoutDistribution();
-    error DeductionAboveCap(uint256 requested, uint256 cap);
+    error DeductionRateAboveCap(uint32 requested, uint32 cap);
+    error DeductionTooSoon(uint64 readyAt);
     error NothingBonded();
     error InsufficientBonded(uint256 requested, uint256 available);
     error UnbondAlreadyPending();
@@ -251,7 +279,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         if (minted == 0) revert ZeroAmount();
 
         if (a.shares == 0) participantCount += 1;
-        a.shares += uint128(minted);
+        a.shares += minted.toUint128();
         totalShares += minted;
         totalBondedHcow += received;
 
@@ -280,20 +308,29 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 sharesToBurn = (hcowAmount * uint256(a.shares)) / owned;
         if (sharesToBurn == 0) revert ZeroAmount();
 
-        a.shares -= uint128(sharesToBurn);
+        a.shares -= sharesToBurn.toUint128();
         if (a.shares == 0) participantCount -= 1;
         totalShares -= sharesToBurn;
         totalBondedHcow -= hcowAmount;
 
-        a.pendingUnbond = uint128(hcowAmount);
+        a.pendingUnbond = hcowAmount.toUint128();
         a.unbondReadyAt = uint64(block.timestamp + UNBOND_COOLDOWN);
+        a.unbondIndex = poolIndex;
         totalPendingUnbond += hcowAmount;
 
         _bookmark(a);
         emit UnbondRequested(msg.sender, hcowAmount, a.unbondReadyAt);
     }
 
-    /// @notice Put a pending unbond back to work at the current share price.
+    /**
+     * @notice Put a pending unbond back to work at the current share price.
+     * @dev Rejoining is not free. The amount is scaled by the pool decay that
+     *      happened while it sat pending, and the difference is burned. A
+     *      participant who genuinely leaves pays nothing; a participant who
+     *      steps out around a settlement and back in afterwards pays exactly
+     *      what staying would have cost. Without this the deduction is
+     *      optional for anyone watching the mempool.
+     */
     function cancelUnbond() external nonReentrant {
         Account storage a = _accounts[msg.sender];
         if (a.unbondReadyAt == 0) revert NoPendingUnbond();
@@ -301,22 +338,36 @@ contract HCOWProfitShare is ReentrancyGuard {
         _settle(a);
 
         uint256 amount = a.pendingUnbond;
+        uint256 startIndex = a.unbondIndex;
         a.pendingUnbond = 0;
         a.unbondReadyAt = 0;
+        a.unbondIndex = 0;
         totalPendingUnbond -= amount;
 
-        uint256 minted = totalShares == 0 || totalBondedHcow == 0
+        uint256 restored = startIndex == 0
             ? amount
-            : (amount * totalShares) / totalBondedHcow;
+            : (amount * poolIndex) / startIndex;
+        if (restored > amount) restored = amount;
+        uint256 forfeited = amount - restored;
+        if (restored == 0) revert ZeroAmount();
+
+        uint256 minted = totalShares == 0 || totalBondedHcow == 0
+            ? restored
+            : (restored * totalShares) / totalBondedHcow;
         if (minted == 0) revert ZeroAmount();
 
         if (a.shares == 0) participantCount += 1;
-        a.shares += uint128(minted);
+        a.shares += minted.toUint128();
         totalShares += minted;
-        totalBondedHcow += amount;
+        totalBondedHcow += restored;
+
+        if (forfeited > 0) {
+            totalHcowDeducted += forfeited;
+            IBurnable(address(hcow)).burn(forfeited);
+        }
 
         _bookmark(a);
-        emit UnbondCancelled(msg.sender, amount, minted);
+        emit UnbondCancelled(msg.sender, restored, minted);
     }
 
     /// @notice Take out a pending unbond once the cooldown has passed.
@@ -363,14 +414,16 @@ contract HCOWProfitShare is ReentrancyGuard {
      * @param grossReceivedUsdt    Money actually received into the vault.
      * @param directCostsUsdt      Platform fees, processing, FX, transaction tax.
      * @param operatingCostsUsdt   The capped, closed-list operating costs.
-     * @param hcowToDeduct         Bonded principal consumed by usage this epoch.
+     * @param deductPpm            Share of the bonded pool consumed by usage
+     *                             this epoch, in parts per million. The HCOW
+     *                             amount is computed here, never passed in.
      */
     function settleEpoch(
         uint64 epoch,
         uint256 grossReceivedUsdt,
         uint256 directCostsUsdt,
         uint256 operatingCostsUsdt,
-        uint256 hcowToDeduct
+        uint32 deductPpm
     ) external onlySettler nonReentrant {
         if (epoch != nextEpoch) revert WrongEpoch(nextEpoch, epoch);
         if (directCostsUsdt > grossReceivedUsdt) revert CostsExceedRevenue();
@@ -383,18 +436,32 @@ contract HCOWProfitShare is ReentrancyGuard {
         if (operatingCostsUsdt > cap) revert OpexAboveCap(operatingCostsUsdt, cap);
 
         uint256 profit = netRevenue - operatingCostsUsdt;
+        uint256 participants = (profit * PARTICIPANT_BPS) / 10_000;
 
-        // Rule 4. No distribution, no deduction.
-        if (profit == 0 && hcowToDeduct != 0) revert DeductionWithoutDistribution();
-        // Rule 5. The deduction is capped per settlement. Even a compromised
-        // or mistaken settler cannot consume more than MAX_DEDUCT_BPS of the
-        // bonded pool in one epoch.
-        uint256 deductCap = (totalBondedHcow * MAX_DEDUCT_BPS) / 10_000;
-        if (hcowToDeduct > deductCap) {
-            revert DeductionAboveCap(hcowToDeduct, deductCap);
+        // Rule 5. The rate is capped, and two deductions cannot be stacked
+        // inside the cooldown. Together these bound the worst case at 2% a day.
+        if (deductPpm > MAX_DEDUCT_PPM) {
+            revert DeductionRateAboveCap(deductPpm, MAX_DEDUCT_PPM);
+        }
+        if (deductPpm != 0) {
+            // Rule 4 and Rule 6. Principal is only consumed by an epoch that
+            // actually pays participants. Testing profit alone is not enough:
+            // one wei of profit rounds the participant leg to zero and would
+            // otherwise buy a full size deduction.
+            if (participants == 0) revert DeductionWithoutDistribution();
+            uint64 readyAt = lastDeductionAt + uint64(DEDUCT_COOLDOWN);
+            if (lastDeductionAt != 0 && block.timestamp < readyAt) {
+                revert DeductionTooSoon(readyAt);
+            }
         }
 
-        uint256 participants = (profit * PARTICIPANT_BPS) / 10_000;
+        // The settler states a rate. The contract owns the arithmetic, so a
+        // participant cannot invalidate a signed settlement by shrinking the
+        // pool in front of it, and the settler cannot overstate the amount.
+        uint256 hcowToDeduct = (totalShares == 0 || deductPpm == 0)
+            ? 0
+            : (totalBondedHcow * deductPpm) / PPM_DENOM;
+
         uint256 snapshot = totalBondedHcow;
 
         if (profit > 0) {
@@ -419,22 +486,26 @@ contract HCOWProfitShare is ReentrancyGuard {
         }
 
         if (hcowToDeduct > 0) {
-            // totalShares cannot be zero here: hcowToDeduct is bounded by
-            // totalBondedHcow above, and an empty pool has no bonded HCOW.
+            // totalShares is non-zero: hcowToDeduct is zero when it is not.
             accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares;
+            // Record the decay before shrinking, so a pending unbond that
+            // rejoins later can be charged for exactly this settlement.
+            poolIndex = (poolIndex * (totalBondedHcow - hcowToDeduct)) / totalBondedHcow;
+            if (poolIndex == 0) poolIndex = 1;
             totalBondedHcow -= hcowToDeduct;
             totalHcowDeducted += hcowToDeduct;
+            lastDeductionAt = uint64(block.timestamp);
             IBurnable(address(hcow)).burn(hcowToDeduct);
         }
 
         _settlements[epoch] = Settlement({
-            grossReceivedUsdt: uint128(grossReceivedUsdt),
-            directCostsUsdt: uint128(directCostsUsdt),
-            operatingCostsUsdt: uint128(operatingCostsUsdt),
-            distributableProfitUsdt: uint128(profit),
-            participantsUsdt: uint128(participants),
-            hcowDeducted: uint128(hcowToDeduct),
-            snapshotBondedHcow: uint128(snapshot),
+            grossReceivedUsdt: grossReceivedUsdt.toUint128(),
+            directCostsUsdt: directCostsUsdt.toUint128(),
+            operatingCostsUsdt: operatingCostsUsdt.toUint128(),
+            distributableProfitUsdt: profit.toUint128(),
+            participantsUsdt: participants.toUint128(),
+            hcowDeducted: hcowToDeduct.toUint128(),
+            snapshotBondedHcow: snapshot.toUint128(),
             settledAt: uint64(block.timestamp)
         });
 
@@ -499,6 +570,21 @@ contract HCOWProfitShare is ReentrancyGuard {
     }
 
     /// @notice Maximum opex that would be accepted for a given revenue pair.
+    /// @notice HCOW a settlement at this rate would consume right now.
+    ///         The settler converts the published value rule into a rate and
+    ///         checks it here before signing.
+    function deductionFor(uint32 deductPpm) external view returns (uint256) {
+        if (deductPpm > MAX_DEDUCT_PPM || totalShares == 0) return 0;
+        return (totalBondedHcow * deductPpm) / PPM_DENOM;
+    }
+
+    /// @notice When principal may next be consumed. Zero if it may be now.
+    function deductionReadyAt() external view returns (uint64) {
+        if (lastDeductionAt == 0) return 0;
+        uint64 readyAt = lastDeductionAt + uint64(DEDUCT_COOLDOWN);
+        return block.timestamp >= readyAt ? 0 : readyAt;
+    }
+
     function opexCapFor(uint256 grossReceivedUsdt, uint256 directCostsUsdt)
         external
         pure

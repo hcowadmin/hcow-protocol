@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /**
  * @title HCOWStaking
@@ -32,9 +33,22 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  */
 contract HCOWStaking is ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using SafeCast for uint256;
 
     /// @notice Hard ceiling on representative commission. 10%.
     uint16 public constant MAX_COMMISSION_BPS = 1000;
+
+    /**
+     * @notice Ceiling on registered representatives.
+     *
+     * fundRewards loops the whole list twice, so every registration makes every
+     * future funding round permanently more expensive. Without a ceiling a
+     * careless or hostile owner can push that loop past the block gas limit on
+     * a contract that cannot be upgraded, and no reward could ever be paid
+     * again. Deregistration is not offered because a representative with live
+     * delegations cannot safely disappear.
+     */
+    uint256 public constant MAX_REPRESENTATIVES = 100;
 
     /// @notice Wait between requesting an unstake and being able to withdraw.
     uint256 public constant UNSTAKE_COOLDOWN = 7 days;
@@ -112,6 +126,7 @@ contract HCOWStaking is ReentrancyGuard {
     error NothingToClaim();
     error NoActiveWeight();
     error SameRepresentative();
+    error TooManyRepresentatives(uint256 max);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -153,6 +168,9 @@ contract HCOWStaking is ReentrancyGuard {
         r.isFoundation = isFoundation;
         r.exists = true;
         r.name = name;
+        if (_repIds.length >= MAX_REPRESENTATIVES) {
+            revert TooManyRepresentatives(MAX_REPRESENTATIVES);
+        }
         _repIds.push(id);
 
         emit RepresentativeRegistered(id, name, payout, commissionBps, isFoundation);
@@ -168,6 +186,20 @@ contract HCOWStaking is ReentrancyGuard {
         if (commissionBps > MAX_COMMISSION_BPS) {
             revert CommissionTooHigh(commissionBps, MAX_COMMISSION_BPS);
         }
+
+        // Commission already earned belongs to the address that earned it.
+        // Settling here means repointing payout can never redirect a balance
+        // that accrued under the previous one, which would otherwise let the
+        // owner take a representative's accrued commission outright.
+        if (payout != r.payout && r.commissionAccrued > 0) {
+            uint256 owed = r.commissionAccrued;
+            r.commissionAccrued = 0;
+            totalRewardsOwed -= owed;
+            address oldPayout = r.payout;
+            hcow.safeTransfer(oldPayout, owed);
+            emit CommissionClaimed(id, oldPayout, owed);
+        }
+
         r.payout = payout;
         r.commissionBps = commissionBps;
         r.active = active;
@@ -200,7 +232,7 @@ contract HCOWStaking is ReentrancyGuard {
             d.repId = repId;
             r.delegatorCount += 1;
         }
-        d.amount += uint128(received);
+        d.amount += received.toUint128();
         r.totalDelegated += received;
         totalStaked += received;
 
@@ -246,13 +278,13 @@ contract HCOWStaking is ReentrancyGuard {
         _harvest(d);
 
         Representative storage r = _reps[d.repId];
-        d.amount -= uint128(amount);
+        d.amount -= amount.toUint128();
         r.totalDelegated -= amount;
         totalStaked -= amount;
 
         if (d.amount == 0) r.delegatorCount -= 1;
 
-        d.pendingUnstake = uint128(amount);
+        d.pendingUnstake = amount.toUint128();
         d.unstakeReadyAt = uint64(block.timestamp + UNSTAKE_COOLDOWN);
         totalPendingUnstake += amount;
 
@@ -264,8 +296,11 @@ contract HCOWStaking is ReentrancyGuard {
         Delegation storage d = _delegations[msg.sender];
         if (d.unstakeReadyAt == 0) revert NoPendingUnstake();
 
+        // Deliberately not gated on r.active. Cancelling restores a position
+        // the delegator already held; it is not a new delegation. Gating it
+        // would let the owner convert a cancellable request into a forced exit
+        // by deactivating the representative mid cooldown.
         Representative storage r = _reps[d.repId];
-        if (!r.active) revert RepresentativeInactive(d.repId);
 
         _harvest(d);
 
@@ -275,7 +310,7 @@ contract HCOWStaking is ReentrancyGuard {
         totalPendingUnstake -= amount;
 
         if (d.amount == 0) r.delegatorCount += 1;
-        d.amount += uint128(amount);
+        d.amount += amount.toUint128();
         r.totalDelegated += amount;
         totalStaked += amount;
 

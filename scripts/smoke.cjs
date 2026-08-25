@@ -82,10 +82,12 @@ async function main() {
 
   // gross 1000, direct 100 -> net 900. opex 200 is under the 40% cap of 360.
   // profit 700, participants 350, game company 175, team 175.
-  const gross = E(1000), direct = E(100), opex = E(200), deduct = E(10);
+  // deduction is stated as a rate now: 10,000 ppm is 1% of the 1000 HCOW pool.
+  const gross = E(1000), direct = E(100), opex = E(200), deductPpm = 10_000;
   const epoch = await profit.nextEpoch();
+  const deduct = await profit.deductionFor(deductPpm);
   tx = await usdt.approve(a.HCOWProfitShare, E(700)); await tx.wait();
-  tx = await profit.settleEpoch(epoch, gross, direct, opex, deduct); rc = await tx.wait();
+  tx = await profit.settleEpoch(epoch, gross, direct, opex, deductPpm); rc = await tx.wait();
   console.log(`  settled epoch ${epoch}  tx ${rc.hash}  gas ${rc.gasUsed}`);
 
   const s = await profit.getSettlement(epoch);
