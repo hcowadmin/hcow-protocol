@@ -45,8 +45,24 @@ const bad = (msg: string, origin: string | null, code = 400) =>
     headers: { 'content-type': 'application/json', ...cors(origin) },
   });
 
-const str = (v: unknown, max: number) =>
-  typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
+/**
+ * Accept only strings the anchoring pipeline can canonicalise.
+ *
+ * lib/canonical.js rejects unpaired surrogates and non-NFC text, because both
+ * let two different records hash to one leaf. The database is append only, so
+ * a row that reaches it and cannot later be canonicalised stalls the anchor
+ * sequence permanently: the epoch can never be built and epochs are strictly
+ * sequential. The check belongs here, at the only door in.
+ */
+const str = (v: unknown, max: number) => {
+  if (typeof v !== 'string' || v.length === 0 || v.length > max) return null;
+  const wellFormed = typeof (v as any).isWellFormed === 'function'
+    ? (v as any).isWellFormed()
+    : !/[\uD800-\uDFFF]/.test(v.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ''));
+  if (!wellFormed) return null;
+  const nfc = v.normalize('NFC');
+  return nfc.length > 0 && nfc.length <= max ? nfc : null;
+};
 const int = (v: unknown, max: number) =>
   Number.isInteger(v) && (v as number) >= 0 && (v as number) <= max ? (v as number) : null;
 

@@ -214,10 +214,26 @@ async function readEpochRoot(rpc,addr,epoch){
 
 /* ================================ ui ================================ */
 const $=id=>document.getElementById(id);
+// Built as nodes, never as markup. Some of these strings carry values out of
+// the receipt the visitor pasted, including JSON keys echoed back in an error,
+// and this page's whole job is to say whether a record is genuine. A script
+// injected through it could rewrite that verdict.
 function render(items){
-  $('checks').innerHTML=items.map(i=>
-    `<div class="chk ${i.state}"><span class="icon">${i.state==='pass'?'✓':i.state==='fail'?'✕':'!'}</span>
-     <div><h3>${i.title}</h3><p>${i.body}</p></div></div>`).join('');
+  const box=$('checks');
+  box.textContent='';
+  for(const i of items){
+    const row=document.createElement('div');
+    row.className='chk '+i.state;
+    const icon=document.createElement('span');
+    icon.className='icon';
+    icon.textContent=i.state==='pass'?'\u2713':i.state==='fail'?'\u2715':'!';
+    const body=document.createElement('div');
+    const h=document.createElement('h3'); h.textContent=i.title;
+    const p=document.createElement('p'); p.textContent=i.body;
+    body.appendChild(h); body.appendChild(p);
+    row.appendChild(icon); row.appendChild(body);
+    box.appendChild(row);
+  }
 }
 function verdict(okAll,msg){const v=$('verdict');v.className='verdict '+(okAll?'ok':'no');v.textContent=msg;}
 
@@ -226,7 +242,7 @@ $('sample').onclick=()=>{
     level:12,score:8400,durationMs:64210,outcome:'cleared',endedAt:1755000000};
   $('receipt').value=JSON.stringify({epoch:0,kind:'skill',record:rec,proof:[]},null,2);
 };
-$('clear').onclick=()=>{$('receipt').value='';$('checks').innerHTML='';$('verdict').className='verdict';};
+$('clear').onclick=()=>{$('receipt').value='';$('checks').textContent='';$('verdict').className='verdict';};
 
 $('go').onclick=async()=>{
   const out=[];$('verdict').className='verdict';

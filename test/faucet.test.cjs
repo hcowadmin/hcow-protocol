@@ -85,9 +85,9 @@ async function main() {
   near('hcow remaining', D(st[2]), 150_000);
   near('usdt remaining', D(st[3]), 10_000);
   eq('ready immediately for a new address', st[4], 0n);
-  // Each side is dispensed independently, so a claim succeeds while either
-  // side can still pay. Reporting the scarcer one would disable a live button.
-  eq('claims left is bound by the more plentiful token', st[5], 10n);
+  // A claim spends the cooldown whether or not both sides paid, so the honest
+  // figure is how many FULL allowances remain.
+  eq('claims left is bound by the scarcer token', st[5], 3n);
 
   step('first claim'); // ----------------
   const hcowBefore = await hcow.balanceOf(alice);
@@ -126,8 +126,13 @@ async function main() {
   await (await faucet.connect(carolS).claim()).wait();
   near('the drained side pays nothing', D((await hcow.balanceOf(carol)) - carolHcowBefore), 0);
   ok('the funded side still pays', (await usdt.balanceOf(carol)) - carolUsdtBefore > 0n);
+  // and the cooldown is spent anyway, so a partial claim cannot be repeated.
+  // Leaving it unset turns the faucet's steady state into a free drain.
+  ok('a partial claim still spends the cooldown', (await faucet.claimableAt(carol)) > 0n);
+  await rv('so it cannot be repeated in the same window',
+    faucet, carolS, 'claim', [], 'CooldownActive');
   st = await faucet.status(carol);
-  eq('claims left still counts the funded side', st[5], 6n);
+  eq('claims left is zero once a side is dry', st[5], 0n);
 
   // both sides empty is still a refusal, and does not burn the cooldown
   const drained = await usdt.balanceOf(addr);
@@ -145,7 +150,7 @@ async function main() {
 
   await (await hcow.transfer(addr, E(30_000))).wait();
   st = await faucet.status(carol);
-  eq('claims left recomputed against the new amounts', st[5], 12n);
+  eq('claims left recomputed against the new amounts', st[5], 3n);
 
   await rv('stranger cannot withdraw', faucet, aliceS, 'withdraw',
     [await hcow.getAddress(), alice, E(1)], 'NotOwner');

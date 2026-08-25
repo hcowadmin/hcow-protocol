@@ -63,10 +63,10 @@ async function main() {
   const nextEpoch = await ledger.nextEpoch();
   // Refuse to write junk into a live ledger: the epoch numbering is permanent
   // and a smoke run would offset every real hour after it.
-  const chainId = Number((await ethers.provider.getNetwork()).chainId);
+  const chainId = Number((await provider.getNetwork()).chainId);
   if (chainId === 56) throw new Error("smoke.cjs must never run on BNB mainnet");
   const endsAt = (BigInt(nextEpoch) + 1n) * 3600n;
-  const nowTs = BigInt((await ethers.provider.getBlock("latest")).timestamp);
+  const nowTs = BigInt((await provider.getBlock("latest")).timestamp);
   if (nowTs < endsAt) {
     console.log(`  skipping ledger anchor: epoch ${nextEpoch} ends at ${endsAt}, now ${nowTs}`);
     return;

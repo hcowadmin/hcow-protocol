@@ -94,18 +94,24 @@ contract HCOWFaucet {
         uint256 hcowOut = hcowHeld >= hcowAmount ? hcowAmount : 0;
         uint256 usdtOut = usdtHeld >= usdtAmount ? usdtAmount : 0;
         if (hcowOut == 0 && usdtOut == 0) {
+            // Report whichever side is further from paying, measured as a
+            // shortfall. Comparing raw balances of two different tokens names
+            // the wrong one whenever the amounts differ.
+            bool hcowWorse = (hcowAmount - hcowHeld) >= (usdtAmount - usdtHeld);
             revert FaucetEmpty(
-                hcowHeld < usdtHeld ? address(hcow) : address(usdt),
-                hcowHeld < usdtHeld ? hcowAmount : usdtAmount,
-                hcowHeld < usdtHeld ? hcowHeld : usdtHeld
+                hcowWorse ? address(hcow) : address(usdt),
+                hcowWorse ? hcowAmount : usdtAmount,
+                hcowWorse ? hcowHeld : usdtHeld
             );
         }
 
         if (lastClaimAt[msg.sender] == 0) claimerCount += 1;
-        // The cooldown is only spent on a full allowance. A tester who arrived
-        // while one side was dry should not be locked out of the side that
-        // matters for a day because the other one happened to be empty.
-        if (hcowOut > 0 && usdtOut > 0) lastClaimAt[msg.sender] = uint64(block.timestamp);
+        // Always spent. Charging it only for a full allowance sounds fairer and
+        // removes the cooldown entirely in the state the faucet actually lives
+        // in: USDT drains far faster than HCOW, so "one side short" is the
+        // steady state, and in that state one address can empty the other side
+        // in a single block.
+        lastClaimAt[msg.sender] = uint64(block.timestamp);
         totalClaims += 1;
 
         if (hcowOut > 0) hcow.safeTransfer(msg.sender, hcowOut);
@@ -153,12 +159,11 @@ contract HCOWFaucet {
         }
 
         // The binding constraint, so the UI can say "3 claims left" honestly.
-        // Each side is dispensed on its own, so a claim succeeds while either
-        // side can still pay. Reporting the smaller figure would disable a
-        // button that still works.
+        // A claim spends the cooldown whether or not both sides paid, so the
+        // honest figure is how many FULL allowances are left.
         uint256 byHcow = hcowRemaining / hcowAmount;
         uint256 byUsdt = usdtRemaining / usdtAmount;
-        claimsLeft = byHcow > byUsdt ? byHcow : byUsdt;
+        claimsLeft = byHcow < byUsdt ? byHcow : byUsdt;
     }
 
     // ------------------------------------------------------------------

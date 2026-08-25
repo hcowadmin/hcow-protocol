@@ -2416,8 +2416,13 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     event Bonded(address indexed account, uint256 hcowAmount, uint256 sharesMinted);
     event UnbondRequested(address indexed account, uint256 hcowAmount, uint64 readyAt);
-    event UnbondCancelled(address indexed account, uint256 hcowAmount, uint256 sharesMinted);
-    event Unbonded(address indexed account, uint256 hcowAmount);
+    /// @dev forfeited is HCOW burned on the way out. Without it in the log an
+    ///      indexer cannot attribute the burn to an account, and a published
+    ///      burn total built from settlements alone is short by this channel.
+    event UnbondCancelled(
+        address indexed account, uint256 hcowAmount, uint256 sharesMinted, uint256 forfeited
+    );
+    event Unbonded(address indexed account, uint256 hcowAmount, uint256 forfeited);
     event UsdtClaimed(address indexed account, uint256 amount);
 
     /**
@@ -2458,6 +2463,8 @@ contract HCOWProfitShare is ReentrancyGuard {
     error EpochTooSoon(uint64 readyAt);
     error DecayWindowExhausted(uint256 windowCap, uint256 wouldBe);
     error ProfitNotFunded(uint256 expected, uint256 arrived);
+    error SameToken();
+    error SettlerIsRecipient();
     error NothingBonded();
     error InsufficientBonded(uint256 requested, uint256 available);
     error UnbondAlreadyPending();
@@ -2488,6 +2495,16 @@ contract HCOWProfitShare is ReentrancyGuard {
             initialOwner == address(0) || initialSettler == address(0) ||
             gameCompany_ == address(0) || team_ == address(0)
         ) revert ZeroAddress();
+        // One address for both tokens makes bonded principal and the
+        // distribution currency the same balance: deposits become payouts.
+        if (hcowToken == usdtToken) revert SameToken();
+        // The settler funds the distribution out of its own balance. If it
+        // also receives either fixed leg, half the cost of any published
+        // figure comes straight back, and when nobody is eligible the whole
+        // amount does. A settlement must cost the settler something.
+        if (initialSettler == gameCompany_ || initialSettler == team_) {
+            revert SettlerIsRecipient();
+        }
 
         hcow = IERC20(hcowToken);
         usdt = IERC20(usdtToken);
@@ -2631,7 +2648,7 @@ contract HCOWProfitShare is ReentrancyGuard {
             hcow.safeTransfer(BURN_ADDRESS, forfeited);
         }
 
-        emit UnbondCancelled(msg.sender, restored, minted);
+        emit UnbondCancelled(msg.sender, restored, minted, forfeited);
     }
 
     /**
@@ -2667,7 +2684,7 @@ contract HCOWProfitShare is ReentrancyGuard {
             hcow.safeTransfer(BURN_ADDRESS, forfeited);
         }
         if (payout > 0) hcow.safeTransfer(msg.sender, payout);
-        emit Unbonded(msg.sender, payout);
+        emit Unbonded(msg.sender, payout, forfeited);
     }
 
     /// @notice Take the USDT accumulated across settled epochs.
@@ -2955,14 +2972,18 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     function setSettler(address account) external onlyOwner {
         if (account == address(0)) revert ZeroAddress();
+        if (account == gameCompany || account == team) revert SettlerIsRecipient();
         settler = account;
         emit SettlerChanged(account);
     }
 
-    /// @dev The two 25% recipients. They are allowed to be the same address,
-    ///      and whichever they are, they are visible on chain.
+    /// @dev The two 25% recipients. They may be the same address as each
+    ///      other, but neither may be the settler: a settlement has to cost
+    ///      the settler something, or any revenue figure can be published for
+    ///      free and the published waterfall stops meaning anything.
     function setRecipients(address gameCompany_, address team_) external onlyOwner {
         if (gameCompany_ == address(0) || team_ == address(0)) revert ZeroAddress();
+        if (gameCompany_ == settler || team_ == settler) revert SettlerIsRecipient();
         gameCompany = gameCompany_;
         team = team_;
         emit RecipientsChanged(gameCompany_, team_);

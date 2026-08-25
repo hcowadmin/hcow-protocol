@@ -44,12 +44,37 @@ async function main() {
     return ethers.getAddress(v);
   };
 
-  const owner = env('OWNER_ADDRESS', me);
-  const anchorer = env('ANCHORER_ADDRESS', me);
-  const settler = env('SETTLER_ADDRESS', me);
-  const gameCompany = env('GAME_COMPANY_ADDRESS', me);
-  const team = env('TEAM_ADDRESS', me);
-  const funder = env('FUNDER_ADDRESS', me);
+  // Off testnet every role must be named explicitly and must not be the key
+  // running this script. Defaulting to the deployer is convenient on a test
+  // chain and a total loss of every economic control on mainnet: one forgotten
+  // export and one hot key owns the settler, both revenue recipients, the
+  // reward funder and the anchorer, with the deployment recorded as canonical.
+  const mainnet = net.chainId !== TESTNET;
+  const role = (k) => {
+    if (!mainnet) return env(k, me);
+    const v = process.env[k];
+    if (!v) throw new Error(`${k} must be set explicitly off testnet`);
+    const a = env(k, null);
+    if (a.toLowerCase() === me.toLowerCase()) {
+      throw new Error(`${k} must not be the deploy key`);
+    }
+    if (a === ethers.ZeroAddress) throw new Error(`${k} must not be the zero address`);
+    return a;
+  };
+
+  const owner = role('OWNER_ADDRESS');
+  const anchorer = role('ANCHORER_ADDRESS');
+  const settler = role('SETTLER_ADDRESS');
+  const gameCompany = role('GAME_COMPANY_ADDRESS');
+  const team = role('TEAM_ADDRESS');
+  const funder = role('FUNDER_ADDRESS');
+
+  // The settler funds every distribution out of its own balance. If it also
+  // receives one of the fixed legs, the cost of publishing a revenue figure
+  // drops by half, and to nothing when no participant is eligible.
+  if (settler === gameCompany || settler === team) {
+    throw new Error('SETTLER_ADDRESS must differ from GAME_COMPANY_ADDRESS and TEAM_ADDRESS');
+  }
 
   const put = async (name, args) => {
     const c = await deploy(name, signer, args);

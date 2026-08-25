@@ -305,7 +305,10 @@ contract HCOWLedger {
     }
 
     function isEpochAnchored(uint64 epoch) external view returns (bool) {
-        return epoch < nextEpoch;
+        // Both bounds. nextEpoch starts at genesisEpoch, which is a real hour
+        // index near half a million, so testing only the upper bound reports
+        // every epoch since 1970 as anchored.
+        return epoch >= genesisEpoch && epoch < nextEpoch;
     }
 
     function totalRecords() external view returns (uint256) {

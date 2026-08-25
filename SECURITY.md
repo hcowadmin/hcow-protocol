@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-315 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+317 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. Revert assertions are made with a raw `eth_call` carrying an explicit
 sender, because gas estimation through a browser provider omits `from` and can
@@ -60,7 +60,7 @@ npm run test:invariant
 Latest run: 8 seeds per contract, zero violations. Seeds are fixed, so any
 failure is reproducible from the printed seed and operation index.
 
-`HCOWProfitShare` checks 15 properties, `HCOWStaking` 9. The full list is in
+`HCOWProfitShare` checks 17 properties, `HCOWStaking` 9. The full list is in
 `test/invariant.profitshare.cjs` and `test/invariant.staking.cjs`. The two most
 load-bearing are solvency (the sum of all claimable USDT never exceeds the USDT
 held) and no value creation (claimed plus still-owed USDT never exceeds what
@@ -234,6 +234,17 @@ Stated here rather than discovered later.
   Closing it needs the commitment published on chain ahead of the round. The
   stronger claim has been removed from the README and from the public verifier
   page, and should not be made anywhere else until the mechanism exists.
+- **Omission is not covered.** The ledger proves a record was not altered. It
+  does not prove that every record was included: `recordCount` is asserted by
+  the anchorer and there is no non-inclusion proof, so a round left out of a
+  tree is undetectable from the chain.
+- **Ownership transfer is single step** in all four contracts. A mistyped
+  address is final. Left as it is deliberately: at this point in the review
+  every round that added code produced a finding, and this one is disclosed
+  rather than patched under time pressure.
+- **`HCOWToken` and `HCOWVesting` are not in this repository** and are not
+  covered by anything in this document. They hold the entire supply and the
+  unlock schedule. See the scope note at the top of the README.
 - **`recordCount` is asserted by the anchorer** and is not bound to the tree,
   so published record totals are not chain-proven figures even though the
   proofs themselves are. Do not quote the totals as if they were.
@@ -246,9 +257,12 @@ Stated here rather than discovered later.
   the rate matches the published value rule.
 - **Rounding dust is not recoverable.** Both contracts round in the protocol's
   favour and neither has a sweep function.
-- **`IBurnable(hcow).burn()` is an assumption about a token that is not in this
-  repository.** Confirming that the deployed HCOW burns from `msg.sender` with
-  no fee and no allowlist is a mainnet deployment gate.
+- **Consumed principal is transferred to `0x…dEaD`, not burned through the
+  token.** That removes the dependency on an external `burn()` (A-4) and adds a
+  smaller one: the deployed HCOW must permit transfers to that address and
+  charge no transfer fee. It also means `totalSupply()` never moves, so any
+  circulating or burned figure must read `balanceOf(0xdEaD)` rather than
+  subtracting from supply. Both are mainnet deployment gates.
 
 ### 13. Deployed-bytecode parity
 

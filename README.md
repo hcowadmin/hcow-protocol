@@ -12,6 +12,20 @@ The contracts and the tooling around them.
 `HCOWProfitShare` and `HCOWStaking` are what the dApp's data adapter calls.
 Twelve of its twenty six methods land on these two.
 
+## Scope
+
+**`HCOWToken` and `HCOWVesting` are not in this repository.** They are the
+token itself, which holds the entire 200,000,000 supply, and the vesting
+contract, which holds the unlock schedule behind an irreversible `seal()`.
+Nothing in this repository or in `SECURITY.md` covers them: not the tests, not
+the invariant suites, not the static analysis, not the flattened bytecode
+parity check, not the deployment script.
+
+Anyone reading an audit of this repository is reading about four contracts.
+On the day the token launches, the two that are not here hold more value than
+the four that are. Say so explicitly wherever a report on this repository is
+published, and put those two into their own engagement.
+
 ---
 
 ## HCOWLedger
@@ -117,10 +131,10 @@ npm run test:all
 
 | suite | result |
 |---|---|
-| `HCOWLedger` | 67 passed, 0 failed |
-| `HCOWProfitShare` | 81 passed, 0 failed |
-| `HCOWStaking` | 64 passed, 0 failed |
-| `HCOWFaucet` | 33 passed, 0 failed |
+| `HCOWLedger` | 75 passed, 0 failed |
+| `HCOWProfitShare` | 123 passed, 0 failed |
+| `HCOWStaking` | 81 passed, 0 failed |
+| `HCOWFaucet` | 38 passed, 0 failed |
 | keccak256 against a reference | 318 of 318 match |
 | browser page against the libraries | every vector and proof matches |
 | end to end anchoring | 47 receipts verified, tampering rejected |
@@ -202,7 +216,7 @@ with every import inlined, ready to paste into Remix. `scripts/checkflat.cjs`
 compiles each of those files standalone and compares the creation bytecode
 against the artifact Hardhat built from the original imported sources, so a
 flattened file that had drifted would fail the check rather than reach a
-chain. All five currently match.
+chain. All six currently match.
 
 Deploy order, because two of the three take the token addresses as
 constructor arguments:
@@ -403,12 +417,12 @@ Measured on the compiled contract.
 
 | | |
 |---|---|
-| Gas, first anchor | 115,776 |
-| Gas, steady state | 81,588 |
-| Hourly anchoring, per year | 714,710,880 gas |
-| Cost per year at 0.1 gwei | about $43 |
-| Cost per year at 1 gwei | about $429 |
-| Daily anchoring, per year at 1 gwei | about $18 |
+| Gas, first anchor | 121,409 |
+| Gas, steady state | 104,297 |
+| Hourly anchoring, per year | 913,641,720 gas |
+| Cost per year at 0.1 gwei | about $55 |
+| Cost per year at 1 gwei | about $548 |
+| Daily anchoring, per year at 1 gwei | about $23 |
 | Proof size for 1,001 records | 10 hashes, 320 bytes |
 
 Assumes BNB at $600. Proof size grows with the logarithm of the record

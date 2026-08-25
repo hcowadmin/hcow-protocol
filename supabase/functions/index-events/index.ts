@@ -73,8 +73,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PROFIT_SHARE_EVENTS = [
   "event Bonded(address indexed account, uint256 hcowAmount, uint256 sharesMinted)",
   "event UnbondRequested(address indexed account, uint256 hcowAmount, uint64 readyAt)",
-  "event UnbondCancelled(address indexed account, uint256 hcowAmount, uint256 sharesMinted)",
-  "event Unbonded(address indexed account, uint256 hcowAmount)",
+  "event UnbondCancelled(address indexed account, uint256 hcowAmount, uint256 sharesMinted, uint256 forfeited)",
+  "event Unbonded(address indexed account, uint256 hcowAmount, uint256 forfeited)",
   "event UsdtClaimed(address indexed account, uint256 amount)",
   "event EpochSettled(uint64 indexed epoch, uint256 grossReceivedUsdt, uint256 directCostsUsdt, uint256 netRevenueUsdt, uint256 operatingCostsUsdt, uint256 distributableProfitUsdt, uint256 participantsUsdt, uint256 hcowDeducted, uint256 snapshotBondedHcow)",
 ];
@@ -84,6 +84,15 @@ const STAKING_EVENTS = [
   "event Redelegated(address indexed account, bytes32 indexed fromRep, bytes32 indexed toRep, uint256 amount)",
   "event UnstakeRequested(address indexed account, uint256 amount, uint64 readyAt)",
   "event UnstakeCancelled(address indexed account, bytes32 indexed repId, uint256 amount)",
+  // Governance and commission. Without these a representative's commission can
+  // be changed, and every commission payment made, with no row anywhere.
+  "event RepresentativeRegistered(bytes32 indexed id, string name, address payout, uint16 commissionBps, bool isFoundation)",
+  "event RepresentativeUpdated(bytes32 indexed id, address payout, uint16 commissionBps, bool active)",
+  "event CommissionClaimed(bytes32 indexed repId, address indexed payout, uint256 amount)",
+  "event RewardFunderChanged(address indexed account)",
+  "event SettlerChanged(address indexed settler)",
+  "event RecipientsChanged(address gameCompany, address team)",
+  "event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)",
   "event Unstaked(address indexed account, uint256 amount)",
   "event RewardsClaimed(address indexed account, uint256 amount)",
   "event RewardsFunded(uint256 amount, uint256 rewardRate, uint64 duration)",
