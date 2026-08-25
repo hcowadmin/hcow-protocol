@@ -1731,9 +1731,9 @@ interface IBurnable {
  *     revenue are rejected, so the cap cannot be quietly exceeded.
  *   - Rule 5, the deduction rate limit. The settler no longer passes an HCOW
  *     amount. It passes a rate in parts per million, capped at MAX_DEDUCT_PPM,
- *     and the contract computes the amount from its own pool figure. A second
- *     deduction cannot follow inside DEDUCT_COOLDOWN. The worst case is
- *     therefore 2% per day, so a participant who reacts within the seven day
+ *     and the contract computes the amount from its own pool figure. With
+ *     MIN_EPOCH_INTERVAL between settlements the worst case is 2% per day,
+ *     so a participant who reacts within the seven day
  *     unbond cooldown cannot lose more than about 13% of principal. That is a
  *     bound the code enforces, not a promise.
  *   - Rule 6, a deduction requires a real distribution. The participant leg of
@@ -1797,9 +1797,17 @@ contract HCOWProfitShare is ReentrancyGuard {
     ///         is the rate limit below.
     uint256 public constant MIN_PARTICIPANT_USDT = 1e18;
 
-    /// @notice Minimum wait between two deductions. Settlements themselves are
-    ///         not rate limited; only the consumption of principal is.
-    uint256 public constant DEDUCT_COOLDOWN = 1 days;
+    /**
+     * @notice Minimum wait between two settlements.
+     *
+     * Arrivals are quarantined for the epoch they land in, and an epoch that
+     * distributes nothing costs the settler nothing to produce. Without a
+     * floor on epoch length, two settlements in adjacent blocks release a
+     * position from quarantine for free and hand it the whole of the next
+     * distribution, which is the defect the quarantine exists to prevent.
+     * A floor makes an epoch a period of time rather than a call.
+     */
+    uint256 public constant MIN_EPOCH_INTERVAL = 1 days;
 
     uint256 private constant ACC_PRECISION = 1e18;
 
@@ -1857,11 +1865,14 @@ contract HCOWProfitShare is ReentrancyGuard {
      */
     uint256 public totalNewShares;
 
-    /// @notice accUsdtPerShare as it stood immediately after each settled
-    ///         epoch. A position promoted out of totalNewShares is credited
-    ///         from the value recorded here, so it earns every epoch after the
-    ///         one it joined even if nobody touches the account in between.
+    /// @notice accUsdtPerShare immediately after each settled epoch. A
+    ///         position promoted out of totalNewShares is credited from the
+    ///         value recorded here, so it earns every epoch after the one it
+    ///         joined even if nobody touches the account in between.
     mapping(uint64 => uint256) public accAtEpoch;
+
+    /// @notice Timestamp of the last settlement.
+    uint64 public lastSettledAt;
 
     /**
      * @notice Deduction accumulator, the mirror of accUsdtPerShare.
@@ -1882,9 +1893,6 @@ contract HCOWProfitShare is ReentrancyGuard {
      *         after it, and never pay for usage at all.
      */
     uint256 public poolIndex = RAY;
-
-    /// @notice Timestamp of the last settlement that consumed principal.
-    uint64 public lastDeductionAt;
 
     /// @notice Accounts currently holding shares. A pending unbond is not counted.
     uint256 public participantCount;
@@ -1960,7 +1968,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     error OpexAboveCap(uint256 submitted, uint256 cap);
     error DeductionWithoutDistribution();
     error DeductionRateAboveCap(uint32 requested, uint32 cap);
-    error DeductionTooSoon(uint64 readyAt);
+    error EpochTooSoon(uint64 readyAt);
     error NothingBonded();
     error InsufficientBonded(uint256 requested, uint256 available);
     error UnbondAlreadyPending();
@@ -2038,9 +2046,12 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     /**
      * @notice Start withdrawing part or all of a bonded position.
-     * @dev The amount is fixed in HCOW at request time. From this moment it
-     *      stops earning and stops being deducted. A participant on the way
-     *      out should not keep absorbing usage.
+     * @dev The amount is fixed in HCOW at request time and stops earning from
+     *      this moment. It does NOT stop being deducted: a position pays for
+     *      every settlement it was present for, whichever door it leaves by,
+     *      and the charge is applied on withdrawal or cancellation. Exempting
+     *      it here is what used to make the deduction optional for anyone
+     *      watching the mempool.
      */
     function requestUnbond(uint256 hcowAmount) external nonReentrant {
         if (hcowAmount == 0) revert ZeroAmount();
@@ -2201,6 +2212,10 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint32 deductPpm
     ) external onlySettler nonReentrant {
         if (epoch != nextEpoch) revert WrongEpoch(nextEpoch, epoch);
+        if (lastSettledAt != 0) {
+            uint64 openAt = lastSettledAt + uint64(MIN_EPOCH_INTERVAL);
+            if (block.timestamp < openAt) revert EpochTooSoon(openAt);
+        }
         if (directCostsUsdt > grossReceivedUsdt) revert CostsExceedRevenue();
 
         uint256 netRevenue = grossReceivedUsdt - directCostsUsdt;
@@ -2212,6 +2227,7 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         uint256 profit = netRevenue - operatingCostsUsdt;
         uint256 participants = (profit * PARTICIPANT_BPS) / 10_000;
+        uint256 eligibleShares = totalShares - totalNewShares;
 
         // Rule 5. The rate is capped, and two deductions cannot be stacked
         // inside the cooldown. Together these bound the worst case at 2% a day.
@@ -2220,15 +2236,13 @@ contract HCOWProfitShare is ReentrancyGuard {
         }
         if (deductPpm != 0) {
             // Rule 4 and Rule 6. Principal is only consumed by an epoch that
-            // actually pays participants. Testing profit alone is not enough:
-            // one wei of profit rounds the participant leg to zero and would
-            // otherwise buy a full size deduction.
-            if (participants < MIN_PARTICIPANT_USDT) {
+            // actually pays participants, and the test is on what reaches
+            // them, not on what was computed. One wei of profit rounds the
+            // participant leg to zero, and with nobody eligible the leg is
+            // returned to the settler; burning principal against either is the
+            // same defect wearing different arithmetic.
+            if (participants < MIN_PARTICIPANT_USDT || eligibleShares == 0) {
                 revert DeductionWithoutDistribution();
-            }
-            uint64 readyAt = lastDeductionAt + uint64(DEDUCT_COOLDOWN);
-            if (lastDeductionAt != 0 && block.timestamp < readyAt) {
-                revert DeductionTooSoon(readyAt);
             }
         }
 
@@ -2249,8 +2263,6 @@ contract HCOWProfitShare is ReentrancyGuard {
             if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);
             if (toTeam > 0) usdt.safeTransfer(team, toTeam);
         }
-
-        uint256 eligibleShares = totalShares - totalNewShares;
 
         if (participants > 0) {
             if (eligibleShares == 0) {
@@ -2275,15 +2287,15 @@ contract HCOWProfitShare is ReentrancyGuard {
             if (poolIndex == 0) poolIndex = 1;
             totalBondedHcow -= hcowToDeduct;
             totalHcowDeducted += hcowToDeduct;
-            lastDeductionAt = uint64(block.timestamp);
             IBurnable(address(hcow)).burn(hcowToDeduct);
         }
 
-        // Everything bonded during this epoch starts earning from the next
-        // one. Recording the accumulator here is what lets an untouched
-        // account be promoted later without losing the epochs in between.
+        // This epoch's arrivals start earning from the next one. Recording
+        // the accumulator here is what lets an untouched account be promoted
+        // later without losing the epochs in between.
         accAtEpoch[epoch] = accUsdtPerShare;
         totalNewShares = 0;
+        lastSettledAt = uint64(block.timestamp);
 
         _settlements[epoch] = Settlement({
             grossReceivedUsdt: grossReceivedUsdt.toUint128(),
@@ -2389,14 +2401,17 @@ contract HCOWProfitShare is ReentrancyGuard {
     ///         checks it here before signing.
     function deductionFor(uint32 deductPpm) external view returns (uint256) {
         if (deductPpm > MAX_DEDUCT_PPM || totalShares == 0) return 0;
+        // Mirrors the gate in settleEpoch: with nobody eligible the epoch
+        // cannot consume principal, so the honest preview is zero.
+        if (totalShares == totalNewShares) return 0;
         return (totalBondedHcow * deductPpm) / PPM_DENOM;
     }
 
-    /// @notice When principal may next be consumed. Zero if it may be now.
-    function deductionReadyAt() external view returns (uint64) {
-        if (lastDeductionAt == 0) return 0;
-        uint64 readyAt = lastDeductionAt + uint64(DEDUCT_COOLDOWN);
-        return block.timestamp >= readyAt ? 0 : readyAt;
+    /// @notice When the next epoch may be settled. Zero if it may be now.
+    function epochOpensAt() external view returns (uint64) {
+        if (lastSettledAt == 0) return 0;
+        uint64 openAt = lastSettledAt + uint64(MIN_EPOCH_INTERVAL);
+        return block.timestamp >= openAt ? 0 : openAt;
     }
 
     function opexCapFor(uint256 grossReceivedUsdt, uint256 directCostsUsdt)

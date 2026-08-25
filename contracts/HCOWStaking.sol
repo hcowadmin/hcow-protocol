@@ -22,13 +22,16 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
  *     redelegate, which settles rewards first, so nothing is stranded.
  *   - Unstaking has a cooldown. The amount leaves the earning set the moment
  *     it is requested, so a leaving delegator neither earns nor blocks.
+ *   - The active flag gates new delegations only. It does not stop accrual:
+ *     stranding a delegator mid cooldown for a decision the owner made about
+ *     their representative was never what the flag was for.
  *   - Staked principal is never consumed here. That mechanism belongs to
  *     Profit Share and mixing the two would make both harder to reason about.
  *
  * A NOTE ON NAMING
  *   HCOW is a token on BNB Chain, not its own network. Nothing here secures a
  *   chain or produces blocks. The contract does what it says: it records
- *   delegations, splits funded rewards, and pays commission. Any external
+ *   delegations, streams funded rewards, and pays commission. Any external
  *   description should match that.
  */
 contract HCOWStaking is ReentrancyGuard {
@@ -41,11 +44,10 @@ contract HCOWStaking is ReentrancyGuard {
     /**
      * @notice Ceiling on registered representatives.
      *
-     * fundRewards loops the whole list twice, so every registration makes every
-     * future funding round permanently more expensive. Without a ceiling a
-     * careless or hostile owner can push that loop past the block gas limit on
-     * a contract that cannot be upgraded, and no reward could ever be paid
-     * again. Deregistration is not offered because a representative with live
+     * Funding is O(1) now, so this is no longer about the cost of a reward
+     * round. It bounds representativeCount(), which is an unbounded view loop,
+     * and it keeps the set small enough to be published and checked by hand.
+     * Deregistration is not offered because a representative with live
      * delegations cannot safely disappear.
      */
     uint256 public constant MAX_REPRESENTATIVES = 100;
@@ -53,7 +55,18 @@ contract HCOWStaking is ReentrancyGuard {
     /// @notice Wait between requesting an unstake and being able to withdraw.
     uint256 public constant UNSTAKE_COOLDOWN = 7 days;
 
-    uint256 private constant ACC_PRECISION = 1e18;
+    /**
+     * @notice Accumulator precision.
+     *
+     * The accumulator advances by `released * ACC_PRECISION / totalStaked`, so
+     * its granularity is `totalStaked / ACC_PRECISION` wei per call and
+     * anything finer is not claimable by anyone. At 1e18 against an 18 decimal
+     * token a slow stream over a large pool strands a real fraction of it,
+     * with no way to recover it. Every product this appears in is divided
+     * before being multiplied again, so the extra six orders cost nothing in
+     * headroom.
+     */
+    uint256 private constant ACC_PRECISION = 1e24;
 
     IERC20 public immutable hcow;
 
@@ -86,7 +99,6 @@ contract HCOWStaking is ReentrancyGuard {
         uint128 amount;
         uint128 pendingUnstake;
         uint64  unstakeReadyAt;
-        uint256 rewardDebtGross;  // bookmark on the global accumulator
         uint256 rewardDebtNet;    // bookmark on the representative's net one
         uint256 claimable;
         uint256 lifetimeClaimed;
@@ -245,7 +257,7 @@ contract HCOWStaking is ReentrancyGuard {
         // must not run with a half-applied representative record behind it.
         if (owed > 0) {
             r.commissionAccrued = 0;
-            _rewardsOwed -= owed;
+            _rewardsOwed = owed > _rewardsOwed ? 0 : _rewardsOwed - owed;
         }
         r.payout = payout;
         r.commissionBps = commissionBps;
@@ -397,7 +409,7 @@ contract HCOWStaking is ReentrancyGuard {
         if (amount == 0) revert NothingToClaim();
         d.claimable = 0;
         d.lifetimeClaimed += amount;
-        _rewardsOwed -= amount;
+        _rewardsOwed = amount > _rewardsOwed ? 0 : _rewardsOwed - amount;
 
         hcow.safeTransfer(msg.sender, amount);
         emit RewardsClaimed(msg.sender, amount);
@@ -415,7 +427,7 @@ contract HCOWStaking is ReentrancyGuard {
         uint256 amount = r.commissionAccrued;
         if (amount == 0) revert NothingToClaim();
         r.commissionAccrued = 0;
-        _rewardsOwed -= amount;
+        _rewardsOwed = amount > _rewardsOwed ? 0 : _rewardsOwed - amount;
 
         hcow.safeTransfer(r.payout, amount);
         emit CommissionClaimed(repId, r.payout, amount);
@@ -426,11 +438,18 @@ contract HCOWStaking is ReentrancyGuard {
     // ------------------------------------------------------------------
 
     /**
-     * @notice Fund a reward round. Split across active representatives in
-     *         proportion to delegated weight; each takes its commission and the
-     *         remainder goes to its delegators.
+     * @notice Fund a reward period. The amount is released per second over
+     *         `duration`, so every staked token earns for exactly the seconds
+     *         it was staked. Each representative's commission comes off its
+     *         delegators' share at the rate in force while it accrued.
      * @dev HCOW cannot be minted, so the funder must hold and approve the
-     *      tokens. Nothing is created here.
+     *      tokens. Nothing is created here. Whatever the running period has
+     *      not released, plus anything that elapsed with nothing staked, rolls
+     *      into the new rate: funding early stretches the budget rather than
+     *      discarding it, and the new rate may never be slower than the one it
+     *      replaces.
+     * @param amount   HCOW to add to the stream.
+     * @param duration Seconds the new period runs for.
      */
     function fundRewards(uint256 amount, uint64 duration) external nonReentrant {
         if (msg.sender != rewardFunder) revert NotFunder();
@@ -455,8 +474,18 @@ contract HCOWStaking is ReentrancyGuard {
         uint256 pool = received + leftover + undistributed;
         undistributed = 0;
 
-        rewardRate = pool / duration;
-        if (rewardRate == 0) revert ZeroAmount();
+        uint256 newRate = pool / duration;
+        // A funding may never slow the stream already running. Without this a
+        // single wei on a year long duration stretches the whole remaining
+        // budget out behind it, and nobody but the funder can undo it. Nothing
+        // would be destroyed, but delivery would be deferrable forever by a
+        // role that is not the owner.
+        if (block.timestamp < periodFinish) {
+            uint256 minRate = leftover / (uint256(periodFinish) - block.timestamp);
+            if (newRate < minRate) revert BadDuration(duration);
+        }
+        if (newRate == 0) revert BadDuration(duration);
+        rewardRate = newRate;
         // The remainder of the division would otherwise be lost for good.
         undistributed = pool - rewardRate * duration;
 
@@ -576,13 +605,19 @@ contract HCOWStaking is ReentrancyGuard {
         uint256 elapsed = uint256(t - lastUpdateTime);
         uint256 released = elapsed * rewardRate;
         if (released > 0) {
-            if (totalStaked > 0) {
-                accRewardPerShare += (released * ACC_PRECISION) / totalStaked;
+            uint256 inc = totalStaked > 0 ? (released * ACC_PRECISION) / totalStaked : 0;
+            if (inc > 0) {
+                accRewardPerShare += inc;
+                // Reserve the whole window. Individual credits are differences
+                // of two floors, so their sum can sit a wei above the exact
+                // figure per delegator; reserving the exact figure instead
+                // would let the reserve fall below what is claimable.
                 _rewardsOwed += released;
             } else {
-                // Nobody was owed these seconds. Carry them rather than either
-                // stranding them or handing the whole window to whoever stakes
-                // next, which would be the lump sum problem again.
+                // Either nothing is staked, or the window is too small to move
+                // the accumulator. Carry it rather than stranding it or handing
+                // the whole window to whoever stakes next, which would be the
+                // lump sum problem again.
                 undistributed += released;
             }
         }
@@ -614,8 +649,10 @@ contract HCOWStaking is ReentrancyGuard {
     function _accrueRepCommission(Representative storage r) private {
         uint256 delta = accRewardPerShare - r.commAnchor;
         if (delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0) {
-            uint256 earned =
-                (r.totalDelegated * delta * r.commissionBps) / (10_000 * ACC_PRECISION);
+            // Divided before the second multiply so the intermediate stays
+            // far from the top of the word even in the degenerate case of a
+            // one wei pool absorbing the whole supply.
+            uint256 earned = ((r.totalDelegated * delta) / ACC_PRECISION) * r.commissionBps / 10_000;
             if (earned > 0) r.commissionAccrued += earned;
         }
         r.commAnchor = accRewardPerShare;
@@ -628,6 +665,13 @@ contract HCOWStaking is ReentrancyGuard {
      * calls in, so a view that returned it directly would understate the
      * liability for as long as the contract sits idle, and would disagree with
      * pendingRewardOf.
+     *
+     * This is a reserve, not a sum. Each account's credit is the difference of
+     * two independently floored figures, so adding up every pendingRewardOf
+     * and commissionOf can land up to one wei per delegator above it. The
+     * decrements on the claim paths are clamped so that can never revert a
+     * claim, and solvency is maintained against the token balance rather than
+     * against this counter.
      */
     function totalRewardsOwed() public view returns (uint256) {
         uint256 owed = _rewardsOwed;
@@ -652,14 +696,13 @@ contract HCOWStaking is ReentrancyGuard {
         }
         uint256 delta = acc - r.commAnchor;
         uint256 pending = (delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0)
-            ? (r.totalDelegated * delta * r.commissionBps) / (10_000 * ACC_PRECISION)
+            ? ((r.totalDelegated * delta) / ACC_PRECISION) * r.commissionBps / 10_000
             : 0;
         return r.commissionAccrued + pending;
     }
 
     function _bookmark(Delegation storage d, Representative storage r) private {
         uint256 amt = uint256(d.amount);
-        d.rewardDebtGross = (amt * accRewardPerShare) / ACC_PRECISION;
         d.rewardDebtNet = (amt * _netAcc(r)) / ACC_PRECISION;
     }
 
@@ -674,7 +717,6 @@ contract HCOWStaking is ReentrancyGuard {
         if (d.amount > 0) {
             Representative storage r = _reps[d.repId];
             uint256 amt = uint256(d.amount);
-            uint256 gross = (amt * accRewardPerShare) / ACC_PRECISION;
             uint256 net = (amt * _netAcc(r)) / ACC_PRECISION;
             uint256 netDelta = net > d.rewardDebtNet ? net - d.rewardDebtNet : 0;
             if (netDelta > 0) {
@@ -685,10 +727,8 @@ contract HCOWStaking is ReentrancyGuard {
             // over the representative's whole weight, folded in by
             // _accrueRepCommission, so a representative is paid without having
             // to wait for every delegator to touch their position.
-            d.rewardDebtGross = gross;
             d.rewardDebtNet = net;
         } else {
-            d.rewardDebtGross = 0;
             d.rewardDebtNet = 0;
         }
     }

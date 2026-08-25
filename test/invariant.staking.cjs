@@ -197,7 +197,13 @@ async function runSeed(seed, opCount) {
       `sum=${sumPending} total=${totalPending}`);
 
     // S9  No reward creation: what accounts can claim is covered by what is owed.
-    must(seed, op, 'S9 pendingReward <= totalRewardsOwed', sumPendingReward <= owed,
+    // Each account's credit is a difference of two independently floored
+    // figures, so the sum of the views can sit up to one wei per delegator
+    // above the reserve, which is a single exact figure. Solvency (S1) is the
+    // property that matters and is checked against the real token balance;
+    // this one is checked with that slack made explicit rather than hidden.
+    must(seed, op, 'S9 pendingReward <= totalRewardsOwed',
+      sumPendingReward <= owed + BigInt(actors.length),
       `pending=${sumPendingReward} owed=${owed}`);
 
     lastFunded = funded;

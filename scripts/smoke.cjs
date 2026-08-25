@@ -90,29 +90,34 @@ async function main() {
   console.log(`  bonded ${fmt(BOND)} HCOW  tx ${rc.hash}`);
   ok("bonded balance credited", (await profit.bondedOf(me)) === BOND);
 
-  // gross 1000, direct 100 -> net 900. opex 200 is under the 40% cap of 360.
-  // profit 700, participants 350, game company 175, team 175.
-  // deduction is stated as a rate now: 10,000 ppm is 1% of the 1000 HCOW pool.
-  const gross = E(1000), direct = E(100), opex = E(200), deductPpm = 10_000;
-  const epoch = await profit.nextEpoch();
-  const deduct = await profit.deductionFor(deductPpm);
-  tx = await usdt.approve(a.HCOWProfitShare, E(700)); await tx.wait();
-  tx = await profit.settleEpoch(epoch, gross, direct, opex, deductPpm); rc = await tx.wait();
-  console.log(`  settled epoch ${epoch}  tx ${rc.hash}  gas ${rc.gasUsed}`);
+  // A bond does not earn the epoch it arrives in, and epochs have a minimum
+  // length, so a single run cannot demonstrate a full distribution to this
+  // account. What it can demonstrate is the waterfall arithmetic and the
+  // refusals, which is what this script is for.
+  ok("the bond is not earning yet", (await profit.eligibleSharesOf(me)) === 0n);
+  ok("but it is principal already", (await profit.bondedOf(me)) === BOND);
 
-  const s = await profit.getSettlement(epoch);
-  ok("distributable profit is 700", s.distributableProfitUsdt === E(700), fmt(s.distributableProfitUsdt));
-  ok("participant share is 350", s.participantsUsdt === E(350), fmt(s.participantsUsdt));
-  ok("deduction recorded", s.hcowDeducted === deduct);
-  ok("pool shrank by the deduction", (await profit.bondedOf(me)) === BOND - deduct);
-  ok("deducted HCOW was burned", (await hcow.totalSupply()) === E(200_000_000) - deduct);
+  const openAt = await profit.epochOpensAt();
+  if (openAt !== 0n) {
+    console.log(`  skipping settlement: the next epoch opens at ${openAt}`);
+  } else {
+    // gross 1000, direct 100 -> net 900. opex 200 is under the 40% cap of 360.
+    // profit 700, participants 350, game company 175, team 175. No deduction:
+    // with nobody eligible the participant leg is returned and the contract
+    // refuses to consume principal against a refund.
+    const gross = E(1000), direct = E(100), opex = E(200);
+    const epoch = await profit.nextEpoch();
+    ok("a deduction with nobody eligible is refused",
+       (await profit.deductionFor(10_000)) === 0n);
+    tx = await usdt.approve(a.HCOWProfitShare, E(700)); await tx.wait();
+    tx = await profit.settleEpoch(epoch, gross, direct, opex, 0); rc = await tx.wait();
+    console.log(`  settled epoch ${epoch}  tx ${rc.hash}  gas ${rc.gasUsed}`);
 
-  const claimable = await profit.claimableOf(me);
-  ok("claimable is the participant share", claimable === E(350), fmt(claimable));
-  const before = await usdt.balanceOf(me);
-  tx = await profit.claimUsdt(); rc = await tx.wait();
-  ok("USDT actually arrived", (await usdt.balanceOf(me)) - before === E(350));
-  console.log(`  claimed 350 USDT  tx ${rc.hash}`);
+    const s = await profit.getSettlement(epoch);
+    ok("distributable profit is 700", s.distributableProfitUsdt === E(700), fmt(s.distributableProfitUsdt));
+    ok("the bond is earning from the next epoch",
+       (await profit.eligibleSharesOf(me)) > 0n);
+  }
 
   // --------------------------------------------------------------- staking
   console.log("\nHCOWStaking");

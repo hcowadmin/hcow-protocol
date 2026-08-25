@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-290 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+293 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. Revert assertions are made with a raw `eth_call` carrying an explicit
 sender, because gas estimation through a browser provider omits `from` and can
@@ -44,7 +44,7 @@ classified:
 | `pragma`, `cyclomatic-complexity`, `missing-inheritance` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in sections 4 to 7**, which is the honest measure of what it is worth.
+in sections 4 to 8**, which is the honest measure of what it is worth.
 
 ### 3. Invariant (property) tests
 
@@ -150,7 +150,24 @@ accrual: punishing a delegator for a decision the owner made about their
 representative was never the point of the flag, and it stranded them mid
 cooldown.
 
-### 8. Open, not yet fixed
+### 8. Fifth round: reviewing the two design changes
+
+Both changes in section 7 were then reviewed, with two independent oracles for
+the staking side: a transcription of the contract's own arithmetic, and a
+segment-wise exact integrator that closes a segment on every state change. Two
+defects were found in the profit share change. The staking change survived
+around five thousand randomised operations with no accounting error, which is
+recorded here because a review that only lists what broke is not a review.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| E-1 | High | The deduction gate tested `participants`, but the eligibility change added a later branch that zeroes that same variable and refunds the settler when nobody is eligible. Gate and payment came apart, so an epoch that distributed nothing could still burn 2% of the pool. Reachable on launch day, when every bonded position is an arrival. | The gate tests what actually reaches participants, `eligibleShares` included. |
+| E-2 | Medium-High | Quarantine was measured in settlements, and an epoch that distributes nothing costs nothing to produce. Two settlements in adjacent blocks released an arrival for free and handed it the whole of the next distribution: measured at 90% of a 3,000 USDT leg for two blocks of exposure, the same split the change was written to prevent. | `MIN_EPOCH_INTERVAL`, one day, so an epoch is a period of time rather than a call. `DEDUCT_COOLDOWN` was removed as redundant: one settlement a day at 2% each is the same 2% per day bound, with one fewer constant to reason about. |
+| E-3 | Medium | In `HCOWStaking`, `fundRewards` reset `periodFinish` unconditionally, so one wei on a year long duration stretched the entire remaining budget behind it. Measured: a sole staker holding 15,694 HCOW instead of 100,000 six days later. Repeatable every block by the funder, who is not the owner, and irreversible by anyone else. | A funding may never slow the stream it replaces. |
+| E-4 | Low | The accumulator's granularity is `totalStaked / ACC_PRECISION` wei per call, so at 1e18 against an 18 decimal token a slow stream over a large pool stranded a real fraction of it, owed to nobody and recoverable by nobody. Measured at 23% of a period in the extreme. | `ACC_PRECISION` raised to 1e24, six orders finer. Every product it appears in now divides before multiplying again, so the headroom is unchanged even with a one wei pool absorbing the whole supply. |
+| E-5 | Low | `_rewardsOwed` could drift below the sum of individual claims through repeated floor differences, eventually reverting the last claimant with an arithmetic panic. | The three decrements are clamped. The counter is documented as a reserve rather than a sum: each account's credit is the difference of two independently floored figures, so adding up every view can land up to one wei per delegator above it. Solvency is maintained against the token balance, which is what the invariant suite checks. |
+
+### 9. Open, not yet fixed
 
 
 
@@ -181,7 +198,7 @@ Stated here rather than discovered later.
   repository.** Confirming that the deployed HCOW burns from `msg.sender` with
   no fee and no allowlist is a mainnet deployment gate.
 
-### 9. Deployed-bytecode parity
+### 10. Deployed-bytecode parity
 
 `scripts/checkflat.cjs` compiles each flattened source standalone and compares
 creation bytecode against the Hardhat artifact, stripping the trailing
