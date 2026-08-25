@@ -143,7 +143,7 @@ async function main() {
   const gcBefore = await usdt.balanceOf(gameCo);
   const tmBefore = await usdt.balanceOf(teamAddr);
 
-  await (await ps.connect(settlerS).settleEpoch(1, E(100_000), E(10_000), E(36_000), E(400))).wait();
+  await (await ps.connect(settlerS).settleEpoch(1, E(100_000), E(10_000), E(36_000), E(80))).wait();
 
   eq('game company got 25%', D((await usdt.balanceOf(gameCo)) - gcBefore), 13500);
   eq('team got 25%', D((await usdt.balanceOf(teamAddr)) - tmBefore), 13500);
@@ -153,12 +153,20 @@ async function main() {
   eq('bob claimable is his three quarters', D(await ps.claimableOf(bob)), 20250);
 
   // deduction shrinks everyone by the same proportion
-  eq('pool shrank by the deduction', D(await ps.totalBondedHcow()), 3600);
-  eq('alice principal shrank 10%', D(await ps.bondedOf(alice)), 900);
-  eq('bob principal shrank 10%', D(await ps.bondedOf(bob)), 2700);
+  eq('pool shrank by the deduction', D(await ps.totalBondedHcow()), 3920);
+  eq('alice principal shrank 2%', D(await ps.bondedOf(alice)), 980);
+  eq('bob principal shrank 2%', D(await ps.bondedOf(bob)), 2940);
   eq('deducted hcow was burned',
-    D(await hcow.balanceOf(psAddr)), 3600);
-  eq('total deducted recorded', D(await ps.totalHcowDeducted()), 400);
+    D(await hcow.balanceOf(psAddr)), 3920);
+  eq('total deducted recorded', D(await ps.totalHcowDeducted()), 80);
+
+  // ---------------- rule 5, the per settlement deduction cap ----------------
+  eq('cap constant is 2%', Number(await ps.MAX_DEDUCT_BPS()), 200);
+  // pool is 3920, so one basis point over 2% must be refused
+  await rv('deduction above the cap is rejected', ps, settlerS, 'settleEpoch',
+    [2, E(100_000), E(10_000), E(36_000), E(78.41)], 'DeductionAboveCap');
+  await rv('the whole pool cannot be deducted at once', ps, settlerS, 'settleEpoch',
+    [2, E(100_000), E(10_000), E(36_000), E(3_920)], 'DeductionAboveCap');
 
   const st = await ps.getSettlement(1);
   eq('settlement stored gross', D(st.grossReceivedUsdt), 100000);
@@ -175,14 +183,14 @@ async function main() {
   step('late joiner'); // ---------------- late joiner ----------------
   const carolS = await provider.getSigner(6);
   const carol = await carolS.getAddress();
-  await (await hcow.transfer(carol, E(3_600))).wait();
+  await (await hcow.transfer(carol, E(3_920))).wait();
   await (await hcow.connect(carolS).approve(psAddr, ethers.MaxUint256)).wait();
-  await (await ps.connect(carolS).bond(E(3_600))).wait();
-  eq('carol bonded 3600', D(await ps.bondedOf(carol)), 3600);
+  await (await ps.connect(carolS).bond(E(3_920))).wait();
+  eq('carol bonded 3920', D(await ps.bondedOf(carol)), 3920);
   eq('carol has no retroactive claim', D(await ps.claimableOf(carol)), 0);
   eq('bob keeps his unclaimed balance', D(await ps.claimableOf(bob)), 20250);
 
-  // second distribution splits by current weight: pool 7200, carol holds half
+  // second distribution splits by current weight: pool 7840, carol holds half
   await (await ps.connect(settlerS).settleEpoch(2, E(20_000), 0, E(8_000), 0)).wait();
   // profit 12,000 -> participants 6,000. carol 50%, alice 12.5%, bob 37.5%
   eq('carol earned half of the new epoch', D(await ps.claimableOf(carol)), 3000);
@@ -195,17 +203,17 @@ async function main() {
   await rv('cannot unbond more than owned', ps, aliceS, 'requestUnbond', [E(10_000)], 'InsufficientBonded');
 
   step('alice requestUnbond');
-  await (await ps.connect(aliceS).requestUnbond(E(900))).wait();
+  await (await ps.connect(aliceS).requestUnbond(E(980))).wait();
   eq('alice principal left the pool', D(await ps.bondedOf(alice)), 0);
-  eq('pending unbond recorded', D(await ps.totalPendingUnbond()), 900);
+  eq('pending unbond recorded', D(await ps.totalPendingUnbond()), 980);
   await rv('only one unbond at a time', ps, aliceS, 'requestUnbond', [E(1)], 'UnbondAlreadyPending');
   await rv('cooldown blocks withdrawal', ps, aliceS, 'withdrawUnbonded', [], 'CooldownActive');
 
   // a deduction while alice is exiting must not touch her pending amount
   const poolBefore = await ps.totalBondedHcow();
-  await (await ps.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), E(600))).wait();
-  eq('pool absorbed the deduction', D(await ps.totalBondedHcow()), D(poolBefore) - 600);
-  eq('pending unbond untouched by deduction', D(await ps.totalPendingUnbond()), 900);
+  await (await ps.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), E(100))).wait();
+  eq('pool absorbed the deduction', D(await ps.totalBondedHcow()), D(poolBefore) - 100);
+  eq('pending unbond untouched by deduction', D(await ps.totalPendingUnbond()), 980);
   eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 750);
 
   step('time travel');
@@ -220,7 +228,7 @@ async function main() {
   // sender and take the wrong branch. The transaction itself is fine.
   await (await ps.connect(aliceS).withdrawUnbonded({ gasLimit: 300_000 })).wait();
   step('after alice withdraw');
-  eq('alice got her principal back', D((await hcow.balanceOf(alice)) - aliceHcowBefore), 900);
+  eq('alice got her principal back', D((await hcow.balanceOf(alice)) - aliceHcowBefore), 980);
   eq('pending unbond cleared', D(await ps.totalPendingUnbond()), 0);
 
   // cancel path
@@ -283,24 +291,26 @@ async function main() {
   await (await ps4.connect(bobS).bond(E(1_000))).wait();
   eq('second bonder counts', Number(await ps4.participantCount()), 2);
 
-  // profit 800 on a 4000/1000 pool. deduction 500 splits 400/100.
-  await (await ps4.connect(settlerS).settleEpoch(0, E(1_000), 0, E(200), E(500))).wait();
+  // profit 800 on a 4000/1000 pool. the cap is 2% of 5000, so 100, and it
+  // splits 80/20 by share.
+  await (await ps4.connect(settlerS).settleEpoch(0, E(1_000), 0, E(200), E(100))).wait();
 
   const aLife = await ps4.lifetimeOf(alice);
   const bLife = await ps4.lifetimeOf(bob);
-  near('deduction is attributed by share, alice', D(aLife[0]), 400);
-  near('deduction is attributed by share, bob', D(bLife[0]), 100);
+  near('deduction is attributed by share, alice', D(aLife[0]), 80);
+  near('deduction is attributed by share, bob', D(bLife[0]), 20);
   eq('nothing claimed yet', D(aLife[1]), 0);
   near('attributed deduction sums to the pool total',
     D(aLife[0]) + D(bLife[0]), D(await ps4.totalHcowDeducted()));
 
   await (await ps4.connect(aliceS).claimUsdt()).wait();
   near('lifetime claimed usdt recorded', D((await ps4.lifetimeOf(alice))[1]), 320);
-  near('claiming does not touch the deduction total', D((await ps4.lifetimeOf(alice))[0]), 400);
+  near('claiming does not touch the deduction total', D((await ps4.lifetimeOf(alice))[0]), 80);
 
   // A second settlement must accumulate, not overwrite.
-  await (await ps4.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), E(450))).wait();
-  near('deduction accumulates across epochs', D((await ps4.lifetimeOf(alice))[0]), 400 + 360);
+  // pool is 4900 now, so the cap is 98. alice holds four fifths of it.
+  await (await ps4.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), E(90))).wait();
+  near('deduction accumulates across epochs', D((await ps4.lifetimeOf(alice))[0]), 80 + 72);
 
   // Full exit clears the participant slot but keeps the history.
   const bobOwned = await ps4.bondedOf(bob);
