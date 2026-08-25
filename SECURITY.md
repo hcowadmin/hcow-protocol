@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-313 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+315 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. Revert assertions are made with a raw `eth_call` carrying an explicit
 sender, because gas estimation through a browser provider omits `from` and can
@@ -44,7 +44,7 @@ classified:
 | `pragma`, `cyclomatic-complexity`, `missing-inheritance` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in sections 4 to 10**, which is the honest measure of what it is worth.
+in sections 4 to 11**, which is the honest measure of what it is worth.
 
 ### 3. Invariant (property) tests
 
@@ -91,7 +91,7 @@ carries a regression test.
 
 | ID | Severity | Defect | Fix |
 | --- | --- | --- | --- |
-| C-1 | Critical | The per-settlement deduction cap bounded one settlement but not a sequence, and Rule 4 tested `profit != 0` rather than the participant payout. One wei of profit rounds the participant leg to zero while authorising a full-size burn. 400 settlements costing 400 wei of USDT in total reduced a 1,000,000 HCOW pool to 309 HCOW. | The deduction rate is now capped **and** rate limited by `DEDUCT_COOLDOWN`, and Rule 6 requires a non-zero participant payout. Worst case is 2% per day, so a participant who reacts inside the seven-day unbond cooldown cannot lose more than about 13% of principal. |
+| C-1 | Critical | The per-settlement deduction cap bounded one settlement but not a sequence, and Rule 4 tested `profit != 0` rather than the participant payout. One wei of profit rounds the participant leg to zero while authorising a full-size burn. 400 settlements costing 400 wei of USDT in total reduced a 1,000,000 HCOW pool to 309 HCOW. | Rule 6 requires a real participant payout, and the deduction is rate limited. The rate limit went through several shapes across later rounds and its final form is `MIN_EPOCH_INTERVAL` of seven days plus `MAX_DECAY_PER_WINDOW_PPM` over thirty days: see A-1 and A-3 for the figures that actually hold. |
 | H-2 | High | `requestUnbond` before a settlement and `cancelUnbond` after it avoided the deduction entirely, at gas cost, decided from the public mempool. The other participants absorbed the dodger's share. | `poolIndex` records cumulative pool decay. A cancelled unbond rejoins scaled by the decay it sat out, and the difference is burned. A genuine exit still pays nothing. |
 | M-4 | Medium | The cap was computed against the live pool, so any participant could shrink the pool in front of a signed settlement and force it to revert, then cancel at no cost. Repeatable indefinitely. | `settleEpoch` takes a rate in parts per million, not an HCOW amount. The contract computes the amount from its own figure, so a front-run cannot invalidate it and the settler cannot overstate it. |
 | M-5 | Medium | `uint128` downcasts on share and stake amounts wrapped silently rather than reverting. Reachable as a second-order consequence of C-1. | `SafeCast` on every downcast in both contracts. |
@@ -162,7 +162,7 @@ recorded here because a review that only lists what broke is not a review.
 | ID | Severity | Defect | Fix |
 | --- | --- | --- | --- |
 | E-1 | High | The deduction gate tested `participants`, but the eligibility change added a later branch that zeroes that same variable and refunds the settler when nobody is eligible. Gate and payment came apart, so an epoch that distributed nothing could still burn 2% of the pool. Reachable on launch day, when every bonded position is an arrival. | The gate tests what actually reaches participants, `eligibleShares` included. |
-| E-2 | Medium-High | Quarantine was measured in settlements, and an epoch that distributes nothing costs nothing to produce. Two settlements in adjacent blocks released an arrival for free and handed it the whole of the next distribution: measured at 90% of a 3,000 USDT leg for two blocks of exposure, the same split the change was written to prevent. | `MIN_EPOCH_INTERVAL`, one day, so an epoch is a period of time rather than a call. `DEDUCT_COOLDOWN` was removed as redundant: one settlement a day at 2% each is the same 2% per day bound, with one fewer constant to reason about. |
+| E-2 | Medium-High | Quarantine was measured in settlements, and an epoch that distributes nothing costs nothing to produce. Two settlements in adjacent blocks released an arrival for free and handed it the whole of the next distribution: measured at 90% of a 3,000 USDT leg for two blocks of exposure, the same split the change was written to prevent. | `MIN_EPOCH_INTERVAL`, so an epoch is a period of time rather than a call. `DEDUCT_COOLDOWN` was removed as redundant. The interval was one day at this point and was raised to seven in A-3, because one day was still short enough to buy eligibility for a quarterly distribution. |
 | E-3 | Medium | In `HCOWStaking`, `fundRewards` reset `periodFinish` unconditionally, so one wei on a year long duration stretched the entire remaining budget behind it. Measured: a sole staker holding 15,694 HCOW instead of 100,000 six days later. Repeatable every block by the funder, who is not the owner, and irreversible by anyone else. | A funding may never slow the stream it replaces. |
 | E-4 | Low | The accumulator's granularity is `totalStaked / ACC_PRECISION` wei per call, so at 1e18 against an 18 decimal token a slow stream over a large pool stranded a real fraction of it, owed to nobody and recoverable by nobody. Measured at 23% of a period in the extreme. | `ACC_PRECISION` raised to 1e24, six orders finer. Every product it appears in now divides before multiplying again, so the headroom is unchanged even with a one wei pool absorbing the whole supply. |
 | E-5 | Low | `_rewardsOwed` could drift below the sum of individual claims through repeated floor differences, eventually reverting the last claimant with an arithmetic panic. | The three decrements are clamped. The counter is documented as a reserve rather than a sum: each account's credit is the difference of two independently floored figures, so adding up every view can land up to one wei per delegator above it. Solvency is maintained against the token balance, which is what the invariant suite checks. |
@@ -186,17 +186,17 @@ work from the previous round.
 | A-6 | High | `accRewardPerShare` could be inflated without bound by funding into a pool of a few wei, after which an ordinary sized position overflowed on every path that touched it, locking principal permanently. Measured: 82,708,635 HCOW stuck, 41% of supply. | 512 bit intermediates through `Math.mulDiv` at every site in both contracts, plus `MIN_STAKE_FOR_ACCRUAL`: below one HCOW staked, seconds are carried rather than distributed. |
 | A-7 | Medium | A single dominant participant could veto every deducting settlement by front running it with an unbond request, free and repeatable. Introduced by the previous round's fix. | With nobody eligible there is nothing to charge, so the deduction is dropped rather than the settlement refused. |
 | A-8 | Medium | `settleEpoch` paid the two fixed legs out of the figure it requested rather than the figure that arrived, so a lossy USDT would have taken the shortfall out of the participant reserve and frozen every claim. BSC-USD sits behind an upgradeable proxy. | The arrival is measured, exactly as `bond` already did for HCOW, and a shortfall reverts. |
-| A-9 | Medium | Carried reward funds had no release path except a further funding with fresh tokens, and there is no sweep. A launch that funds before anyone stakes stranded the whole amount. | A period may be opened on carried funds alone. |
-| A-10 | Medium | `MAX_REPRESENTATIVES` was a permanent ceiling with no deregistration: a typo'd id or ordinary churn consumed slots for good. | An empty representative may be removed, which is exactly the safety property that made removal unsafe in general. |
+| A-9 | Medium | Carried reward funds had no release path except a further funding with fresh tokens, and there is no sweep. A launch that funds before anyone stakes stranded the whole amount. | **Attempted, then withdrawn.** A zero-amount funding path was added and removed: it read the carried figure before advancing the accumulator, so it failed in exactly the state it existed for. Carried funds are released by the next ordinary funding, which needs only to keep the rate non-zero. Accepted as an operational requirement rather than a code path. |
+| A-10 | Medium | `MAX_REPRESENTATIVES` was a permanent ceiling with no deregistration: a typo'd id or ordinary churn consumed slots for good. | **Attempted, then withdrawn** after it produced B-1 below. A record reads empty the moment a delegator requests a full unstake, while their delegation still points at it, so "empty" is not a safe test for "unused". The ceiling is permanent again and is disclosed as accepted risk. A representative can be retired with `updateRepresentative(active=false)`; its slot is not reclaimable and its name cannot be changed. |
 | A-11 | Low | `lifetimeOf` reported none of the principal a position lost through the unbond path, so a dashboard built on it showed zero while a tenth of the position had been burned. Accumulator precision was 1e18 against an 18 decimal token, stranding whole distributions when the participant leg was small. `commissionOf` returned zero for an unregistered id where its sibling reverts. | Forfeits fold into the per account figure; precision raised to 1e24 with mulDiv throughout; unknown ids revert. |
 
 ### 10. Review of the audit pass fixes
 
 | ID | Severity | Defect | Fix |
 | --- | --- | --- | --- |
-| B-1 | Critical | `deregisterRepresentative` checked that a representative held no weight, no delegators and no commission. A full unstake produces exactly that state while the delegation still points at the record and can be cancelled back into it. Removing it there let `cancelUnstake` recreate a representative outside the registry, at zero commission, with 1,000 HCOW of live stake attributed to nobody. Re-registering the same id then wiped the delegator's accrued rewards: measured, 1,296,000 HCOW gone in one transaction. | A `pendingDelegators` counter makes a pending unstake count as occupancy, `cancelUnstake` refuses a record that no longer exists, and registration clears every field so a reused id inherits nothing. |
+| B-1 | Critical | `deregisterRepresentative` checked that a representative held no weight, no delegators and no commission. A full unstake produces exactly that state while the delegation still points at the record and can be cancelled back into it. Removing it there let `cancelUnstake` recreate a representative outside the registry, at zero commission, with 1,000 HCOW of live stake attributed to nobody. Re-registering the same id then wiped the delegator's accrued rewards: measured, 1,296,000 HCOW gone in one transaction. | The feature was deleted rather than guarded. A counter-based fix was written and discarded: the finding showed the emptiness test itself was the wrong idea, and adding state to prop it up was the kind of change that had been producing these findings in the first place. |
 | B-2 | High | Stopping the pending-unbond charge at the cooldown made the withdraw door strictly cheaper than the cancel door for the same end state, so the step-out-and-return dodge was free again and the forfeit in `cancelUnbond` became unreachable. Measured: dodger keeps 100,000 HCOW where an honest holder keeps 94,119. Charging every settlement forever, which is what it replaced, was equally wrong in the other direction. | Exactly one settlement is charged, the first after the request, priced identically at both doors. |
-| B-3 | High | The thirty day ceiling was metered as a movement in `poolIndex`, which says nothing about how much HCOW was destroyed. With most of the pool in pending unbonds, two settlements at the cap burned 30 HCOW of a 1,001,000 reserve and exhausted the window, locking the settler out of any deduction for thirty days. A dominant holder could trigger that deliberately and repeat it. | The window is metered in HCOW against the whole reserve, bonded plus pending, recorded when the window opens. |
+| B-3 | High | The thirty day ceiling was metered as a movement in `poolIndex`, which says nothing about how much HCOW was destroyed. With most of the pool in pending unbonds, two settlements at the cap burned 30 HCOW of a 1,001,000 reserve and exhausted the window, locking the settler out of any deduction for thirty days. A dominant holder could trigger that deliberately and repeat it. | The window is metered in HCOW. The first attempt measured it against a reserve snapshotted when the window opened, which was itself wrong; see C-2 below. |
 | B-4 | High | The carried-funds path read `undistributed` before advancing the accumulator, so it rejected the call in exactly the state it exists for: a pool that emptied and was left idle has the carried seconds only implicitly until some call materialises them. | The check runs after `_updateGlobal` and after the transfer. |
 | B-5 | Medium | `MIN_REWARD_DURATION` was applied to the absolute duration while the extension rule demanded a duration reaching the current end date. In the last day of a period the two had no intersection unless the funder supplied an outsized top-up. | The floor applies to a fresh period; a live one may be extended to its own end date. |
 | B-6 | Low | `totalRewardsOwed()` counted seconds that `_updateGlobal` would carry rather than reserve, double counting them against `undistributed`. | The view mirrors the state machine's condition exactly. |
@@ -206,7 +206,20 @@ their allowances back to back and a rolling thirty days can reach close to
 twice `MAX_DECAY_PER_WINDOW_PPM`. That is stated in the contract rather than
 rounded down.
 
-### 11. Open, not yet fixed
+### 11. Final review before freeze
+
+The two changes above were reviewed once more. Both had a defect, and both are
+recorded here rather than quietly corrected, because the pattern is the point:
+every round in which new state or a new feature was introduced produced a
+finding, and the rounds that removed things did not.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| C-1 | High | `fundRewards` folded the absolute `MIN_REWARD_DURATION` into the "must reach the current end date" rule, and in doing so dropped it whenever a period was live. In the last seconds of a period any duration was accepted, so a top up could be released into a one second window. Measured: 999,980 of a 1,000,000 HCOW funding taken by a same block arrival. A-5 in a smaller window. | Both floors apply, and the binding one is whichever is larger. |
+| C-2 | High | The decay ceiling was measured against a reserve snapshotted when the window opened, and never reconciled with it again. Capital parked in the pool at that instant and withdrawn a block later still counted, so the ceiling could be inflated for free: measured, a victim pool lost 7.76% inside a window whose stated ceiling was 3%. The mirror also held, a pool that grew after the snapshot was held to an allowance sized for one that no longer existed, which is B-3 returning. | The ceiling is computed from the live bonded pool at every settlement. It and the deduction then scale together, so neither inflating nor shrinking the pool changes anything. |
+| C-3 | Low | The off-chain event indexer still declared the pre-change signatures for `UnstakeCancelled` and `RewardsFunded`, so both were being dropped silently. Several figures in this document described controls that had since been removed or reshaped. | Signatures updated; the affected rows above now say what was withdrawn and why. |
+
+### 12. Open, not yet fixed
 
 
 
@@ -237,7 +250,7 @@ Stated here rather than discovered later.
   repository.** Confirming that the deployed HCOW burns from `msg.sender` with
   no fee and no allowlist is a mainnet deployment gate.
 
-### 12. Deployed-bytecode parity
+### 13. Deployed-bytecode parity
 
 `scripts/checkflat.cjs` compiles each flattened source standalone and compares
 creation bytecode against the Hardhat artifact, stripping the trailing

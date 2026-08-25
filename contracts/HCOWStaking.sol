@@ -48,8 +48,14 @@ contract HCOWStaking is ReentrancyGuard {
      * Funding is O(1) now, so this is no longer about the cost of a reward
      * round. It bounds representativeCount(), which is an unbounded view loop,
      * and it keeps the set small enough to be published and checked by hand.
-     * Deregistration is not offered because a representative with live
-     * delegations cannot safely disappear.
+     *
+     * Deregistration is deliberately not offered. A record looks empty the
+     * moment a delegator requests a full unstake, while their delegation still
+     * points at it and can be cancelled back in, so "empty" is not a safe
+     * test. Removing a record there recreates it outside the registry with its
+     * commission silently at zero, and re-registering the id wipes the
+     * delegator's accrued rewards. A permanent ceiling of one hundred is a
+     * smaller problem than either.
      */
     uint256 public constant MAX_REPRESENTATIVES = 100;
 
@@ -94,10 +100,6 @@ contract HCOWStaking is ReentrancyGuard {
         bool    exists;
         uint256 totalDelegated;
         uint256 delegatorCount;
-        /// Accounts with nothing staked here but a pending unstake that can
-        /// still be cancelled back into it. They hold no weight, so the three
-        /// balance figures all read empty while the record is still in use.
-        uint256 pendingDelegators;
         /// Net-of-commission accumulator, frozen at the last commission change.
         uint256 accNetBase;
         /// Global accumulator at that same moment.
@@ -152,9 +154,10 @@ contract HCOWStaking is ReentrancyGuard {
     uint64  public periodFinish;    // when the current period runs out
     uint64  public lastUpdateTime;
 
-    /// @notice Funded HCOW that elapsed while nothing was staked. Nobody was
-    ///         owed it, so it is carried into the next funding rather than
-    ///         stranded.
+    /// @notice Funded HCOW that elapsed while too little was staked to
+    ///         distribute. Nobody was owed it, so it is carried into the next
+    ///         funding rather than stranded. Releasing it needs a funding, but
+    ///         a funding of one wei is enough.
     uint256 public undistributed;
 
     /// @notice Shortest and longest a funding period may run.
@@ -163,7 +166,6 @@ contract HCOWStaking is ReentrancyGuard {
 
     event RepresentativeRegistered(bytes32 indexed id, string name, address payout, uint16 commissionBps, bool isFoundation);
     event RepresentativeUpdated(bytes32 indexed id, address payout, uint16 commissionBps, bool active);
-    event RepresentativeDeregistered(bytes32 indexed id);
     event Staked(address indexed account, bytes32 indexed repId, uint256 amount);
     event Redelegated(address indexed account, bytes32 indexed fromRep, bytes32 indexed toRep, uint256 amount);
     event UnstakeRequested(address indexed account, uint256 amount, uint64 readyAt);
@@ -192,7 +194,6 @@ contract HCOWStaking is ReentrancyGuard {
     error NothingToClaim();
     error SameRepresentative();
     error TooManyRepresentatives(uint256 max);
-    error RepresentativeNotEmpty(bytes32 id);
     error BadDuration(uint64 given);
 
     modifier onlyOwner() {
@@ -227,6 +228,13 @@ contract HCOWStaking is ReentrancyGuard {
         if (commissionBps > MAX_COMMISSION_BPS) {
             revert CommissionTooHigh(commissionBps, MAX_COMMISSION_BPS);
         }
+        // Validated up front with the rest of the input. A record written
+        // before its own bound is checked only unwinds because the revert
+        // happens in the same call, and that is a property of the current
+        // shape rather than of the check.
+        if (_repIds.length >= MAX_REPRESENTATIVES) {
+            revert TooManyRepresentatives(MAX_REPRESENTATIVES);
+        }
 
         Representative storage r = _reps[id];
         r.payout = payout;
@@ -235,59 +243,12 @@ contract HCOWStaking is ReentrancyGuard {
         r.isFoundation = isFoundation;
         r.exists = true;
         r.name = name;
-        // An id can be deregistered and registered again. Nothing from the
-        // previous life may survive: accNetBase in particular would silently
-        // wipe an existing delegator's accrued rewards.
-        r.accNetBase = 0;
-        r.totalDelegated = 0;
-        r.delegatorCount = 0;
-        r.pendingDelegators = 0;
-        r.commissionAccrued = 0;
-        r.lifetimeRewards = 0;
         _updateGlobal();
         r.accNetAnchor = accRewardPerShare;
         r.commAnchor = accRewardPerShare;
-        if (_repIds.length >= MAX_REPRESENTATIVES) {
-            revert TooManyRepresentatives(MAX_REPRESENTATIVES);
-        }
         _repIds.push(id);
 
         emit RepresentativeRegistered(id, name, payout, commissionBps, isFoundation);
-    }
-
-    /**
-     * @notice Remove a representative that holds nothing.
-     * @dev The cap is permanent otherwise: a typo'd id, a test entry, or
-     *      ordinary churn would consume slots for good on a contract that
-     *      cannot be upgraded. Only an empty record may go, which is exactly
-     *      the safety property that made deregistration unsafe in general.
-     */
-    function deregisterRepresentative(bytes32 id) external onlyOwner nonReentrant {
-        Representative storage r = _reps[id];
-        if (!r.exists) revert UnknownRepresentative(id);
-        _updateGlobal();
-        _accrueRepCommission(r);
-        if (
-            r.totalDelegated != 0 || r.delegatorCount != 0
-            || r.commissionAccrued != 0 || r.pendingDelegators != 0
-        ) {
-            revert RepresentativeNotEmpty(id);
-        }
-
-        // Locate first, mutate after. Writing inside the loop is the same
-        // work but reads as an unbounded cost to a static analyser, and to a
-        // reviewer.
-        uint256 n = _repIds.length;
-        uint256 at = n;
-        for (uint256 i = 0; i < n; ++i) {
-            if (_repIds[i] == id) { at = i; break; }
-        }
-        if (at < n) {
-            _repIds[at] = _repIds[n - 1];
-            _repIds.pop();
-        }
-        delete _reps[id];
-        emit RepresentativeDeregistered(id);
     }
 
     function updateRepresentative(bytes32 id, address payout, uint16 commissionBps, bool active)
@@ -413,11 +374,7 @@ contract HCOWStaking is ReentrancyGuard {
         r.totalDelegated -= amount;
         totalStaked -= amount;
 
-        if (d.amount == 0) {
-            r.delegatorCount -= 1;
-            // Still pointing here: cancelUnstake can put it back.
-            r.pendingDelegators += 1;
-        }
+        if (d.amount == 0) r.delegatorCount -= 1;
 
         d.pendingUnstake = amount.toUint128();
         d.unstakeReadyAt = uint64(block.timestamp + UNSTAKE_COOLDOWN);
@@ -436,7 +393,6 @@ contract HCOWStaking is ReentrancyGuard {
         // would let the owner convert a cancellable request into a forced exit
         // by deactivating the representative mid cooldown.
         Representative storage r = _reps[d.repId];
-        if (!r.exists) revert UnknownRepresentative(d.repId);
 
         _harvest(d);
         _accrueRepCommission(r);
@@ -446,10 +402,7 @@ contract HCOWStaking is ReentrancyGuard {
         d.unstakeReadyAt = 0;
         totalPendingUnstake -= amount;
 
-        if (d.amount == 0) {
-            r.delegatorCount += 1;
-            r.pendingDelegators -= 1;
-        }
+        if (d.amount == 0) r.delegatorCount += 1;
         d.amount += amount.toUint128();
         r.totalDelegated += amount;
         totalStaked += amount;
@@ -467,7 +420,6 @@ contract HCOWStaking is ReentrancyGuard {
         d.pendingUnstake = 0;
         d.unstakeReadyAt = 0;
         totalPendingUnstake -= amount;
-        if (d.amount == 0) _reps[d.repId].pendingDelegators -= 1;
 
         hcow.safeTransfer(msg.sender, amount);
         emit Unstaked(msg.sender, amount);
@@ -525,22 +477,15 @@ contract HCOWStaking is ReentrancyGuard {
      */
     function fundRewards(uint256 amount, uint64 duration) external nonReentrant {
         if (msg.sender != rewardFunder) revert NotFunder();
+        if (amount == 0) revert ZeroAmount();
         if (duration > MAX_REWARD_DURATION) revert BadDuration(duration);
 
-        // Advance first. Seconds that elapsed with nothing staked only become
-        // visible in undistributed when some call runs the accumulator, and
-        // opening a period on carried funds is exactly the state where nobody
-        // has. Reading it before this ran rejected the call for having nothing
-        // to carry, in the one case the path exists for.
         _updateGlobal();
 
-        uint256 received;
-        if (amount > 0) {
-            uint256 before = hcow.balanceOf(address(this));
-            hcow.safeTransferFrom(msg.sender, address(this), amount);
-            received = hcow.balanceOf(address(this)) - before;
-            if (received == 0) revert ZeroAmount();
-        }
+        uint256 before = hcow.balanceOf(address(this));
+        hcow.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = hcow.balanceOf(address(this)) - before;
+        if (received == 0) revert ZeroAmount();
 
         // Whatever the running period has not released yet, plus anything that
         // elapsed while nothing was staked, rolls into the new one. Funding
@@ -548,13 +493,18 @@ contract HCOWStaking is ReentrancyGuard {
         uint256 leftover = block.timestamp < periodFinish
             ? (uint256(periodFinish) - block.timestamp) * rewardRate
             : 0;
-        if (received == 0 && undistributed == 0) revert ZeroAmount();
 
-        // The floor applies to a fresh period. A live one may be extended to
-        // its own end date, which can be nearer than the floor.
-        uint256 minDuration = block.timestamp < periodFinish
+        // Two floors, and the binding one is whichever is larger. Reaching the
+        // current end date stops a funding pulling delivery in. The absolute
+        // minimum stops the same thing happening in the last hour of a period,
+        // where the remaining time is tiny and a top up would otherwise be
+        // released into a window a same block arrival can stand in and take
+        // whole.
+        uint256 remaining = block.timestamp < periodFinish
             ? uint256(periodFinish) - block.timestamp
-            : MIN_REWARD_DURATION;
+            : 0;
+        uint256 minDuration =
+            remaining > MIN_REWARD_DURATION ? remaining : uint256(MIN_REWARD_DURATION);
         if (duration < minDuration) revert BadDuration(duration);
 
         uint256 pool = received + leftover + undistributed;

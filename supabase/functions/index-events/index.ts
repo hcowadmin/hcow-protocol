@@ -83,10 +83,10 @@ const STAKING_EVENTS = [
   "event Staked(address indexed account, bytes32 indexed repId, uint256 amount)",
   "event Redelegated(address indexed account, bytes32 indexed fromRep, bytes32 indexed toRep, uint256 amount)",
   "event UnstakeRequested(address indexed account, uint256 amount, uint64 readyAt)",
-  "event UnstakeCancelled(address indexed account, uint256 amount)",
+  "event UnstakeCancelled(address indexed account, bytes32 indexed repId, uint256 amount)",
   "event Unstaked(address indexed account, uint256 amount)",
   "event RewardsClaimed(address indexed account, uint256 amount)",
-  "event RewardsFunded(uint256 amount, uint256 activeWeight, uint256 activeReps)",
+  "event RewardsFunded(uint256 amount, uint256 rewardRate, uint64 duration)",
 ];
 
 const SOURCES = [

@@ -524,18 +524,32 @@ async function main() {
   await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
   await (await ps8.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
 
-  // Window opens on a 2,000 reserve, so the ceiling is 60 HCOW. Two
+  // The ceiling is 3% of the live bonded pool at each settlement, never a
+  // figure snapshotted when the window opened. Pool 2,000 gives 60 HCOW; two
   // settlements at the maximum rate come to 79.2 and the second is refused.
   await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
   await (await ps8.connect(settlerS).settleEpoch(1, E(10_000), 0, E(4_000), 20_000)).wait();
   near('the window is metered in HCOW', D(await ps8.decayWindowBurned()), 40);
-  eq('and measured against the whole reserve', D(await ps8.decayWindowBase()), 2000);
   await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
   await rv('a campaign cannot outrun the window ceiling', ps8, settlerS, 'settleEpoch',
     [2, E(10_000), 0, E(4_000), 20_000], 'DecayWindowExhausted');
   // the honest rate is far below it and still goes through
   await (await ps8.connect(settlerS).settleEpoch(2, E(10_000), 0, E(4_000), 5_000)).wait();
   near('an honest rate is unaffected', D(await ps8.bondedOf(bob)), 980 * 0.995);
+
+  // Capital parked in the pool to inflate the ceiling and pulled out again
+  // must not buy the settler extra room. The ceiling is read live, so the
+  // allowance leaves with the capital.
+  const bondedNow = D(await ps8.totalBondedHcow());
+  await (await hcow.connect(aliceS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
+  await (await ps8.connect(aliceS).bond(E(1_500))).wait();
+  near('the ceiling follows the pool up', D(await ps8.totalBondedHcow()), bondedNow + 1_500);
+  await (await ps8.connect(aliceS).requestUnbond(E(1_500))).wait();
+  near('and back down when the capital leaves',
+    D(await ps8.totalBondedHcow()), bondedNow, 1e-6);
+  await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+  await rv('parked capital does not widen the window', ps8, settlerS, 'settleEpoch',
+    [3, E(10_000), 0, E(4_000), 20_000], 'DecayWindowExhausted');
 
   step('solvency'); // ----------------
   const owedUsdt = (await ps.claimableOf(bob)) + (await ps.claimableOf(carol))

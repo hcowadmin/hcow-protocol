@@ -270,6 +270,21 @@ async function main() {
   await (await st.connect(funderS).fundRewards(E(5_000), 300 * 86_400)).wait();
   await rv('a funding cannot pull the end date in', st, funderS, 'fundRewards',
     [1, 86_400], 'BadDuration');
+  // The absolute floor still binds inside a live period. Dropping it there,
+  // where the remaining time is short, lets a top up be released into a window
+  // a same block arrival can stand in and take whole.
+  const stF = await deploy('HCOWStaking', ownerS, [await hcow.getAddress(), owner, funder]);
+  await (await hcow.connect(funderS).approve(await stF.getAddress(), ethers.MaxUint256)).wait();
+  await (await hcow.connect(bobS).approve(await stF.getAddress(), ethers.MaxUint256)).wait();
+  await (await stF.registerRepresentative(A, 'A', repAPayout, 0, false)).wait();
+  await (await stF.connect(bobS).stake(E(1_000), A)).wait();
+  await (await stF.connect(funderS).fundRewards(E(10), 86_400)).wait();
+  await provider.send('evm_increaseTime', [86_400 - 3_600]);
+  await provider.send('evm_mine', []);
+  await rv('nor inside one whose remaining time is shorter', stF, funderS,
+    'fundRewards', [E(1_000), 3_600], 'BadDuration');
+  await rv('not even one second before it ends', stF, funderS,
+    'fundRewards', [E(1_000), 1], 'BadDuration');
   await rv('and still cannot slow the rate', st, funderS, 'fundRewards',
     [1, 365 * 86_400], 'BadDuration');
 
@@ -286,29 +301,22 @@ async function main() {
   eq('a one wei pool accrues nothing', D(await st3.pendingRewardOf(alice)), 0);
   ok('and the seconds are carried, not lost', (await st3.undistributed()) > 0n);
 
-  // carried funds are releasable on their own once the period is over. A live
-  // period cannot be slowed, which is what stops a token top up stretching a
-  // budget out behind it.
+  // Carried funds are released by the next funding. That still needs an
+  // amount, but one wei is enough: a zero amount path was tried and removed,
+  // because it read undistributed before the accumulator had advanced and so
+  // failed in exactly the state it existed for.
+  await rv('a funding still needs an amount', st3, funderS, 'fundRewards',
+    [0, 86_400], 'ZeroAmount');
   await (await st3.connect(aliceS).stake(E(1_000), A)).wait();
-  await (await st3.connect(funderS).fundRewards(0, 86_400)).wait();
+  await (await st3.connect(funderS).fundRewards(1, 86_400)).wait();
   await provider.send('evm_increaseTime', [86_401]);
   await provider.send('evm_mine', []);
-  ok('carried funds are releasable on their own',
+  ok('carried funds come back out with the next funding',
     (await st3.pendingRewardOf(alice)) > 0n);
 
-  // ---------------- deregistration ----------------
-  const D1 = ethers.encodeBytes32String('gone');
-  await (await st3.registerRepresentative(D1, 'gone', repAPayout, 0, false)).wait();
-  await (await st3.deregisterRepresentative(D1)).wait();
-  await rv('a deregistered id is unknown again', st3, ownerS, 'commissionOf', [D1],
-    'UnknownRepresentative');
-  await rv('an occupied representative cannot be removed', st3, ownerS,
-    'deregisterRepresentative', [A], 'RepresentativeNotEmpty');
-
-  // A full unstake leaves totalDelegated, delegatorCount and commission all at
-  // zero while the delegation still points at the representative and can be
-  // cancelled back into it. Removing it there would recreate the record on
-  // cancel, outside the registry, with commission silently at zero.
+  // Deregistration is deliberately not offered: a record reads empty the
+  // moment a delegator requests a full unstake, while the delegation still
+  // points at it and can be cancelled back in.
   const D2 = ethers.encodeBytes32String('busy');
   await (await st3.registerRepresentative(D2, 'busy', repAPayout, 1000, false)).wait();
   await (await hcow.connect(bobS).approve(a3, ethers.MaxUint256)).wait();
@@ -316,8 +324,6 @@ async function main() {
   await (await st3.connect(bobS).requestUnstake(E(500))).wait();
   eq('a full unstake leaves no weight', D((await st3.representativeOf(D2))[5]), 0);
   eq('and no delegators', (await st3.representativeOf(D2))[6], 0n);
-  await rv('but a pending unstake still occupies it', st3, ownerS,
-    'deregisterRepresentative', [D2], 'RepresentativeNotEmpty');
   await (await st3.connect(bobS).cancelUnstake()).wait();
   eq('cancelling restores the weight to the same representative',
     D((await st3.representativeOf(D2))[5]), 500);

@@ -20,10 +20,11 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *   - Rule 5, the deduction rate limit. The settler no longer passes an HCOW
  *     amount. It passes a rate in parts per million, capped at MAX_DEDUCT_PPM,
  *     and the contract computes the amount from its own pool figure. With
- *     MIN_EPOCH_INTERVAL between settlements the worst case is 2% per day,
- *     so a participant who reacts within the seven day
- *     unbond cooldown cannot lose more than about 13% of principal. That is a
- *     bound the code enforces, not a promise.
+ *     MIN_EPOCH_INTERVAL between settlements the worst case is 2% per week,
+ *     and a position that requests an unbond is charged for exactly one
+ *     settlement, so reacting costs at most 2% of principal. Over any thirty
+ *     days MAX_DECAY_PER_WINDOW_PPM binds instead. Those are bounds the code
+ *     enforces, not promises.
  *   - Rule 6, a deduction requires a real distribution. The participant leg of
  *     the epoch must be non-zero. An epoch that pays participants nothing
  *     cannot consume their principal, however it is arithmetically dressed up.
@@ -128,6 +129,11 @@ contract HCOWProfitShare is ReentrancyGuard {
      * allowances back to back and a rolling thirty days can therefore reach
      * close to twice this figure. That is the honest bound; it is stated here
      * rather than rounded down in the documentation.
+     *
+     * It bounds what settlements burn. HCOW forfeited by a position leaving
+     * around a settlement is burned outside this meter, deliberately: metering
+     * it would let a large holder exhaust the window at will and veto every
+     * deduction for thirty days.
      */
     uint32 public constant MAX_DECAY_PER_WINDOW_PPM = 30_000;
     uint256 public constant DECAY_WINDOW = 30 days;
@@ -203,19 +209,24 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint64 public lastSettledAt;
 
     /**
-     * @notice The current decay window: when it opened, the reserve it is
-     *         measured against, and how much of it has been consumed.
+     * @notice When the current decay window opened, and how much HCOW has been
+     *         consumed inside it.
      *
-     * Measured in HCOW against the whole reserve rather than as a movement in
-     * poolIndex. A rate says nothing about how much was actually destroyed:
-     * with most of the pool sitting in pending unbonds, two settlements at the
-     * cap burn a rounding error and still exhaust a window expressed as a
-     * rate, which hands everyone a thirty day holiday from usage costs and
-     * locks the settler out. Metering the tokens makes the ceiling mean what
-     * it says.
+     * Metered in tokens rather than as a movement in poolIndex, because a rate
+     * says nothing about how much was actually destroyed: with most of the
+     * pool sitting in pending unbonds, two settlements at the cap burn a
+     * rounding error and would still exhaust a ceiling expressed as a rate.
+     *
+     * The ceiling is computed from the live bonded pool at every settlement,
+     * never from a figure snapshotted when the window opened. A snapshot stops
+     * being true the moment it is written: capital can be parked in the pool
+     * to inflate it and withdrawn a block later, and a pool that grows after
+     * the snapshot is held to an allowance sized for a pool that no longer
+     * exists. Reading it live also makes the ceiling and the deduction scale
+     * together, so shrinking the pool in front of a settlement cannot
+     * manufacture a veto.
      */
     uint64 public decayWindowAt;
-    uint256 public decayWindowBase;
     uint256 public decayWindowBurned;
 
     /// @notice poolIndex immediately after each settled epoch. A pending
@@ -397,11 +408,12 @@ contract HCOWProfitShare is ReentrancyGuard {
     /**
      * @notice Start withdrawing part or all of a bonded position.
      * @dev The amount is fixed in HCOW at request time and stops earning from
-     *      this moment. It does NOT stop being deducted: a position pays for
-     *      every settlement it was present for, whichever door it leaves by,
-     *      and the charge is applied on withdrawal or cancellation. Exempting
-     *      it here is what used to make the deduction optional for anyone
-     *      watching the mempool.
+     *      this moment. It does not stop being deducted outright: the first
+     *      settlement after the request is charged, and exactly that one,
+     *      whichever door the position later leaves by. Exempting it entirely
+     *      is what used to make the deduction optional for anyone watching the
+     *      mempool; charging every later settlement instead billed a holder
+     *      who was merely slow to press withdraw, without bound.
      */
     function requestUnbond(uint256 hcowAmount) external nonReentrant {
         if (hcowAmount == 0) revert ZeroAmount();
@@ -662,11 +674,10 @@ contract HCOWProfitShare is ReentrancyGuard {
             // is what bounds a campaign.
             if (decayWindowAt == 0 || block.timestamp >= decayWindowAt + DECAY_WINDOW) {
                 decayWindowAt = uint64(block.timestamp);
-                decayWindowBase = totalBondedHcow + totalPendingUnbond;
                 decayWindowBurned = 0;
             }
             uint256 windowCap =
-                Math.mulDiv(decayWindowBase, MAX_DECAY_PER_WINDOW_PPM, PPM_DENOM);
+                Math.mulDiv(totalBondedHcow, MAX_DECAY_PER_WINDOW_PPM, PPM_DENOM);
             uint256 wouldBe = decayWindowBurned + hcowToDeduct;
             if (wouldBe > windowCap) revert DecayWindowExhausted(windowCap, wouldBe);
             decayWindowBurned = wouldBe;
