@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-293 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+306 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. Revert assertions are made with a raw `eth_call` carrying an explicit
 sender, because gas estimation through a browser provider omits `from` and can
@@ -44,7 +44,7 @@ classified:
 | `pragma`, `cyclomatic-complexity`, `missing-inheritance` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in sections 4 to 8**, which is the honest measure of what it is worth.
+in sections 4 to 9**, which is the honest measure of what it is worth.
 
 ### 3. Invariant (property) tests
 
@@ -167,7 +167,30 @@ recorded here because a review that only lists what broke is not a review.
 | E-4 | Low | The accumulator's granularity is `totalStaked / ACC_PRECISION` wei per call, so at 1e18 against an 18 decimal token a slow stream over a large pool stranded a real fraction of it, owed to nobody and recoverable by nobody. Measured at 23% of a period in the extreme. | `ACC_PRECISION` raised to 1e24, six orders finer. Every product it appears in now divides before multiplying again, so the headroom is unchanged even with a one wei pool absorbing the whole supply. |
 | E-5 | Low | `_rewardsOwed` could drift below the sum of individual claims through repeated floor differences, eventually reverting the last claimant with an arithmetic panic. | The three decrements are clamped. The counter is documented as a reserve rather than a sum: each account's credit is the difference of two independently floored figures, so adding up every view can land up to one wei per delegator above it. Solvency is maintained against the token balance, which is what the invariant suite checks. |
 
-### 9. Open, not yet fixed
+### 9. Full audit pass, both economic contracts
+
+Rounds 1 to 5 chased specific changes. This one was a full audit of
+`HCOWProfitShare` and `HCOWStaking` from scratch, run as a paid engagement
+would be: scope and trust model, access control, arithmetic, liveness,
+external interactions, economics, code quality, with proof of concept for
+every finding. It produced the largest single batch, including two defects in
+work from the previous round.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| A-1 | Critical | The per settlement cap bounds a mistake but not a campaign. At two percent a day a compromised settler reduced a 1,000,000 HCOW pool to 627 HCOW in a year, for 730 USDT of funding, 370 of which came back through the two fixed legs. | `MAX_DECAY_PER_WINDOW_PPM`, three percent per thirty days, on top of the per settlement cap. The published usage rule decays about half a percent a month, so this is six times the headroom honest operation needs. |
+| A-2 | High | A pending unbond kept paying the deduction rate forever, including long after its cooldown had run out. Measured: a position that was slow to press withdraw lost 999,372 of 1,000,000 HCOW. The position was not in the pool for any of those settlements. | The charge stops at `unbondReadyAt`. `poolIndexAtEpoch` and `settledAtEpoch` make the window exact, and `MIN_EPOCH_INTERVAL` against `UNBOND_COOLDOWN` bounds the walk to two settlements. |
+| A-3 | High | Quarantine ended at the next settlement and the floor on epoch length was one day, so an arrival could buy eligibility for a quarterly distribution with one day of exposure. Measured: 270,000 of a 300,000 USDT leg. | `MIN_EPOCH_INTERVAL` raised to seven days, matching `UNBOND_COOLDOWN`. Becoming eligible now costs the same real time as leaving. |
+| A-4 | High | Both exit doors called the token's own `burn`. HCOW is not in this repository; a burn that is absent, paused or role gated would have locked every pending position permanently, on a contract with no admin recovery. | Consumed principal is transferred to the standard burn address. That works against any ERC20 and removes supply just as verifiably, and no exit depends on an external function any more. |
+| A-5 | High | In `HCOWStaking`, the funding guard blocked slowing the stream but not compressing it. One wei on the minimum duration pulled a year's budget into 24 hours; measured, a same-block arrival took 9,872,876 of a 10,000,000 HCOW budget. The mirror image of the defect fixed in the previous round. | A funding may add tokens or add time. It may never move the rate down or the end date in. |
+| A-6 | High | `accRewardPerShare` could be inflated without bound by funding into a pool of a few wei, after which an ordinary sized position overflowed on every path that touched it, locking principal permanently. Measured: 82,708,635 HCOW stuck, 41% of supply. | 512 bit intermediates through `Math.mulDiv` at every site in both contracts, plus `MIN_STAKE_FOR_ACCRUAL`: below one HCOW staked, seconds are carried rather than distributed. |
+| A-7 | Medium | A single dominant participant could veto every deducting settlement by front running it with an unbond request, free and repeatable. Introduced by the previous round's fix. | With nobody eligible there is nothing to charge, so the deduction is dropped rather than the settlement refused. |
+| A-8 | Medium | `settleEpoch` paid the two fixed legs out of the figure it requested rather than the figure that arrived, so a lossy USDT would have taken the shortfall out of the participant reserve and frozen every claim. BSC-USD sits behind an upgradeable proxy. | The arrival is measured, exactly as `bond` already did for HCOW, and a shortfall reverts. |
+| A-9 | Medium | Carried reward funds had no release path except a further funding with fresh tokens, and there is no sweep. A launch that funds before anyone stakes stranded the whole amount. | A period may be opened on carried funds alone. |
+| A-10 | Medium | `MAX_REPRESENTATIVES` was a permanent ceiling with no deregistration: a typo'd id or ordinary churn consumed slots for good. | An empty representative may be removed, which is exactly the safety property that made removal unsafe in general. |
+| A-11 | Low | `lifetimeOf` reported none of the principal a position lost through the unbond path, so a dashboard built on it showed zero while a tenth of the position had been burned. Accumulator precision was 1e18 against an 18 decimal token, stranding whole distributions when the participant leg was small. `commissionOf` returned zero for an unregistered id where its sibling reverts. | Forfeits fold into the per account figure; precision raised to 1e24 with mulDiv throughout; unknown ids revert. |
+
+### 10. Open, not yet fixed
 
 
 
@@ -198,7 +221,7 @@ Stated here rather than discovered later.
   repository.** Confirming that the deployed HCOW burns from `msg.sender` with
   no fee and no allowlist is a mainnet deployment gate.
 
-### 10. Deployed-bytecode parity
+### 11. Deployed-bytecode parity
 
 `scripts/checkflat.cjs` compiles each flattened source standalone and compares
 creation bytecode against the Hardhat artifact, stripping the trailing

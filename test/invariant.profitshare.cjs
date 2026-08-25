@@ -143,7 +143,7 @@ async function runSeed(seed, opCount) {
           ? (rnd() < 0.1 ? int(20_001, 60_000) : int(1, 20_000))
           : 0;
         // Epochs have a minimum length now, so move the clock before settling.
-        await hre.network.provider.send('evm_increaseTime', [86_401]);
+        await hre.network.provider.send('evm_increaseTime', [31 * 86_400]);
         await hre.network.provider.send('evm_mine', []);
         await (await ps.connect(settler).settleEpoch(epoch, gross, direct, opex, ppm)).wait();
         const s = await ps.getSettlement(epoch);
@@ -159,7 +159,7 @@ async function runSeed(seed, opCount) {
           const epoch = await ps.nextEpoch();
           const gross = E(int(1, 50_000));
           const opex = (gross * BigInt(int(0, 4000))) / 10_000n;
-          await hre.network.provider.send('evm_increaseTime', [86_401]);
+          await hre.network.provider.send('evm_increaseTime', [31 * 86_400]);
           await hre.network.provider.send('evm_mine', []);
           await (await ps.connect(settler).settleEpoch(epoch, gross, 0n, opex, 20_000)).wait();
           creditedToParticipants += (await ps.getSettlement(epoch)).participantsUsdt;

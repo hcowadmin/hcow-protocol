@@ -1,109 +1,126 @@
 INFO:Detectors:
 Detector: reentrancy-balance
-Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#237-261):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#223-241):
 	External call allowing reentrancy:
-	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#246-247)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#227-229)
 	Balance read before the call:
-	- before = hcow.balanceOf(address(this)) (contracts/HCOWProfitShare.sol#245-246)
+	- before = hcow.balanceOf(address(this)) (contracts/HCOWProfitShare.sol#226-227)
 	Possible stale balance used after the call in a condition:
-	- minted == 0 (contracts/HCOWProfitShare.sol#255-256)
+	- minted == 0 (contracts/HCOWProfitShare.sol#236)
 		- stale variable `minted`
-	- received == 0 (contracts/HCOWProfitShare.sol#249)
+	- received == 0 (contracts/HCOWProfitShare.sol#231)
 		- stale variable `received`
-Reentrancy in HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#357-409):
+Reentrancy in HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#345-396):
 	External call allowing reentrancy:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#373-376)
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#363-364)
 	Balance read before the call:
-	- before = hcow.balanceOf(address(this)) (contracts/HCOWStaking.sol#370-371)
+	- before = hcow.balanceOf(address(this)) (contracts/HCOWStaking.sol#362-363)
 	Possible stale balance used after the call in a condition:
-	- received == 0 (contracts/HCOWStaking.sol#378)
+	- received == 0 (contracts/HCOWStaking.sol#366)
 		- stale variable `received`
-Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#197-227):
+Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#190-221):
 	External call allowing reentrancy:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#212-214)
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#206)
 	Balance read before the call:
-	- before = hcow.balanceOf(address(this)) (contracts/HCOWStaking.sol#209-212)
+	- before = hcow.balanceOf(address(this)) (contracts/HCOWStaking.sol#204-205)
 	Possible stale balance used after the call in a condition:
-	- received == 0 (contracts/HCOWStaking.sol#216-217)
+	- received == 0 (contracts/HCOWStaking.sol#210)
 		- stale variable `received`
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities
 INFO:Detectors:
 Detector: reentrancy-balance
-Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#311-336):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#335-362):
 	External call allowing reentrancy:
-	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#319)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#343-346)
 	Balance read before the call:
-	- before = hcow.balanceOf(address(this)) (contracts/HCOWProfitShare.sol#318)
+	- before = hcow.balanceOf(address(this)) (contracts/HCOWProfitShare.sol#342-343)
 	Possible stale balance used after the call in a condition:
-	- minted == 0 (contracts/HCOWProfitShare.sol#326)
+	- minted == 0 (contracts/HCOWProfitShare.sol#353)
 		- stale variable `minted`
-	- received == 0 (contracts/HCOWProfitShare.sol#321)
+	- received == 0 (contracts/HCOWProfitShare.sol#348)
 		- stale variable `received`
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities
 INFO:Detectors:
 Detector: reentrancy-balance
-Reentrancy in HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#454-497):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#356-381):
 	External call allowing reentrancy:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#464)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#364)
 	Balance read before the call:
-	- before = hcow.balanceOf(address(this)) (contracts/HCOWStaking.sol#463)
+	- before = hcow.balanceOf(address(this)) (contracts/HCOWProfitShare.sol#363)
 	Possible stale balance used after the call in a condition:
-	- newRate < minRate (contracts/HCOWStaking.sol#485)
-		- stale variable `newRate`
-	- newRate == 0 (contracts/HCOWStaking.sol#487)
-		- stale variable `newRate`
-	- received == 0 (contracts/HCOWStaking.sol#466)
+	- minted == 0 (contracts/HCOWProfitShare.sol#371)
+		- stale variable `minted`
+	- received == 0 (contracts/HCOWProfitShare.sol#366)
 		- stale variable `received`
-Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#279-306):
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691):
 	External call allowing reentrancy:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#292)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#616)
 	Balance read before the call:
-	- before = hcow.balanceOf(address(this)) (contracts/HCOWStaking.sol#291)
+	- beforeUsdt = usdt.balanceOf(address(this)) (contracts/HCOWProfitShare.sol#615)
 	Possible stale balance used after the call in a condition:
-	- received == 0 (contracts/HCOWStaking.sol#294)
+	- arrived != profit (contracts/HCOWProfitShare.sol#618)
+		- stale variable `arrived`
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities
+INFO:Detectors:
+Detector: reentrancy-balance
+Reentrancy in HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#501-557):
+	External call allowing reentrancy:
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#516)
+	Balance read before the call:
+	- before = hcow.balanceOf(address(this)) (contracts/HCOWStaking.sol#515)
+	Possible stale balance used after the call in a condition:
+	- newRate < minRate (contracts/HCOWStaking.sol#544)
+		- stale variable `newRate`
+	- newRate == 0 (contracts/HCOWStaking.sol#547)
+		- stale variable `newRate`
+	- received == 0 (contracts/HCOWStaking.sol#518)
+		- stale variable `received`
+Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#326-353):
+	External call allowing reentrancy:
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#339)
+	Balance read before the call:
+	- before = hcow.balanceOf(address(this)) (contracts/HCOWStaking.sol#338)
+	Possible stale balance used after the call in a condition:
+	- received == 0 (contracts/HCOWStaking.sol#341)
 		- stale variable `received`
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities
 INFO:Detectors:
 Detector: divide-before-multiply
-HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#320-350) performs a multiplication on the result of a division:
-	- restored = (amount * poolIndex) / startIndex (contracts/HCOWProfitShare.sol#331-335)
-	- minted = (restored * totalShares) / totalBondedHcow (contracts/HCOWProfitShare.sol#340-342)
-HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514) performs a multiplication on the result of a division:
-	- accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#487-488)
-	- hcowToDeduct = (totalBondedHcow * deductPpm) / PPM_DENOM (contracts/HCOWProfitShare.sol#451-454)
-HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514) performs a multiplication on the result of a division:
-	- participants = (profit * PARTICIPANT_BPS) / 10_000 (contracts/HCOWProfitShare.sol#419-421)
-	- accUsdtPerShare += (participants * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#480-481)
-HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#357-409) performs a multiplication on the result of a division:
-	- slice = (received * r_scope_1.totalDelegated) / activeWeight (contracts/HCOWStaking.sol#387-390)
-	- commission = (slice * r_scope_1.commissionBps) / 10_000 (contracts/HCOWStaking.sol#391-392)
+HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#290-328) performs a multiplication on the result of a division:
+	- restored = (amount * poolIndex) / startIndex (contracts/HCOWProfitShare.sol#302-304)
+	- minted = (restored * totalShares) / totalBondedHcow (contracts/HCOWProfitShare.sol#307-309)
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493) performs a multiplication on the result of a division:
+	- accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#458-460)
+	- hcowToDeduct = (totalBondedHcow * deductPpm) / PPM_DENOM (contracts/HCOWProfitShare.sol#430-432)
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493) performs a multiplication on the result of a division:
+	- participants = (profit * PARTICIPANT_BPS) / 10_000 (contracts/HCOWProfitShare.sol#401-403)
+	- accUsdtPerShare += (participants * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#449-452)
+HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#345-396) performs a multiplication on the result of a division:
+	- slice = (received * r_scope_1.totalDelegated) / activeWeight (contracts/HCOWStaking.sol#374-375)
+	- commission = (slice * r_scope_1.commissionBps) / 10_000 (contracts/HCOWStaking.sol#379-382)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#divide-before-multiply
 INFO:Detectors:
 Detector: divide-before-multiply
-HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#393-432) performs a multiplication on the result of a division:
-	- restored = (amount * poolIndex) / startIndex (contracts/HCOWProfitShare.sol#406-408)
-	- minted = (restored * totalShares) / totalBondedHcow (contracts/HCOWProfitShare.sol#413-415)
-HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608) performs a multiplication on the result of a division:
-	- accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#572)
-	- hcowToDeduct = (totalBondedHcow * deductPpm) / PPM_DENOM (contracts/HCOWProfitShare.sol#543-545)
-HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608) performs a multiplication on the result of a division:
-	- participants = (profit * PARTICIPANT_BPS) / 10_000 (contracts/HCOWProfitShare.sol#520)
-	- accUsdtPerShare += (participants * ACC_PRECISION) / eligibleShares (contracts/HCOWProfitShare.sol#565)
+HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#421-450) performs a multiplication on the result of a division:
+	- restored = (amount * poolIndex) / startIndex (contracts/HCOWProfitShare.sol#432-434)
+	- minted = (restored * totalShares) / totalBondedHcow (contracts/HCOWProfitShare.sol#436-439)
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630) performs a multiplication on the result of a division:
+	- accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#597-601)
+	- hcowToDeduct = (totalBondedHcow * deductPpm) / PPM_DENOM (contracts/HCOWProfitShare.sol#577-580)
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630) performs a multiplication on the result of a division:
+	- participants = (profit * PARTICIPANT_BPS) / 10_000 (contracts/HCOWProfitShare.sol#550-551)
+	- accUsdtPerShare += (participants * ACC_PRECISION) / eligibleShares (contracts/HCOWProfitShare.sol#593-594)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#divide-before-multiply
 INFO:Detectors:
 Detector: divide-before-multiply
-HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#454-497) performs a multiplication on the result of a division:
-	- newRate = pool / duration (contracts/HCOWStaking.sol#477)
-	- rewardRate = newRate (contracts/HCOWStaking.sol#488)
-	- undistributed = pool - rewardRate * duration (contracts/HCOWStaking.sol#490)
-HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#454-497) performs a multiplication on the result of a division:
-	- newRate = pool / duration (contracts/HCOWStaking.sol#477)
-	- rewardRate = newRate (contracts/HCOWStaking.sol#488)
-	- leftover = (uint256(periodFinish) - block.timestamp) * rewardRate (contracts/HCOWStaking.sol#471-473)
-HCOWStaking._accrueRepCommission(HCOWStaking.Representative) (contracts/HCOWStaking.sol#649-659) performs a multiplication on the result of a division:
-	- earned = ((r.totalDelegated * delta) / ACC_PRECISION) * r.commissionBps / 10_000 (contracts/HCOWStaking.sol#655)
-HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#688-702) performs a multiplication on the result of a division:
-	- pending = ((r.totalDelegated * delta) / ACC_PRECISION) * r.commissionBps / 10_000 (contracts/HCOWStaking.sol#698-700)
+HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#501-557) performs a multiplication on the result of a division:
+	- newRate = pool / duration (contracts/HCOWStaking.sol#530)
+	- rewardRate = newRate (contracts/HCOWStaking.sol#548)
+	- undistributed = pool - rewardRate * duration (contracts/HCOWStaking.sol#550)
+HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#501-557) performs a multiplication on the result of a division:
+	- newRate = pool / duration (contracts/HCOWStaking.sol#530)
+	- rewardRate = newRate (contracts/HCOWStaking.sol#548)
+	- leftover = (uint256(periodFinish) - block.timestamp) * rewardRate (contracts/HCOWStaking.sol#524-526)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#divide-before-multiply
 INFO:Detectors:
 Detector: incorrect-equality
@@ -115,28 +132,28 @@ HCOWLedger._verify(bytes32[],bytes32,bytes32) (contracts/HCOWLedger.sol#174-187)
 	- root == bytes32(0) (contracts/HCOWLedger.sol#178)
 HCOWLedger._verify(bytes32[],bytes32,bytes32) (contracts/HCOWLedger.sol#174-187) uses a dangerous strict equality:
 	- h == root (contracts/HCOWLedger.sol#184-187)
-HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#237-261) uses a dangerous strict equality:
-	- received == 0 (contracts/HCOWProfitShare.sol#249)
-HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#237-261) uses a dangerous strict equality:
-	- minted == 0 (contracts/HCOWProfitShare.sol#255-256)
-HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#237-261) uses a dangerous strict equality:
-	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#250-255)
-HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#517-523) uses a dangerous strict equality:
-	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#520-521)
-HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#560-563) uses a dangerous strict equality:
-	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#561-562)
-HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#270-308) uses a dangerous strict equality:
-	- owned == 0 (contracts/HCOWProfitShare.sol#285)
-HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#270-308) uses a dangerous strict equality:
-	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#291-292)
-HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#270-308) uses a dangerous strict equality:
-	- a.shares == 0 (contracts/HCOWProfitShare.sol#295-296)
-HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#357-409) uses a dangerous strict equality:
-	- received == 0 (contracts/HCOWStaking.sol#378)
-HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#357-409) uses a dangerous strict equality:
-	- slice == 0 (contracts/HCOWStaking.sol#390)
-HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#197-227) uses a dangerous strict equality:
-	- received == 0 (contracts/HCOWStaking.sol#216-217)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#223-241) uses a dangerous strict equality:
+	- received == 0 (contracts/HCOWProfitShare.sol#231)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#223-241) uses a dangerous strict equality:
+	- minted == 0 (contracts/HCOWProfitShare.sol#236)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#223-241) uses a dangerous strict equality:
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#232-236)
+HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#498-506) uses a dangerous strict equality:
+	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#502-503)
+HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#552-558) uses a dangerous strict equality:
+	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#555-556)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#250-274) uses a dangerous strict equality:
+	- owned == 0 (contracts/HCOWProfitShare.sol#260-261)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#250-274) uses a dangerous strict equality:
+	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#265-266)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#250-274) uses a dangerous strict equality:
+	- a.shares == 0 (contracts/HCOWProfitShare.sol#267)
+HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#345-396) uses a dangerous strict equality:
+	- received == 0 (contracts/HCOWStaking.sol#366)
+HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#345-396) uses a dangerous strict equality:
+	- slice == 0 (contracts/HCOWStaking.sol#377)
+HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#190-221) uses a dangerous strict equality:
+	- received == 0 (contracts/HCOWStaking.sol#210)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
 INFO:Detectors:
 Detector: incorrect-equality
@@ -151,421 +168,565 @@ HCOWLedger._verify(bytes32[],bytes32,bytes32,uint64) (contracts/HCOWLedger.sol#2
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
 INFO:Detectors:
 Detector: incorrect-equality
-HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#311-336) uses a dangerous strict equality:
-	- received == 0 (contracts/HCOWProfitShare.sol#321)
-HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#311-336) uses a dangerous strict equality:
-	- minted == 0 (contracts/HCOWProfitShare.sol#326)
-HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#311-336) uses a dangerous strict equality:
-	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#323-325)
-HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#615-619) uses a dangerous strict equality:
-	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#617)
-HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#693-699) uses a dangerous strict equality:
-	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#694)
-HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#693-699) uses a dangerous strict equality:
-	- totalShares == totalNewShares (contracts/HCOWProfitShare.sol#697)
-HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#702-706) uses a dangerous strict equality:
-	- lastSettledAt == 0 (contracts/HCOWProfitShare.sol#703)
-HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#347-382) uses a dangerous strict equality:
-	- owned == 0 (contracts/HCOWProfitShare.sol#355)
-HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#347-382) uses a dangerous strict equality:
-	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#360)
-HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#347-382) uses a dangerous strict equality:
-	- a.shares == 0 (contracts/HCOWProfitShare.sol#371)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#335-362) uses a dangerous strict equality:
+	- received == 0 (contracts/HCOWProfitShare.sol#348)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#335-362) uses a dangerous strict equality:
+	- minted == 0 (contracts/HCOWProfitShare.sol#353)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#335-362) uses a dangerous strict equality:
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#348-353)
+HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#635-641) uses a dangerous strict equality:
+	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#640)
+HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#709-717) uses a dangerous strict equality:
+	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#710)
+HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#709-717) uses a dangerous strict equality:
+	- totalShares == totalNewShares (contracts/HCOWProfitShare.sol#713)
+HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#719-723) uses a dangerous strict equality:
+	- lastSettledAt == 0 (contracts/HCOWProfitShare.sol#720-721)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#373-409) uses a dangerous strict equality:
+	- owned == 0 (contracts/HCOWProfitShare.sol#385)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#373-409) uses a dangerous strict equality:
+	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#388)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#373-409) uses a dangerous strict equality:
+	- a.shares == 0 (contracts/HCOWProfitShare.sol#401)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
 INFO:Detectors:
 Detector: incorrect-equality
-HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#454-497) uses a dangerous strict equality:
-	- received == 0 (contracts/HCOWStaking.sol#466)
-HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#454-497) uses a dangerous strict equality:
-	- newRate == 0 (contracts/HCOWStaking.sol#487)
-HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#279-306) uses a dangerous strict equality:
-	- received == 0 (contracts/HCOWStaking.sol#294)
+HCOWProfitShare._chargeIndex(HCOWProfitShare.Account) (contracts/HCOWProfitShare.sol#878-887) uses a dangerous strict equality:
+	- t == 0 || t >= readyAt (contracts/HCOWProfitShare.sol#883)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#356-381) uses a dangerous strict equality:
+	- received == 0 (contracts/HCOWProfitShare.sol#366)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#356-381) uses a dangerous strict equality:
+	- minted == 0 (contracts/HCOWProfitShare.sol#371)
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#356-381) uses a dangerous strict equality:
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#368-370)
+HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#698-702) uses a dangerous strict equality:
+	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#700)
+HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#776-782) uses a dangerous strict equality:
+	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#777)
+HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#776-782) uses a dangerous strict equality:
+	- totalShares == totalNewShares (contracts/HCOWProfitShare.sol#780)
+HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#785-789) uses a dangerous strict equality:
+	- lastSettledAt == 0 (contracts/HCOWProfitShare.sol#786)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#392-428) uses a dangerous strict equality:
+	- owned == 0 (contracts/HCOWProfitShare.sol#400)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#392-428) uses a dangerous strict equality:
+	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#405)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#392-428) uses a dangerous strict equality:
+	- a.shares == 0 (contracts/HCOWProfitShare.sol#416)
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691) uses a dangerous strict equality:
+	- decayCheckpointAt == 0 || block.timestamp >= decayCheckpointAt + DECAY_WINDOW (contracts/HCOWProfitShare.sol#651)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
+INFO:Detectors:
+Detector: incorrect-equality
+HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#501-557) uses a dangerous strict equality:
+	- received == 0 (contracts/HCOWStaking.sol#518)
+HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#501-557) uses a dangerous strict equality:
+	- newRate == 0 (contracts/HCOWStaking.sol#547)
+HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#326-353) uses a dangerous strict equality:
+	- received == 0 (contracts/HCOWStaking.sol#341)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
 INFO:Detectors:
 Detector: reentrancy-no-eth
-Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#237-261):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#223-241):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#246-247)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#227-229)
 	State variables written after the call(s):
-	- a.shares += minted.toUint128() (contracts/HCOWProfitShare.sol#258-259)
-	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#109-110) can be used in cross function reentrancies:
-	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#529-533)
-	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#517-523)
-	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#524-529)
-	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#540-551)
-	- _bookmark(a) (contracts/HCOWProfitShare.sol#260-261)
-		- a.rewardDebt = (s * accUsdtPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#624-625)
-		- a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#625-626)
-	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#109-110) can be used in cross function reentrancies:
-	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#529-533)
-	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#517-523)
-	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#524-529)
-	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#540-551)
-Reentrancy in HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#320-350):
+	- a.shares += minted.toUint128() (contracts/HCOWProfitShare.sol#237-239)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#105) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#515-524)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#498-506)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#508-515)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#535-547)
+	- _bookmark(a) (contracts/HCOWProfitShare.sol#240)
+		- a.rewardDebt = (s * accUsdtPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#611)
+		- a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#611-612)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#105) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#515-524)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#498-506)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#508-515)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#535-547)
+Reentrancy in HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#290-328):
 	External calls:
-	- IBurnable(address(hcow)).burn(forfeited) (contracts/HCOWProfitShare.sol#347-348)
+	- IBurnable(address(hcow)).burn(forfeited) (contracts/HCOWProfitShare.sol#321-322)
 	State variables written after the call(s):
-	- _bookmark(a) (contracts/HCOWProfitShare.sol#348)
-		- a.rewardDebt = (s * accUsdtPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#624-625)
-		- a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#625-626)
-	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#109-110) can be used in cross function reentrancies:
-	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#529-533)
-	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#517-523)
-	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#524-529)
-	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#540-551)
-Reentrancy in HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#357-409):
+	- _bookmark(a) (contracts/HCOWProfitShare.sol#325-326)
+		- a.rewardDebt = (s * accUsdtPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#611)
+		- a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#611-612)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#105) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#515-524)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#498-506)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#508-515)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#535-547)
+Reentrancy in HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#345-396):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#373-376)
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#363-364)
 	State variables written after the call(s):
-	- r_scope_1.commissionAccrued += commission (contracts/HCOWStaking.sol#393-395)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#77-78) can be used in cross function reentrancies:
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#144-156)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#449-455)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#438-448)
-	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189)
-	- r_scope_1.accRewardPerShare += (toDelegators * ACC_PRECISION) / r_scope_1.totalDelegated (contracts/HCOWStaking.sol#395-397)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#77-78) can be used in cross function reentrancies:
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#144-156)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#449-455)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#438-448)
-	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189)
-	- r_scope_1.lifetimeRewards += toDelegators (contracts/HCOWStaking.sol#398)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#77-78) can be used in cross function reentrancies:
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#144-156)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#449-455)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#438-448)
-	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514):
+	- r_scope_1.commissionAccrued += commission (contracts/HCOWStaking.sol#385)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#74) can be used in cross function reentrancies:
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#142-161)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#445-455)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#424-442)
+	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182)
+	- r_scope_1.accRewardPerShare += (toDelegators * ACC_PRECISION) / r_scope_1.totalDelegated (contracts/HCOWStaking.sol#385-387)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#74) can be used in cross function reentrancies:
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#142-161)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#445-455)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#424-442)
+	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182)
+	- r_scope_1.lifetimeRewards += toDelegators (contracts/HCOWStaking.sol#387)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#74) can be used in cross function reentrancies:
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#142-161)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#445-455)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#424-442)
+	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#457-459)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#466-467)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#467-468)
-	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#476-479)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#433-434)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#439)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#440-441)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#447-448)
 	State variables written after the call(s):
-	- lastDeductionAt = uint64(block.timestamp) (contracts/HCOWProfitShare.sol#495)
-	HCOWProfitShare.lastDeductionAt (contracts/HCOWProfitShare.sol#142-143) can be used in cross function reentrancies:
-	- HCOWProfitShare.deductionReadyAt() (contracts/HCOWProfitShare.sol#565-572)
-	- HCOWProfitShare.lastDeductionAt (contracts/HCOWProfitShare.sol#142-143)
-	- totalBondedHcow -= hcowToDeduct (contracts/HCOWProfitShare.sol#493-494)
-	HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#113-115) can be used in cross function reentrancies:
-	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#517-523)
-	- HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#560-563)
-	- HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#113-115)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514):
+	- lastDeductionAt = uint64(block.timestamp) (contracts/HCOWProfitShare.sol#470-471)
+	HCOWProfitShare.lastDeductionAt (contracts/HCOWProfitShare.sol#131-132) can be used in cross function reentrancies:
+	- HCOWProfitShare.deductionReadyAt() (contracts/HCOWProfitShare.sol#561-565)
+	- HCOWProfitShare.lastDeductionAt (contracts/HCOWProfitShare.sol#131-132)
+	- totalBondedHcow -= hcowToDeduct (contracts/HCOWProfitShare.sol#468)
+	HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#106-107) can be used in cross function reentrancies:
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#498-506)
+	- HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#552-558)
+	- HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#106-107)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#457-459)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#466-467)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#467-468)
-	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#476-479)
-	- IBurnable(address(hcow)).burn(hcowToDeduct) (contracts/HCOWProfitShare.sol#495-496)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#433-434)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#439)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#440-441)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#447-448)
+	- IBurnable(address(hcow)).burn(hcowToDeduct) (contracts/HCOWProfitShare.sol#472-474)
 	State variables written after the call(s):
-	- nextEpoch = epoch + 1 (contracts/HCOWProfitShare.sol#509-510)
-	HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#151-152) can be used in cross function reentrancies:
-	- HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#151-152)
-Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#197-227):
+	- nextEpoch = epoch + 1 (contracts/HCOWProfitShare.sol#489)
+	HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#137-139) can be used in cross function reentrancies:
+	- HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#137-139)
+Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#190-221):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#212-214)
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#206)
 	State variables written after the call(s):
-	- d.repId = repId (contracts/HCOWStaking.sol#219-220)
-	HCOWStaking._delegations (contracts/HCOWStaking.sol#79) can be used in cross function reentrancies:
-	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#422-438)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- d.amount += received.toUint128() (contracts/HCOWStaking.sol#221-222)
-	HCOWStaking._delegations (contracts/HCOWStaking.sol#79) can be used in cross function reentrancies:
-	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#422-438)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- d.rewardDebt = (uint256(d.amount) * r.accRewardPerShare) / ACC_PRECISION (contracts/HCOWStaking.sol#223-227)
-	HCOWStaking._delegations (contracts/HCOWStaking.sol#79) can be used in cross function reentrancies:
-	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#422-438)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- r.delegatorCount += 1 (contracts/HCOWStaking.sol#220-221)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#77-78) can be used in cross function reentrancies:
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#144-156)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#449-455)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#438-448)
-	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189)
-	- r.totalDelegated += received (contracts/HCOWStaking.sol#222)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#77-78) can be used in cross function reentrancies:
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#144-156)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#449-455)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#438-448)
-	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189)
-Reentrancy in HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189):
+	- d.repId = repId (contracts/HCOWStaking.sol#211-212)
+	HCOWStaking._delegations (contracts/HCOWStaking.sol#75-76) can be used in cross function reentrancies:
+	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#412-424)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- d.amount += received.toUint128() (contracts/HCOWStaking.sol#212-214)
+	HCOWStaking._delegations (contracts/HCOWStaking.sol#75-76) can be used in cross function reentrancies:
+	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#412-424)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- d.rewardDebt = (uint256(d.amount) * r.accRewardPerShare) / ACC_PRECISION (contracts/HCOWStaking.sol#217-220)
+	HCOWStaking._delegations (contracts/HCOWStaking.sol#75-76) can be used in cross function reentrancies:
+	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#412-424)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- r.delegatorCount += 1 (contracts/HCOWStaking.sol#212)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#74) can be used in cross function reentrancies:
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#142-161)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#445-455)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#424-442)
+	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182)
+	- r.totalDelegated += received (contracts/HCOWStaking.sol#214-216)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#74) can be used in cross function reentrancies:
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#142-161)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#445-455)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#424-442)
+	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182)
+Reentrancy in HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182):
 	External calls:
-	- hcow.safeTransfer(oldPayout,owed) (contracts/HCOWStaking.sol#184)
+	- hcow.safeTransfer(oldPayout,owed) (contracts/HCOWStaking.sol#175-177)
 	State variables written after the call(s):
-	- r.payout = payout (contracts/HCOWStaking.sol#185)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#77-78) can be used in cross function reentrancies:
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#144-156)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#449-455)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#438-448)
-	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189)
-	- r.commissionBps = commissionBps (contracts/HCOWStaking.sol#185)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#77-78) can be used in cross function reentrancies:
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#144-156)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#449-455)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#438-448)
-	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189)
-	- r.active = active (contracts/HCOWStaking.sol#186)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#77-78) can be used in cross function reentrancies:
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#414-422)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#144-156)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#449-455)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#438-448)
-	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189)
+	- r.payout = payout (contracts/HCOWStaking.sol#179)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#74) can be used in cross function reentrancies:
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#142-161)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#445-455)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#424-442)
+	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182)
+	- r.commissionBps = commissionBps (contracts/HCOWStaking.sol#179-180)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#74) can be used in cross function reentrancies:
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#142-161)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#445-455)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#424-442)
+	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182)
+	- r.active = active (contracts/HCOWStaking.sol#180-181)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#74) can be used in cross function reentrancies:
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#402-412)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#142-161)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#445-455)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#424-442)
+	- HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
 INFO:Detectors:
 Detector: reentrancy-no-eth
-Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#311-336):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#335-362):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#319)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#343-346)
 	State variables written after the call(s):
-	- a.shares += minted.toUint128() (contracts/HCOWProfitShare.sol#329)
-	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#136) can be used in cross function reentrancies:
-	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#655-662)
-	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#615-619)
-	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#622-634)
-	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#638-642)
-	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#670-683)
-	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#647-653)
-	- _markNew(a,minted) (contracts/HCOWProfitShare.sol#332)
-		- a.newShares += minted.toUint128() (contracts/HCOWProfitShare.sol#787)
-		- a.newSharesEpoch = nextEpoch (contracts/HCOWProfitShare.sol#788)
-	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#136) can be used in cross function reentrancies:
-	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#655-662)
-	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#615-619)
-	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#622-634)
-	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#638-642)
-	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#670-683)
-	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#647-653)
-	- _bookmark(a) (contracts/HCOWProfitShare.sol#334)
-		- a.rewardDebt = ((s - uint256(a.newShares)) * accUsdtPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#794)
-		- a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#795)
-	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#136) can be used in cross function reentrancies:
-	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#655-662)
-	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#615-619)
-	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#622-634)
-	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#638-642)
-	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#670-683)
-	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#647-653)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608):
+	- a.shares += minted.toUint128() (contracts/HCOWProfitShare.sol#356)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#165) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#674-679)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#635-641)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#641-651)
+	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#655-660)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#688-700)
+	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#666-674)
+	- _markNew(a,minted) (contracts/HCOWProfitShare.sol#359)
+		- a.newShares += minted.toUint128() (contracts/HCOWProfitShare.sol#802)
+		- a.newSharesEpoch = nextEpoch (contracts/HCOWProfitShare.sol#804)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#165) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#674-679)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#635-641)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#641-651)
+	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#655-660)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#688-700)
+	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#666-674)
+	- _bookmark(a) (contracts/HCOWProfitShare.sol#359)
+		- a.rewardDebt = ((s - uint256(a.newShares)) * accUsdtPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#807-810)
+		- a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION (contracts/HCOWProfitShare.sol#810-811)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#165) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#674-679)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#635-641)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#641-651)
+	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#655-660)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#688-700)
+	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#666-674)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#550)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#554)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#555)
-	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#562)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#581-582)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#587)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#588)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#591-592)
 	State variables written after the call(s):
-	- totalBondedHcow -= hcowToDeduct (contracts/HCOWProfitShare.sol#579)
-	HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#139) can be used in cross function reentrancies:
-	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#615-619)
-	- HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#693-699)
-	- HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#139)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608):
+	- totalBondedHcow -= hcowToDeduct (contracts/HCOWProfitShare.sol#611)
+	HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#170) can be used in cross function reentrancies:
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#635-641)
+	- HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#709-717)
+	- HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#170)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#550)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#554)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#555)
-	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#562)
-	- IBurnable(address(hcow)).burn(hcowToDeduct) (contracts/HCOWProfitShare.sol#581)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#581-582)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#587)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#588)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#591-592)
+	- hcow.safeTransfer(BURN_ADDRESS,hcowToDeduct) (contracts/HCOWProfitShare.sol#612)
 	State variables written after the call(s):
-	- lastSettledAt = uint64(block.timestamp) (contracts/HCOWProfitShare.sol#589)
-	HCOWProfitShare.lastSettledAt (contracts/HCOWProfitShare.sol#166) can be used in cross function reentrancies:
-	- HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#702-706)
-	- HCOWProfitShare.lastSettledAt (contracts/HCOWProfitShare.sol#166)
-	- nextEpoch = epoch + 1 (contracts/HCOWProfitShare.sol#602)
-	HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#202) can be used in cross function reentrancies:
-	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#622-634)
-	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#638-642)
-	- HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#202)
-	- totalNewShares = 0 (contracts/HCOWProfitShare.sol#588)
-	HCOWProfitShare.totalNewShares (contracts/HCOWProfitShare.sol#157) can be used in cross function reentrancies:
-	- HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#693-699)
-	- HCOWProfitShare.totalNewShares (contracts/HCOWProfitShare.sol#157)
+	- lastSettledAt = uint64(block.timestamp) (contracts/HCOWProfitShare.sol#617)
+	HCOWProfitShare.lastSettledAt (contracts/HCOWProfitShare.sol#195-197) can be used in cross function reentrancies:
+	- HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#719-723)
+	- HCOWProfitShare.lastSettledAt (contracts/HCOWProfitShare.sol#195-197)
+	- nextEpoch = epoch + 1 (contracts/HCOWProfitShare.sol#627)
+	HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#231-232) can be used in cross function reentrancies:
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#641-651)
+	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#655-660)
+	- HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#231-232)
+	- totalNewShares = 0 (contracts/HCOWProfitShare.sol#616-617)
+	HCOWProfitShare.totalNewShares (contracts/HCOWProfitShare.sol#187) can be used in cross function reentrancies:
+	- HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#709-717)
+	- HCOWProfitShare.totalNewShares (contracts/HCOWProfitShare.sol#187)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
 INFO:Detectors:
 Detector: reentrancy-no-eth
-Reentrancy in HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#454-497):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#356-381):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#464)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#364)
 	State variables written after the call(s):
-	- lastUpdateTime = uint64(block.timestamp) (contracts/HCOWStaking.sol#492)
-	HCOWStaking.lastUpdateTime (contracts/HCOWStaking.sol#136) can be used in cross function reentrancies:
-	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#599-625)
-	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#688-702)
-	- HCOWStaking.lastUpdateTime (contracts/HCOWStaking.sol#136)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#676-685)
-	- periodFinish = uint64(block.timestamp) + duration (contracts/HCOWStaking.sol#493)
-	HCOWStaking.periodFinish (contracts/HCOWStaking.sol#135) can be used in cross function reentrancies:
-	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#599-625)
-	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#688-702)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- HCOWStaking.periodFinish (contracts/HCOWStaking.sol#135)
-	- HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#676-685)
-	- rewardRate = newRate (contracts/HCOWStaking.sol#488)
-	HCOWStaking.rewardRate (contracts/HCOWStaking.sol#134) can be used in cross function reentrancies:
-	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#599-625)
-	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#688-702)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- HCOWStaking.rewardRate (contracts/HCOWStaking.sol#134)
-	- HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#676-685)
-	- undistributed = 0 (contracts/HCOWStaking.sol#475)
-	HCOWStaking.undistributed (contracts/HCOWStaking.sol#141) can be used in cross function reentrancies:
-	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#599-625)
-	- HCOWStaking.undistributed (contracts/HCOWStaking.sol#141)
-	- undistributed = pool - rewardRate * duration (contracts/HCOWStaking.sol#490)
-	HCOWStaking.undistributed (contracts/HCOWStaking.sol#141) can be used in cross function reentrancies:
-	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#599-625)
-	- HCOWStaking.undistributed (contracts/HCOWStaking.sol#141)
-Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#279-306):
+	- a.shares += minted.toUint128() (contracts/HCOWProfitShare.sol#374)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#168) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#738-745)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#698-702)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#705-717)
+	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#721-725)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#753-766)
+	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#730-736)
+	- _markNew(a,minted) (contracts/HCOWProfitShare.sol#377)
+		- a.newShares += minted.toUint128() (contracts/HCOWProfitShare.sol#893)
+		- a.newSharesEpoch = nextEpoch (contracts/HCOWProfitShare.sol#894)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#168) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#738-745)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#698-702)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#705-717)
+	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#721-725)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#753-766)
+	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#730-736)
+	- _bookmark(a) (contracts/HCOWProfitShare.sol#379)
+		- a.rewardDebt = Math.mulDiv(s - uint256(a.newShares),accUsdtPerShare,ACC_PRECISION) (contracts/HCOWProfitShare.sol#900)
+		- a.deductDebt = Math.mulDiv(s,accDeductedPerShare,ACC_PRECISION) (contracts/HCOWProfitShare.sol#901)
+	HCOWProfitShare._accounts (contracts/HCOWProfitShare.sol#168) can be used in cross function reentrancies:
+	- HCOWProfitShare.accountOf(address) (contracts/HCOWProfitShare.sol#738-745)
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#698-702)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#705-717)
+	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#721-725)
+	- HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#753-766)
+	- HCOWProfitShare.pendingUnbondOf(address) (contracts/HCOWProfitShare.sol#730-736)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#292)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#616)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#622)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#623)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#630)
 	State variables written after the call(s):
-	- d.repId = repId (contracts/HCOWStaking.sol#297)
-	HCOWStaking._delegations (contracts/HCOWStaking.sol#109) can be used in cross function reentrancies:
-	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#523-538)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- d.amount += received.toUint128() (contracts/HCOWStaking.sol#300)
-	HCOWStaking._delegations (contracts/HCOWStaking.sol#109) can be used in cross function reentrancies:
-	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#523-538)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- _bookmark(d,r) (contracts/HCOWStaking.sol#304)
-		- d.rewardDebtNet = (amt * _netAcc(r)) / ACC_PRECISION (contracts/HCOWStaking.sol#706)
-	HCOWStaking._delegations (contracts/HCOWStaking.sol#109) can be used in cross function reentrancies:
-	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#523-538)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- r.delegatorCount += 1 (contracts/HCOWStaking.sol#298)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#107) can be used in cross function reentrancies:
-	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#688-702)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#199-228)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#564-570)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#540-558)
-	- r.totalDelegated += received (contracts/HCOWStaking.sol#301)
-	HCOWStaking._reps (contracts/HCOWStaking.sol#107) can be used in cross function reentrancies:
-	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#688-702)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#199-228)
-	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#564-570)
-	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#540-558)
-	- totalStaked += received (contracts/HCOWStaking.sol#302)
-	HCOWStaking.totalStaked (contracts/HCOWStaking.sol#112) can be used in cross function reentrancies:
-	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#599-625)
-	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#688-702)
-	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521)
-	- HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#676-685)
-	- HCOWStaking.totalStaked (contracts/HCOWStaking.sol#112)
+	- totalBondedHcow -= hcowToDeduct (contracts/HCOWProfitShare.sol#660)
+	HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#171) can be used in cross function reentrancies:
+	- HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#698-702)
+	- HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#776-782)
+	- HCOWProfitShare.totalBondedHcow (contracts/HCOWProfitShare.sol#171)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691):
+	External calls:
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#616)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#622)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#623)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#630)
+	- hcow.safeTransfer(BURN_ADDRESS,hcowToDeduct) (contracts/HCOWProfitShare.sol#662)
+	State variables written after the call(s):
+	- lastSettledAt = uint64(block.timestamp) (contracts/HCOWProfitShare.sol#672)
+	HCOWProfitShare.lastSettledAt (contracts/HCOWProfitShare.sol#198) can be used in cross function reentrancies:
+	- HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#785-789)
+	- HCOWProfitShare.lastSettledAt (contracts/HCOWProfitShare.sol#198)
+	- nextEpoch = epoch + 1 (contracts/HCOWProfitShare.sol#685)
+	HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#245) can be used in cross function reentrancies:
+	- HCOWProfitShare._chargeIndex(HCOWProfitShare.Account) (contracts/HCOWProfitShare.sol#878-887)
+	- HCOWProfitShare.claimableOf(address) (contracts/HCOWProfitShare.sol#705-717)
+	- HCOWProfitShare.eligibleSharesOf(address) (contracts/HCOWProfitShare.sol#721-725)
+	- HCOWProfitShare.nextEpoch (contracts/HCOWProfitShare.sol#245)
+	- totalNewShares = 0 (contracts/HCOWProfitShare.sol#671)
+	HCOWProfitShare.totalNewShares (contracts/HCOWProfitShare.sol#189) can be used in cross function reentrancies:
+	- HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#776-782)
+	- HCOWProfitShare.totalNewShares (contracts/HCOWProfitShare.sol#189)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
+INFO:Detectors:
+Detector: reentrancy-no-eth
+Reentrancy in HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#501-557):
+	External calls:
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#516)
+	State variables written after the call(s):
+	- lastUpdateTime = uint64(block.timestamp) (contracts/HCOWStaking.sol#552)
+	HCOWStaking.lastUpdateTime (contracts/HCOWStaking.sol#149) can be used in cross function reentrancies:
+	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#659-687)
+	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#751-766)
+	- HCOWStaking.lastUpdateTime (contracts/HCOWStaking.sol#149)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#739-748)
+	- periodFinish = uint64(block.timestamp) + duration (contracts/HCOWStaking.sol#553)
+	HCOWStaking.periodFinish (contracts/HCOWStaking.sol#148) can be used in cross function reentrancies:
+	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#659-687)
+	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#751-766)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- HCOWStaking.periodFinish (contracts/HCOWStaking.sol#148)
+	- HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#739-748)
+	- rewardRate = newRate (contracts/HCOWStaking.sol#548)
+	HCOWStaking.rewardRate (contracts/HCOWStaking.sol#147) can be used in cross function reentrancies:
+	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#659-687)
+	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#751-766)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- HCOWStaking.rewardRate (contracts/HCOWStaking.sol#147)
+	- HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#739-748)
+	- undistributed = 0 (contracts/HCOWStaking.sol#528)
+	HCOWStaking.undistributed (contracts/HCOWStaking.sol#154) can be used in cross function reentrancies:
+	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#659-687)
+	- HCOWStaking.undistributed (contracts/HCOWStaking.sol#154)
+	- undistributed = pool - rewardRate * duration (contracts/HCOWStaking.sol#550)
+	HCOWStaking.undistributed (contracts/HCOWStaking.sol#154) can be used in cross function reentrancies:
+	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#659-687)
+	- HCOWStaking.undistributed (contracts/HCOWStaking.sol#154)
+Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#326-353):
+	External calls:
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#339)
+	State variables written after the call(s):
+	- d.repId = repId (contracts/HCOWStaking.sol#344)
+	HCOWStaking._delegations (contracts/HCOWStaking.sol#122) can be used in cross function reentrancies:
+	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#583-598)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- d.amount += received.toUint128() (contracts/HCOWStaking.sol#347)
+	HCOWStaking._delegations (contracts/HCOWStaking.sol#122) can be used in cross function reentrancies:
+	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#583-598)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- _bookmark(d,r) (contracts/HCOWStaking.sol#351)
+		- d.rewardDebtNet = Math.mulDiv(amt,_netAcc(r),ACC_PRECISION) (contracts/HCOWStaking.sol#770)
+	HCOWStaking._delegations (contracts/HCOWStaking.sol#122) can be used in cross function reentrancies:
+	- HCOWStaking.delegationOf(address) (contracts/HCOWStaking.sol#583-598)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- r.delegatorCount += 1 (contracts/HCOWStaking.sol#345)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#120) can be used in cross function reentrancies:
+	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#751-766)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#214-243)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#624-630)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#600-618)
+	- r.totalDelegated += received (contracts/HCOWStaking.sol#348)
+	HCOWStaking._reps (contracts/HCOWStaking.sol#120) can be used in cross function reentrancies:
+	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#751-766)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- HCOWStaking.registerRepresentative(bytes32,string,address,uint16,bool) (contracts/HCOWStaking.sol#214-243)
+	- HCOWStaking.representativeCount() (contracts/HCOWStaking.sol#624-630)
+	- HCOWStaking.representativeOf(bytes32) (contracts/HCOWStaking.sol#600-618)
+	- totalStaked += received (contracts/HCOWStaking.sol#349)
+	HCOWStaking.totalStaked (contracts/HCOWStaking.sol#125) can be used in cross function reentrancies:
+	- HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#659-687)
+	- HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#751-766)
+	- HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581)
+	- HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#739-748)
+	- HCOWStaking.totalStaked (contracts/HCOWStaking.sol#125)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
 INFO:Detectors:
 Detector: uninitialized-local
-HCOWStaking.fundRewards(uint256).handedOut (contracts/HCOWStaking.sol#379-381) is a local variable never initialized
-HCOWStaking.fundRewards(uint256).activeCount (contracts/HCOWStaking.sol#364) is a local variable never initialized
-HCOWStaking.fundRewards(uint256).activeWeight (contracts/HCOWStaking.sol#364) is a local variable never initialized
+HCOWStaking.fundRewards(uint256).activeWeight (contracts/HCOWStaking.sol#352) is a local variable never initialized
+HCOWStaking.fundRewards(uint256).handedOut (contracts/HCOWStaking.sol#367) is a local variable never initialized
+HCOWStaking.fundRewards(uint256).activeCount (contracts/HCOWStaking.sol#354-355) is a local variable never initialized
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#uninitialized-local-variables
+INFO:Detectors:
+Detector: uninitialized-local
+HCOWStaking.fundRewards(uint256,uint64).received (contracts/HCOWStaking.sol#513) is a local variable never initialized
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#uninitialized-local-variables
 INFO:Detectors:
 Detector: reentrancy-benign
-Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#237-261):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#223-241):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#246-247)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#227-229)
 	State variables written after the call(s):
-	- participantCount += 1 (contracts/HCOWProfitShare.sol#257-258)
-	- totalBondedHcow += received (contracts/HCOWProfitShare.sol#259-260)
-	- totalShares += minted (contracts/HCOWProfitShare.sol#259)
-Reentrancy in HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#357-409):
+	- participantCount += 1 (contracts/HCOWProfitShare.sol#237)
+	- totalBondedHcow += received (contracts/HCOWProfitShare.sol#239-240)
+	- totalShares += minted (contracts/HCOWProfitShare.sol#239)
+Reentrancy in HCOWStaking.fundRewards(uint256) (contracts/HCOWStaking.sol#345-396):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#373-376)
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#363-364)
 	State variables written after the call(s):
-	- totalRewardsFunded += received (contracts/HCOWStaking.sol#405-408)
-	- totalRewardsOwed += handedOut (contracts/HCOWStaking.sol#405)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514):
+	- totalRewardsFunded += received (contracts/HCOWStaking.sol#392-394)
+	- totalRewardsOwed += handedOut (contracts/HCOWStaking.sol#390)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#457-459)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#466-467)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#467-468)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#433-434)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#439)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#440-441)
 	State variables written after the call(s):
-	- accUsdtPerShare += (participants * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#480-481)
-	- totalUsdtDistributed += participants (contracts/HCOWProfitShare.sol#483-484)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514):
+	- accUsdtPerShare += (participants * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#449-452)
+	- totalUsdtDistributed += participants (contracts/HCOWProfitShare.sol#452-454)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#457-459)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#466-467)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#467-468)
-	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#476-479)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#433-434)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#439)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#440-441)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#447-448)
 	State variables written after the call(s):
-	- accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#487-488)
-	- poolIndex = (poolIndex * (totalBondedHcow - hcowToDeduct)) / totalBondedHcow (contracts/HCOWProfitShare.sol#492-493)
-	- poolIndex = 1 (contracts/HCOWProfitShare.sol#493)
-	- totalHcowDeducted += hcowToDeduct (contracts/HCOWProfitShare.sol#494)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514):
+	- accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#458-460)
+	- poolIndex = (poolIndex * (totalBondedHcow - hcowToDeduct)) / totalBondedHcow (contracts/HCOWProfitShare.sol#464-466)
+	- poolIndex = 1 (contracts/HCOWProfitShare.sol#466-468)
+	- totalHcowDeducted += hcowToDeduct (contracts/HCOWProfitShare.sol#469-470)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#457-459)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#466-467)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#467-468)
-	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#476-479)
-	- IBurnable(address(hcow)).burn(hcowToDeduct) (contracts/HCOWProfitShare.sol#495-496)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#433-434)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#439)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#440-441)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#447-448)
+	- IBurnable(address(hcow)).burn(hcowToDeduct) (contracts/HCOWProfitShare.sol#472-474)
 	State variables written after the call(s):
-	- _settlements[epoch] = Settlement({grossReceivedUsdt:grossReceivedUsdt.toUint128(),directCostsUsdt:directCostsUsdt.toUint128(),operatingCostsUsdt:operatingCostsUsdt.toUint128(),distributableProfitUsdt:profit.toUint128(),participantsUsdt:participants.toUint128(),hcowDeducted:hcowToDeduct.toUint128(),snapshotBondedHcow:snapshot.toUint128(),settledAt:uint64(block.timestamp)}) (contracts/HCOWProfitShare.sol#496-508)
-Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#197-227):
+	- _settlements[epoch] = Settlement({grossReceivedUsdt:grossReceivedUsdt.toUint128(),directCostsUsdt:directCostsUsdt.toUint128(),operatingCostsUsdt:operatingCostsUsdt.toUint128(),distributableProfitUsdt:profit.toUint128(),participantsUsdt:participants.toUint128(),hcowDeducted:hcowToDeduct.toUint128(),snapshotBondedHcow:snapshot.toUint128(),settledAt:uint64(block.timestamp)}) (contracts/HCOWProfitShare.sol#476-489)
+Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#190-221):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#212-214)
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#206)
 	State variables written after the call(s):
-	- totalStaked += received (contracts/HCOWStaking.sol#223)
+	- totalStaked += received (contracts/HCOWStaking.sol#216-217)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-3
 INFO:Detectors:
 Detector: reentrancy-benign
-Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#311-336):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#335-362):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#319)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#343-346)
 	State variables written after the call(s):
-	- participantCount += 1 (contracts/HCOWProfitShare.sol#328)
-	- totalBondedHcow += received (contracts/HCOWProfitShare.sol#331)
-	- _markNew(a,minted) (contracts/HCOWProfitShare.sol#332)
-		- totalNewShares += minted (contracts/HCOWProfitShare.sol#789)
-	- totalShares += minted (contracts/HCOWProfitShare.sol#330)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608):
+	- participantCount += 1 (contracts/HCOWProfitShare.sol#355)
+	- totalBondedHcow += received (contracts/HCOWProfitShare.sol#357)
+	- _markNew(a,minted) (contracts/HCOWProfitShare.sol#359)
+		- totalNewShares += minted (contracts/HCOWProfitShare.sol#804-805)
+	- totalShares += minted (contracts/HCOWProfitShare.sol#356-357)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#550)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#554)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#555)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#581-582)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#587)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#588)
 	State variables written after the call(s):
-	- accUsdtPerShare += (participants * ACC_PRECISION) / eligibleShares (contracts/HCOWProfitShare.sol#565)
-	- totalUsdtDistributed += participants (contracts/HCOWProfitShare.sol#566)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608):
+	- accUsdtPerShare += (participants * ACC_PRECISION) / eligibleShares (contracts/HCOWProfitShare.sol#593-594)
+	- totalUsdtDistributed += participants (contracts/HCOWProfitShare.sol#594-595)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#550)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#554)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#555)
-	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#562)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#581-582)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#587)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#588)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#591-592)
 	State variables written after the call(s):
-	- accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#572)
-	- poolIndex = (poolIndex * (PPM_DENOM - deductPpm)) / PPM_DENOM (contracts/HCOWProfitShare.sol#577)
-	- poolIndex = 1 (contracts/HCOWProfitShare.sol#578)
-	- totalHcowDeducted += hcowToDeduct (contracts/HCOWProfitShare.sol#580)
-Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608):
+	- accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares (contracts/HCOWProfitShare.sol#597-601)
+	- poolIndex = (poolIndex * (PPM_DENOM - deductPpm)) / PPM_DENOM (contracts/HCOWProfitShare.sol#606-608)
+	- poolIndex = 1 (contracts/HCOWProfitShare.sol#610)
+	- totalHcowDeducted += hcowToDeduct (contracts/HCOWProfitShare.sol#611-612)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630):
 	External calls:
-	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#550)
-	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#554)
-	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#555)
-	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#562)
-	- IBurnable(address(hcow)).burn(hcowToDeduct) (contracts/HCOWProfitShare.sol#581)
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#581-582)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#587)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#588)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#591-592)
+	- hcow.safeTransfer(BURN_ADDRESS,hcowToDeduct) (contracts/HCOWProfitShare.sol#612)
 	State variables written after the call(s):
-	- _settlements[epoch] = Settlement({grossReceivedUsdt:grossReceivedUsdt.toUint128(),directCostsUsdt:directCostsUsdt.toUint128(),operatingCostsUsdt:operatingCostsUsdt.toUint128(),distributableProfitUsdt:profit.toUint128(),participantsUsdt:participants.toUint128(),hcowDeducted:hcowToDeduct.toUint128(),snapshotBondedHcow:snapshot.toUint128(),settledAt:uint64(block.timestamp)}) (contracts/HCOWProfitShare.sol#591-600)
-	- accAtEpoch[epoch] = accUsdtPerShare (contracts/HCOWProfitShare.sol#587)
+	- _settlements[epoch] = Settlement({grossReceivedUsdt:grossReceivedUsdt.toUint128(),directCostsUsdt:directCostsUsdt.toUint128(),operatingCostsUsdt:operatingCostsUsdt.toUint128(),distributableProfitUsdt:profit.toUint128(),participantsUsdt:participants.toUint128(),hcowDeducted:hcowToDeduct.toUint128(),snapshotBondedHcow:snapshot.toUint128(),settledAt:uint64(block.timestamp)}) (contracts/HCOWProfitShare.sol#617-627)
+	- accAtEpoch[epoch] = accUsdtPerShare (contracts/HCOWProfitShare.sol#616)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-3
 INFO:Detectors:
 Detector: reentrancy-benign
-Reentrancy in HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#454-497):
+Reentrancy in HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#356-381):
 	External calls:
-	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#464)
+	- hcow.safeTransferFrom(msg.sender,address(this),hcowAmount) (contracts/HCOWProfitShare.sol#364)
 	State variables written after the call(s):
-	- totalRewardsFunded += received (contracts/HCOWStaking.sol#494)
+	- participantCount += 1 (contracts/HCOWProfitShare.sol#373)
+	- totalBondedHcow += received (contracts/HCOWProfitShare.sol#376)
+	- _markNew(a,minted) (contracts/HCOWProfitShare.sol#377)
+		- totalNewShares += minted (contracts/HCOWProfitShare.sol#895)
+	- totalShares += minted (contracts/HCOWProfitShare.sol#375)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691):
+	External calls:
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#616)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#622)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#623)
+	State variables written after the call(s):
+	- accUsdtPerShare += Math.mulDiv(participants,ACC_PRECISION,eligibleShares) (contracts/HCOWProfitShare.sol#633)
+	- totalUsdtDistributed += participants (contracts/HCOWProfitShare.sol#634)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691):
+	External calls:
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#616)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#622)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#623)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#630)
+	State variables written after the call(s):
+	- accDeductedPerShare += Math.mulDiv(hcowToDeduct,ACC_PRECISION,totalShares) (contracts/HCOWProfitShare.sol#640)
+	- decayCheckpoint = poolIndex (contracts/HCOWProfitShare.sol#652)
+	- decayCheckpointAt = uint64(block.timestamp) (contracts/HCOWProfitShare.sol#653)
+	- poolIndex = nextIndex (contracts/HCOWProfitShare.sol#659)
+	- totalHcowDeducted += hcowToDeduct (contracts/HCOWProfitShare.sol#661)
+Reentrancy in HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691):
+	External calls:
+	- usdt.safeTransferFrom(msg.sender,address(this),profit) (contracts/HCOWProfitShare.sol#616)
+	- usdt.safeTransfer(gameCompany,toGameCompany) (contracts/HCOWProfitShare.sol#622)
+	- usdt.safeTransfer(team,toTeam) (contracts/HCOWProfitShare.sol#623)
+	- usdt.safeTransfer(msg.sender,participants) (contracts/HCOWProfitShare.sol#630)
+	- hcow.safeTransfer(BURN_ADDRESS,hcowToDeduct) (contracts/HCOWProfitShare.sol#662)
+	State variables written after the call(s):
+	- _settlements[epoch] = Settlement({grossReceivedUsdt:grossReceivedUsdt.toUint128(),directCostsUsdt:directCostsUsdt.toUint128(),operatingCostsUsdt:operatingCostsUsdt.toUint128(),distributableProfitUsdt:profit.toUint128(),participantsUsdt:participants.toUint128(),hcowDeducted:hcowToDeduct.toUint128(),snapshotBondedHcow:snapshot.toUint128(),settledAt:uint64(block.timestamp)}) (contracts/HCOWProfitShare.sol#674-683)
+	- accAtEpoch[epoch] = accUsdtPerShare (contracts/HCOWProfitShare.sol#668)
+	- poolIndexAtEpoch[epoch] = poolIndex (contracts/HCOWProfitShare.sol#669)
+	- settledAtEpoch[epoch] = uint64(block.timestamp) (contracts/HCOWProfitShare.sol#670)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-3
+INFO:Detectors:
+Detector: reentrancy-benign
+Reentrancy in HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#501-557):
+	External calls:
+	- hcow.safeTransferFrom(msg.sender,address(this),amount) (contracts/HCOWStaking.sol#516)
+	State variables written after the call(s):
+	- totalRewardsFunded += received (contracts/HCOWStaking.sol#554)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-3
 INFO:Detectors:
 Detector: reentrancy-events
@@ -575,12 +736,12 @@ Reentrancy in HCOWFaucet.claim() (contracts/HCOWFaucet.sol#76-92):
 	- usdt.safeTransfer(msg.sender,usdtAmount) (contracts/HCOWFaucet.sol#90)
 	Event emitted after the call(s):
 	- Claimed(msg.sender,hcowAmount,usdtAmount) (contracts/HCOWFaucet.sol#91)
-Reentrancy in HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#156-189):
+Reentrancy in HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#161-182):
 	External calls:
-	- hcow.safeTransfer(oldPayout,owed) (contracts/HCOWStaking.sol#184)
+	- hcow.safeTransfer(oldPayout,owed) (contracts/HCOWStaking.sol#175-177)
 	Event emitted after the call(s):
-	- CommissionClaimed(id,oldPayout,owed) (contracts/HCOWStaking.sol#184-185)
-	- RepresentativeUpdated(id,payout,commissionBps,active) (contracts/HCOWStaking.sol#186-189)
+	- CommissionClaimed(id,oldPayout,owed) (contracts/HCOWStaking.sol#177-178)
+	- RepresentativeUpdated(id,payout,commissionBps,active) (contracts/HCOWStaking.sol#181-182)
 Reentrancy in HCOWFaucet.withdraw(address,address,uint256) (contracts/HCOWFaucet.sol#145-151):
 	External calls:
 	- IERC20(token).safeTransfer(to,amount) (contracts/HCOWFaucet.sol#148-150)
@@ -618,40 +779,40 @@ HCOWLedger._verify(bytes32[],bytes32,bytes32) (contracts/HCOWLedger.sol#174-187)
 	Dangerous comparisons:
 	- root == bytes32(0) (contracts/HCOWLedger.sol#178)
 	- h == root (contracts/HCOWLedger.sol#184-187)
-HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#237-261) uses timestamp for comparisons
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#223-241) uses timestamp for comparisons
 	Dangerous comparisons:
-	- minted == 0 (contracts/HCOWProfitShare.sol#255-256)
-	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#250-255)
-HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#270-308) uses timestamp for comparisons
+	- minted == 0 (contracts/HCOWProfitShare.sol#236)
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#232-236)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#250-274) uses timestamp for comparisons
 	Dangerous comparisons:
-	- owned == 0 (contracts/HCOWProfitShare.sol#285)
-	- hcowAmount > owned (contracts/HCOWProfitShare.sol#286-288)
-	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#291-292)
-	- a.shares == 0 (contracts/HCOWProfitShare.sol#295-296)
-HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#320-350) uses timestamp for comparisons
+	- owned == 0 (contracts/HCOWProfitShare.sol#260-261)
+	- hcowAmount > owned (contracts/HCOWProfitShare.sol#262)
+	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#265-266)
+	- a.shares == 0 (contracts/HCOWProfitShare.sol#267)
+HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#290-328) uses timestamp for comparisons
 	Dangerous comparisons:
-	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#340-342)
-HCOWProfitShare.withdrawUnbonded() (contracts/HCOWProfitShare.sol#354-363) uses timestamp for comparisons
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#307-309)
+HCOWProfitShare.withdrawUnbonded() (contracts/HCOWProfitShare.sol#331-346) uses timestamp for comparisons
 	Dangerous comparisons:
-	- block.timestamp < a.unbondReadyAt (contracts/HCOWProfitShare.sol#358)
-HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514) uses timestamp for comparisons
+	- block.timestamp < a.unbondReadyAt (contracts/HCOWProfitShare.sol#335-336)
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493) uses timestamp for comparisons
 	Dangerous comparisons:
-	- lastDeductionAt != 0 && block.timestamp < readyAt (contracts/HCOWProfitShare.sol#442-443)
-	- totalShares == 0 (contracts/HCOWProfitShare.sol#471)
-	- (totalShares == 0 || deductPpm == 0) (contracts/HCOWProfitShare.sol#451-454)
-HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#517-523) uses timestamp for comparisons
+	- lastDeductionAt != 0 && block.timestamp < readyAt (contracts/HCOWProfitShare.sol#418-420)
+	- totalShares == 0 (contracts/HCOWProfitShare.sol#443-445)
+	- (totalShares == 0 || deductPpm == 0) (contracts/HCOWProfitShare.sol#430-432)
+HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#498-506) uses timestamp for comparisons
 	Dangerous comparisons:
-	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#520-521)
-HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#560-563) uses timestamp for comparisons
+	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#502-503)
+HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#552-558) uses timestamp for comparisons
 	Dangerous comparisons:
-	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#561-562)
-HCOWProfitShare.deductionReadyAt() (contracts/HCOWProfitShare.sol#565-572) uses timestamp for comparisons
+	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#555-556)
+HCOWProfitShare.deductionReadyAt() (contracts/HCOWProfitShare.sol#561-565) uses timestamp for comparisons
 	Dangerous comparisons:
-	- lastDeductionAt == 0 (contracts/HCOWProfitShare.sol#566)
-	- block.timestamp >= readyAt (contracts/HCOWProfitShare.sol#571-572)
-HCOWStaking.withdrawUnstaked() (contracts/HCOWStaking.sol#301-315) uses timestamp for comparisons
+	- lastDeductionAt == 0 (contracts/HCOWProfitShare.sol#562-563)
+	- block.timestamp >= readyAt (contracts/HCOWProfitShare.sol#564)
+HCOWStaking.withdrawUnstaked() (contracts/HCOWStaking.sol#294-307) uses timestamp for comparisons
 	Dangerous comparisons:
-	- block.timestamp < d.unstakeReadyAt (contracts/HCOWStaking.sol#308-309)
+	- block.timestamp < d.unstakeReadyAt (contracts/HCOWStaking.sol#300-301)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
 INFO:Detectors:
 Detector: timestamp
@@ -689,89 +850,137 @@ HCOWLedger.isEpochAnchored(uint64) (contracts/HCOWLedger.sol#307-309) uses times
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
 INFO:Detectors:
 Detector: timestamp
-HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#311-336) uses timestamp for comparisons
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#335-362) uses timestamp for comparisons
 	Dangerous comparisons:
-	- minted == 0 (contracts/HCOWProfitShare.sol#326)
-	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#323-325)
-HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#347-382) uses timestamp for comparisons
+	- minted == 0 (contracts/HCOWProfitShare.sol#353)
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#348-353)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#373-409) uses timestamp for comparisons
 	Dangerous comparisons:
-	- owned == 0 (contracts/HCOWProfitShare.sol#355)
-	- hcowAmount > owned (contracts/HCOWProfitShare.sol#356)
-	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#360)
-	- fromNew > 0 (contracts/HCOWProfitShare.sol#366)
-	- a.shares == 0 (contracts/HCOWProfitShare.sol#371)
-	- sharesToBurn > a.newShares (contracts/HCOWProfitShare.sol#365)
-HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#393-432) uses timestamp for comparisons
+	- owned == 0 (contracts/HCOWProfitShare.sol#385)
+	- hcowAmount > owned (contracts/HCOWProfitShare.sol#385)
+	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#388)
+	- fromNew > 0 (contracts/HCOWProfitShare.sol#395)
+	- a.shares == 0 (contracts/HCOWProfitShare.sol#401)
+	- sharesToBurn > a.newShares (contracts/HCOWProfitShare.sol#394-395)
+HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#421-450) uses timestamp for comparisons
 	Dangerous comparisons:
-	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#413-415)
-HCOWProfitShare.withdrawUnbonded() (contracts/HCOWProfitShare.sol#441-463) uses timestamp for comparisons
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#436-439)
+HCOWProfitShare.withdrawUnbonded() (contracts/HCOWProfitShare.sol#462-488) uses timestamp for comparisons
 	Dangerous comparisons:
-	- block.timestamp < a.unbondReadyAt (contracts/HCOWProfitShare.sol#444)
-HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608) uses timestamp for comparisons
+	- block.timestamp < a.unbondReadyAt (contracts/HCOWProfitShare.sol#466-468)
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630) uses timestamp for comparisons
 	Dangerous comparisons:
-	- lastSettledAt != 0 (contracts/HCOWProfitShare.sol#506)
-	- block.timestamp < openAt (contracts/HCOWProfitShare.sol#508)
-	- (totalShares == 0 || deductPpm == 0) (contracts/HCOWProfitShare.sol#543-545)
-HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#615-619) uses timestamp for comparisons
+	- lastSettledAt != 0 (contracts/HCOWProfitShare.sol#536-537)
+	- block.timestamp < openAt (contracts/HCOWProfitShare.sol#540)
+	- (totalShares == 0 || deductPpm == 0) (contracts/HCOWProfitShare.sol#577-580)
+HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#635-641) uses timestamp for comparisons
 	Dangerous comparisons:
-	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#617)
-HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#693-699) uses timestamp for comparisons
+	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#640)
+HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#709-717) uses timestamp for comparisons
 	Dangerous comparisons:
-	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#694)
-	- totalShares == totalNewShares (contracts/HCOWProfitShare.sol#697)
-HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#702-706) uses timestamp for comparisons
+	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#710)
+	- totalShares == totalNewShares (contracts/HCOWProfitShare.sol#713)
+HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#719-723) uses timestamp for comparisons
 	Dangerous comparisons:
-	- lastSettledAt == 0 (contracts/HCOWProfitShare.sol#703)
-	- block.timestamp >= openAt (contracts/HCOWProfitShare.sol#705)
+	- lastSettledAt == 0 (contracts/HCOWProfitShare.sol#720-721)
+	- block.timestamp >= openAt (contracts/HCOWProfitShare.sol#722-723)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
 INFO:Detectors:
 Detector: timestamp
-HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#230-271) uses timestamp for comparisons
+HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#356-381) uses timestamp for comparisons
 	Dangerous comparisons:
-	- owed > _rewardsOwed (contracts/HCOWStaking.sol#260)
-HCOWStaking.withdrawUnstaked() (contracts/HCOWStaking.sol#390-402) uses timestamp for comparisons
+	- minted == 0 (contracts/HCOWProfitShare.sol#371)
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#368-370)
+HCOWProfitShare.requestUnbond(uint256) (contracts/HCOWProfitShare.sol#392-428) uses timestamp for comparisons
 	Dangerous comparisons:
-	- block.timestamp < d.unstakeReadyAt (contracts/HCOWStaking.sol#393)
-HCOWStaking.claimHcow() (contracts/HCOWStaking.sol#404-416) uses timestamp for comparisons
+	- owned == 0 (contracts/HCOWProfitShare.sol#400)
+	- hcowAmount > owned (contracts/HCOWProfitShare.sol#401)
+	- sharesToBurn == 0 (contracts/HCOWProfitShare.sol#405)
+	- fromNew > 0 (contracts/HCOWProfitShare.sol#411)
+	- a.shares == 0 (contracts/HCOWProfitShare.sol#416)
+	- sharesToBurn > a.newShares (contracts/HCOWProfitShare.sol#410)
+HCOWProfitShare.cancelUnbond() (contracts/HCOWProfitShare.sol#439-483) uses timestamp for comparisons
 	Dangerous comparisons:
-	- amount > _rewardsOwed (contracts/HCOWStaking.sol#412)
-HCOWStaking.claimCommission(bytes32) (contracts/HCOWStaking.sol#420-434) uses timestamp for comparisons
+	- totalShares == 0 || totalBondedHcow == 0 (contracts/HCOWProfitShare.sol#463-465)
+HCOWProfitShare.withdrawUnbonded() (contracts/HCOWProfitShare.sol#492-519) uses timestamp for comparisons
 	Dangerous comparisons:
-	- amount > _rewardsOwed (contracts/HCOWStaking.sol#430)
-HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#454-497) uses timestamp for comparisons
+	- block.timestamp < a.unbondReadyAt (contracts/HCOWProfitShare.sol#495)
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691) uses timestamp for comparisons
 	Dangerous comparisons:
-	- block.timestamp < periodFinish (contracts/HCOWStaking.sol#483)
-	- newRate < minRate (contracts/HCOWStaking.sol#485)
-	- newRate == 0 (contracts/HCOWStaking.sol#487)
-	- block.timestamp < periodFinish (contracts/HCOWStaking.sol#471-473)
-HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#503-521) uses timestamp for comparisons
+	- lastSettledAt != 0 (contracts/HCOWProfitShare.sol#562)
+	- block.timestamp < openAt (contracts/HCOWProfitShare.sol#564)
+	- decayCheckpointAt == 0 || block.timestamp >= decayCheckpointAt + DECAY_WINDOW (contracts/HCOWProfitShare.sol#651)
+HCOWProfitShare.bondedOf(address) (contracts/HCOWProfitShare.sol#698-702) uses timestamp for comparisons
 	Dangerous comparisons:
-	- t > lastUpdateTime && totalStaked > 0 (contracts/HCOWStaking.sol#512)
-	- uint64(block.timestamp) < periodFinish (contracts/HCOWStaking.sol#509-511)
-	- net > d.rewardDebtNet (contracts/HCOWStaking.sol#520)
-HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#599-625) uses timestamp for comparisons
+	- s == 0 || totalShares == 0 (contracts/HCOWProfitShare.sol#700)
+HCOWProfitShare.lifetimeOf(address) (contracts/HCOWProfitShare.sol#753-766) uses timestamp for comparisons
 	Dangerous comparisons:
-	- t <= lastUpdateTime (contracts/HCOWStaking.sol#603)
-	- released > 0 (contracts/HCOWStaking.sol#607)
-	- inc > 0 (contracts/HCOWStaking.sol#609)
-	- uint64(block.timestamp) < periodFinish (contracts/HCOWStaking.sol#600-602)
-HCOWStaking._accrueRepCommission(HCOWStaking.Representative) (contracts/HCOWStaking.sol#649-659) uses timestamp for comparisons
+	- accrued > a.deductDebt (contracts/HCOWProfitShare.sol#763)
+HCOWProfitShare.deductionFor(uint32) (contracts/HCOWProfitShare.sol#776-782) uses timestamp for comparisons
 	Dangerous comparisons:
-	- delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0 (contracts/HCOWStaking.sol#651)
-	- earned > 0 (contracts/HCOWStaking.sol#656)
-HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#676-685) uses timestamp for comparisons
+	- deductPpm > MAX_DEDUCT_PPM || totalShares == 0 (contracts/HCOWProfitShare.sol#777)
+	- totalShares == totalNewShares (contracts/HCOWProfitShare.sol#780)
+HCOWProfitShare.epochOpensAt() (contracts/HCOWProfitShare.sol#785-789) uses timestamp for comparisons
 	Dangerous comparisons:
-	- t > lastUpdateTime && totalStaked > 0 (contracts/HCOWStaking.sol#681)
-	- uint64(block.timestamp) < periodFinish (contracts/HCOWStaking.sol#678-680)
-HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#688-702) uses timestamp for comparisons
+	- lastSettledAt == 0 (contracts/HCOWProfitShare.sol#786)
+	- block.timestamp >= openAt (contracts/HCOWProfitShare.sol#788)
+HCOWProfitShare._settle(HCOWProfitShare.Account) (contracts/HCOWProfitShare.sol#834-864) uses timestamp for comparisons
 	Dangerous comparisons:
-	- t > lastUpdateTime && totalStaked > 0 (contracts/HCOWStaking.sol#694)
-	- uint64(block.timestamp) < periodFinish (contracts/HCOWStaking.sol#691-693)
-	- (delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0) (contracts/HCOWStaking.sol#698-700)
-HCOWStaking._harvest(HCOWStaking.Delegation) (contracts/HCOWStaking.sol#715-734) uses timestamp for comparisons
+	- deducted > a.deductDebt (contracts/HCOWProfitShare.sol#859)
+HCOWProfitShare._chargeIndex(HCOWProfitShare.Account) (contracts/HCOWProfitShare.sol#878-887) uses timestamp for comparisons
 	Dangerous comparisons:
-	- netDelta > 0 (contracts/HCOWStaking.sol#722)
-	- net > d.rewardDebtNet (contracts/HCOWStaking.sol#721)
+	- t == 0 || t >= readyAt (contracts/HCOWProfitShare.sol#883)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
+INFO:Detectors:
+Detector: timestamp
+HCOWStaking.updateRepresentative(bytes32,address,uint16,bool) (contracts/HCOWStaking.sol#277-318) uses timestamp for comparisons
+	Dangerous comparisons:
+	- owed > _rewardsOwed (contracts/HCOWStaking.sol#307)
+HCOWStaking.withdrawUnstaked() (contracts/HCOWStaking.sol#437-449) uses timestamp for comparisons
+	Dangerous comparisons:
+	- block.timestamp < d.unstakeReadyAt (contracts/HCOWStaking.sol#440)
+HCOWStaking.claimHcow() (contracts/HCOWStaking.sol#451-463) uses timestamp for comparisons
+	Dangerous comparisons:
+	- amount > _rewardsOwed (contracts/HCOWStaking.sol#459)
+HCOWStaking.claimCommission(bytes32) (contracts/HCOWStaking.sol#467-481) uses timestamp for comparisons
+	Dangerous comparisons:
+	- amount > _rewardsOwed (contracts/HCOWStaking.sol#477)
+HCOWStaking.fundRewards(uint256,uint64) (contracts/HCOWStaking.sol#501-557) uses timestamp for comparisons
+	Dangerous comparisons:
+	- amount == 0 && undistributed == 0 (contracts/HCOWStaking.sol#506)
+	- block.timestamp < periodFinish (contracts/HCOWStaking.sol#536)
+	- newRate < minRate (contracts/HCOWStaking.sol#544)
+	- uint256(block.timestamp) + duration < periodFinish (contracts/HCOWStaking.sol#545)
+	- newRate == 0 (contracts/HCOWStaking.sol#547)
+	- block.timestamp < periodFinish (contracts/HCOWStaking.sol#524-526)
+HCOWStaking.pendingRewardOf(address) (contracts/HCOWStaking.sol#563-581) uses timestamp for comparisons
+	Dangerous comparisons:
+	- t > lastUpdateTime && totalStaked >= MIN_STAKE_FOR_ACCRUAL (contracts/HCOWStaking.sol#572)
+	- uint64(block.timestamp) < periodFinish (contracts/HCOWStaking.sol#569-571)
+	- net > d.rewardDebtNet (contracts/HCOWStaking.sol#580)
+HCOWStaking._updateGlobal() (contracts/HCOWStaking.sol#659-687) uses timestamp for comparisons
+	Dangerous comparisons:
+	- t <= lastUpdateTime (contracts/HCOWStaking.sol#663)
+	- released > 0 (contracts/HCOWStaking.sol#667)
+	- inc > 0 (contracts/HCOWStaking.sol#671)
+	- uint64(block.timestamp) < periodFinish (contracts/HCOWStaking.sol#660-662)
+HCOWStaking._accrueRepCommission(HCOWStaking.Representative) (contracts/HCOWStaking.sol#711-722) uses timestamp for comparisons
+	Dangerous comparisons:
+	- delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0 (contracts/HCOWStaking.sol#713)
+	- earned > 0 (contracts/HCOWStaking.sol#719)
+HCOWStaking.totalRewardsOwed() (contracts/HCOWStaking.sol#739-748) uses timestamp for comparisons
+	Dangerous comparisons:
+	- t > lastUpdateTime && totalStaked >= MIN_STAKE_FOR_ACCRUAL (contracts/HCOWStaking.sol#744)
+	- uint64(block.timestamp) < periodFinish (contracts/HCOWStaking.sol#741-743)
+HCOWStaking.commissionOf(bytes32) (contracts/HCOWStaking.sol#751-766) uses timestamp for comparisons
+	Dangerous comparisons:
+	- t > lastUpdateTime && totalStaked >= MIN_STAKE_FOR_ACCRUAL (contracts/HCOWStaking.sol#758)
+	- uint64(block.timestamp) < periodFinish (contracts/HCOWStaking.sol#755-757)
+	- (delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0) (contracts/HCOWStaking.sol#762-764)
+HCOWStaking._harvest(HCOWStaking.Delegation) (contracts/HCOWStaking.sol#779-798) uses timestamp for comparisons
+	Dangerous comparisons:
+	- netDelta > 0 (contracts/HCOWStaking.sol#786)
+	- net > d.rewardDebtNet (contracts/HCOWStaking.sol#785)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
 INFO:Detectors:
 Detector: pragma
@@ -815,6 +1024,7 @@ Detector: pragma
 		-^0.8.20 (node_modules/@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol#4)
 		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/Address.sol#4)
 		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/ReentrancyGuard.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/math/Math.sol#4)
 		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/math/SafeCast.sol#5)
 	- Version constraint ^0.8.26 is used by:
 		-^0.8.26 (contracts/HCOWProfitShare.sol#2)
@@ -828,20 +1038,25 @@ Detector: pragma
 		-^0.8.20 (node_modules/@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol#4)
 		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/Address.sol#4)
 		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/ReentrancyGuard.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/math/Math.sol#4)
 		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/math/SafeCast.sol#5)
 	- Version constraint ^0.8.26 is used by:
 		-^0.8.26 (contracts/HCOWStaking.sol#2)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#different-pragma-directives-are-used
 INFO:Detectors:
 Detector: cyclomatic-complexity
-HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#395-514) has a high cyclomatic complexity (16).
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#385-493) has a high cyclomatic complexity (16).
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#cyclomatic-complexity
 INFO:Detectors:
 Detector: cyclomatic-complexity
-HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#498-608) has a high cyclomatic complexity (17).
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#527-630) has a high cyclomatic complexity (17).
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#cyclomatic-complexity
+INFO:Detectors:
+Detector: cyclomatic-complexity
+HCOWProfitShare.settleEpoch(uint64,uint256,uint256,uint256,uint32) (contracts/HCOWProfitShare.sol#554-691) has a high cyclomatic complexity (20).
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#cyclomatic-complexity
 INFO:Detectors:
 Detector: missing-inheritance
-MockHCOW (contracts/test/Mocks.sol#7-14) should inherit from IBurnable (contracts/HCOWProfitShare.sol#9-11)
+MockHCOW (contracts/test/Mocks.sol#7-14) should inherit from IBurnable (contracts/HCOWProfitShare.sol#8-10)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-inheritance
-INFO:Slither:. analyzed (40 contracts with 102 detectors), 128 result(s) found
+INFO:Slither:. analyzed (49 contracts with 102 detectors), 160 result(s) found

@@ -263,12 +263,61 @@ async function main() {
   await rv('commission cannot be raised past the cap on update', st, ownerS,
     'updateRepresentative', [A, repAPayout, 1500, true], 'CommissionTooHigh');
 
+  // ---------------- period may only extend ----------------
+  // Blocking a slower rate but not a shorter period leaves the mirror image
+  // open: one wei on the minimum duration compresses a year's budget into a
+  // day, and anyone reading the mempool front runs it with a large stake.
+  await (await st.connect(funderS).fundRewards(E(5_000), 300 * 86_400)).wait();
+  await rv('a funding cannot pull the end date in', st, funderS, 'fundRewards',
+    [1, 86_400], 'BadDuration');
+  await rv('and still cannot slow the rate', st, funderS, 'fundRewards',
+    [1, 365 * 86_400], 'BadDuration');
+
+  // ---------------- a dust pool cannot pump the accumulator ----------------
+  const st3 = await deploy('HCOWStaking', ownerS, [await hcow.getAddress(), owner, funder]);
+  const a3 = await st3.getAddress();
+  await (await hcow.connect(funderS).approve(a3, ethers.MaxUint256)).wait();
+  await (await hcow.connect(aliceS).approve(a3, ethers.MaxUint256)).wait();
+  await (await st3.registerRepresentative(A, 'A', repAPayout, 0, false)).wait();
+  await (await st3.connect(aliceS).stake(1, A)).wait();
+  await (await st3.connect(funderS).fundRewards(E(100_000), 86_400)).wait();
+  await provider.send('evm_increaseTime', [86_401]);
+  await provider.send('evm_mine', []);
+  eq('a one wei pool accrues nothing', D(await st3.pendingRewardOf(alice)), 0);
+  ok('and the seconds are carried, not lost', (await st3.undistributed()) > 0n);
+
+  // carried funds are releasable on their own once the period is over. A live
+  // period cannot be slowed, which is what stops a token top up stretching a
+  // budget out behind it.
+  await (await st3.connect(aliceS).stake(E(1_000), A)).wait();
+  await (await st3.connect(funderS).fundRewards(0, 86_400)).wait();
+  await provider.send('evm_increaseTime', [86_401]);
+  await provider.send('evm_mine', []);
+  ok('carried funds are releasable on their own',
+    (await st3.pendingRewardOf(alice)) > 0n);
+
+  // ---------------- deregistration ----------------
+  const D1 = ethers.encodeBytes32String('gone');
+  await (await st3.registerRepresentative(D1, 'gone', repAPayout, 0, false)).wait();
+  await (await st3.deregisterRepresentative(D1)).wait();
+  await rv('a deregistered id is unknown again', st3, ownerS, 'commissionOf', [D1],
+    'UnknownRepresentative');
+  await rv('an occupied representative cannot be removed', st3, ownerS,
+    'deregisterRepresentative', [A], 'RepresentativeNotEmpty');
+
   // ---------------- solvency ----------------
   let owed = 0n;
   for (const who of [alice, bob, carol, dave]) owed += await st.pendingRewardOf(who);
   for (const id of [A, B]) owed += await st.commissionOf(id);
   owed += await st.pendingRewardOf(flash);
-  const accounted = (await st.totalStaked()) + (await st.totalPendingUnstake()) + owed;
+  // Funded HCOW that has not been released yet is float the contract holds on
+  // purpose, not surplus: the carried part in undistributed, plus the part of
+  // the live period still ahead of the clock.
+  const nowTs = BigInt((await provider.getBlock('latest')).timestamp);
+  const finish = await st.periodFinish();
+  const unreleased = finish > nowTs ? (finish - nowTs) * (await st.rewardRate()) : 0n;
+  const accounted = (await st.totalStaked()) + (await st.totalPendingUnstake())
+    + owed + (await st.undistributed()) + unreleased;
   const held = await hcow.balanceOf(addr);
   ok('contract holds at least stake plus pending plus rewards owed',
      held >= accounted, `holds ${D(held)}, needs ${D(accounted)}`);
@@ -282,7 +331,7 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(e.shortMessage || e.message);
+  console.error(e.stack || e.shortMessage || e.message);
   console.error(e.info?.error?.message || '');
   process.exit(1);
 });

@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title HCOWStaking
@@ -51,6 +52,18 @@ contract HCOWStaking is ReentrancyGuard {
      * delegations cannot safely disappear.
      */
     uint256 public constant MAX_REPRESENTATIVES = 100;
+
+    /**
+     * @notice Below this, a released second is carried instead of distributed.
+     *
+     * The accumulator advances by released over totalStaked, so a pool of a
+     * few wei inflates it without bound and every later position is priced
+     * against it. Past a point an ordinary sized stake can no longer be
+     * harvested at all, and its principal is stuck on a contract that cannot
+     * be upgraded. mulDiv removes the overflow; this removes the reason to go
+     * looking for it, and a pool this small has no claim on a reward stream.
+     */
+    uint256 public constant MIN_STAKE_FOR_ACCRUAL = 1e18;
 
     /// @notice Wait between requesting an unstake and being able to withdraw.
     uint256 public constant UNSTAKE_COOLDOWN = 7 days;
@@ -146,6 +159,7 @@ contract HCOWStaking is ReentrancyGuard {
 
     event RepresentativeRegistered(bytes32 indexed id, string name, address payout, uint16 commissionBps, bool isFoundation);
     event RepresentativeUpdated(bytes32 indexed id, address payout, uint16 commissionBps, bool active);
+    event RepresentativeDeregistered(bytes32 indexed id);
     event Staked(address indexed account, bytes32 indexed repId, uint256 amount);
     event Redelegated(address indexed account, bytes32 indexed fromRep, bytes32 indexed toRep, uint256 amount);
     event UnstakeRequested(address indexed account, uint256 amount, uint64 readyAt);
@@ -174,6 +188,7 @@ contract HCOWStaking is ReentrancyGuard {
     error NothingToClaim();
     error SameRepresentative();
     error TooManyRepresentatives(uint256 max);
+    error RepresentativeNotEmpty(bytes32 id);
     error BadDuration(uint64 given);
 
     modifier onlyOwner() {
@@ -225,6 +240,38 @@ contract HCOWStaking is ReentrancyGuard {
         _repIds.push(id);
 
         emit RepresentativeRegistered(id, name, payout, commissionBps, isFoundation);
+    }
+
+    /**
+     * @notice Remove a representative that holds nothing.
+     * @dev The cap is permanent otherwise: a typo'd id, a test entry, or
+     *      ordinary churn would consume slots for good on a contract that
+     *      cannot be upgraded. Only an empty record may go, which is exactly
+     *      the safety property that made deregistration unsafe in general.
+     */
+    function deregisterRepresentative(bytes32 id) external onlyOwner nonReentrant {
+        Representative storage r = _reps[id];
+        if (!r.exists) revert UnknownRepresentative(id);
+        _updateGlobal();
+        _accrueRepCommission(r);
+        if (r.totalDelegated != 0 || r.delegatorCount != 0 || r.commissionAccrued != 0) {
+            revert RepresentativeNotEmpty(id);
+        }
+
+        // Locate first, mutate after. Writing inside the loop is the same
+        // work but reads as an unbounded cost to a static analyser, and to a
+        // reviewer.
+        uint256 n = _repIds.length;
+        uint256 at = n;
+        for (uint256 i = 0; i < n; ++i) {
+            if (_repIds[i] == id) { at = i; break; }
+        }
+        if (at < n) {
+            _repIds[at] = _repIds[n - 1];
+            _repIds.pop();
+        }
+        delete _reps[id];
+        emit RepresentativeDeregistered(id);
     }
 
     function updateRepresentative(bytes32 id, address payout, uint16 commissionBps, bool active)
@@ -453,17 +500,23 @@ contract HCOWStaking is ReentrancyGuard {
      */
     function fundRewards(uint256 amount, uint64 duration) external nonReentrant {
         if (msg.sender != rewardFunder) revert NotFunder();
-        if (amount == 0) revert ZeroAmount();
+        // A period may be opened on carried funds alone. Without this, seconds
+        // that elapsed with nothing staked are unreachable unless somebody
+        // finds fresh tokens, and there is no sweep.
+        if (amount == 0 && undistributed == 0) revert ZeroAmount();
         if (duration < MIN_REWARD_DURATION || duration > MAX_REWARD_DURATION) {
             revert BadDuration(duration);
         }
 
         _updateGlobal();
 
-        uint256 before = hcow.balanceOf(address(this));
-        hcow.safeTransferFrom(msg.sender, address(this), amount);
-        uint256 received = hcow.balanceOf(address(this)) - before;
-        if (received == 0) revert ZeroAmount();
+        uint256 received;
+        if (amount > 0) {
+            uint256 before = hcow.balanceOf(address(this));
+            hcow.safeTransferFrom(msg.sender, address(this), amount);
+            received = hcow.balanceOf(address(this)) - before;
+            if (received == 0) revert ZeroAmount();
+        }
 
         // Whatever the running period has not released yet, plus anything that
         // elapsed while nothing was staked, rolls into the new one. Funding
@@ -481,8 +534,15 @@ contract HCOWStaking is ReentrancyGuard {
         // would be destroyed, but delivery would be deferrable forever by a
         // role that is not the owner.
         if (block.timestamp < periodFinish) {
+            // Neither the rate nor the end date may move backwards. Blocking
+            // only the rate leaves the mirror image open: a single wei on the
+            // shortest duration pulls the end date in and compresses the whole
+            // remaining budget into it, which destroys exactly the time
+            // weighting this design exists to create. A funding may add tokens
+            // or add time. It may never redistribute what is already promised.
             uint256 minRate = leftover / (uint256(periodFinish) - block.timestamp);
             if (newRate < minRate) revert BadDuration(duration);
+            if (uint256(block.timestamp) + duration < periodFinish) revert BadDuration(duration);
         }
         if (newRate == 0) revert BadDuration(duration);
         rewardRate = newRate;
@@ -509,14 +569,14 @@ contract HCOWStaking is ReentrancyGuard {
         uint64 t = uint64(block.timestamp) < periodFinish
             ? uint64(block.timestamp)
             : periodFinish;
-        if (t > lastUpdateTime && totalStaked > 0) {
-            acc += ((uint256(t - lastUpdateTime) * rewardRate) * ACC_PRECISION) / totalStaked;
+        if (t > lastUpdateTime && totalStaked >= MIN_STAKE_FOR_ACCRUAL) {
+            acc += Math.mulDiv(uint256(t - lastUpdateTime) * rewardRate, ACC_PRECISION, totalStaked);
         }
 
         Representative storage r = _reps[d.repId];
         uint256 netAcc = r.accNetBase
             + ((acc - r.accNetAnchor) * (10_000 - r.commissionBps)) / 10_000;
-        uint256 net = (uint256(d.amount) * netAcc) / ACC_PRECISION;
+        uint256 net = Math.mulDiv(uint256(d.amount), netAcc, ACC_PRECISION);
         return d.claimable + (net > d.rewardDebtNet ? net - d.rewardDebtNet : 0);
     }
 
@@ -605,7 +665,9 @@ contract HCOWStaking is ReentrancyGuard {
         uint256 elapsed = uint256(t - lastUpdateTime);
         uint256 released = elapsed * rewardRate;
         if (released > 0) {
-            uint256 inc = totalStaked > 0 ? (released * ACC_PRECISION) / totalStaked : 0;
+            uint256 inc = totalStaked >= MIN_STAKE_FOR_ACCRUAL
+                ? Math.mulDiv(released, ACC_PRECISION, totalStaked)
+                : 0;
             if (inc > 0) {
                 accRewardPerShare += inc;
                 // Reserve the whole window. Individual credits are differences
@@ -652,7 +714,8 @@ contract HCOWStaking is ReentrancyGuard {
             // Divided before the second multiply so the intermediate stays
             // far from the top of the word even in the degenerate case of a
             // one wei pool absorbing the whole supply.
-            uint256 earned = ((r.totalDelegated * delta) / ACC_PRECISION) * r.commissionBps / 10_000;
+            uint256 earned =
+                Math.mulDiv(r.totalDelegated, delta, ACC_PRECISION) * r.commissionBps / 10_000;
             if (earned > 0) r.commissionAccrued += earned;
         }
         r.commAnchor = accRewardPerShare;
@@ -678,7 +741,7 @@ contract HCOWStaking is ReentrancyGuard {
         uint64 t = uint64(block.timestamp) < periodFinish
             ? uint64(block.timestamp)
             : periodFinish;
-        if (t > lastUpdateTime && totalStaked > 0) {
+        if (t > lastUpdateTime && totalStaked >= MIN_STAKE_FOR_ACCRUAL) {
             owed += uint256(t - lastUpdateTime) * rewardRate;
         }
         return owed;
@@ -687,23 +750,24 @@ contract HCOWStaking is ReentrancyGuard {
     /// @notice Commission a representative could claim right now.
     function commissionOf(bytes32 id) external view returns (uint256) {
         Representative storage r = _reps[id];
+        if (!r.exists) revert UnknownRepresentative(id);
         uint256 acc = accRewardPerShare;
         uint64 t = uint64(block.timestamp) < periodFinish
             ? uint64(block.timestamp)
             : periodFinish;
-        if (t > lastUpdateTime && totalStaked > 0) {
-            acc += ((uint256(t - lastUpdateTime) * rewardRate) * ACC_PRECISION) / totalStaked;
+        if (t > lastUpdateTime && totalStaked >= MIN_STAKE_FOR_ACCRUAL) {
+            acc += Math.mulDiv(uint256(t - lastUpdateTime) * rewardRate, ACC_PRECISION, totalStaked);
         }
         uint256 delta = acc - r.commAnchor;
         uint256 pending = (delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0)
-            ? ((r.totalDelegated * delta) / ACC_PRECISION) * r.commissionBps / 10_000
+            ? Math.mulDiv(r.totalDelegated, delta, ACC_PRECISION) * r.commissionBps / 10_000
             : 0;
         return r.commissionAccrued + pending;
     }
 
     function _bookmark(Delegation storage d, Representative storage r) private {
         uint256 amt = uint256(d.amount);
-        d.rewardDebtNet = (amt * _netAcc(r)) / ACC_PRECISION;
+        d.rewardDebtNet = Math.mulDiv(amt, _netAcc(r), ACC_PRECISION);
     }
 
     /**
@@ -717,7 +781,7 @@ contract HCOWStaking is ReentrancyGuard {
         if (d.amount > 0) {
             Representative storage r = _reps[d.repId];
             uint256 amt = uint256(d.amount);
-            uint256 net = (amt * _netAcc(r)) / ACC_PRECISION;
+            uint256 net = Math.mulDiv(amt, _netAcc(r), ACC_PRECISION);
             uint256 netDelta = net > d.rewardDebtNet ? net - d.rewardDebtNet : 0;
             if (netDelta > 0) {
                 d.claimable += netDelta;

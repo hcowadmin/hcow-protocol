@@ -462,6 +462,425 @@ library SafeERC20 {
 }
 
 
+// File @openzeppelin/contracts/utils/math/Math.sol@v5.0.2
+
+// Original license: SPDX_License_Identifier: MIT
+// OpenZeppelin Contracts (last updated v5.0.0) (utils/math/Math.sol)
+
+pragma solidity ^0.8.20;
+
+/**
+ * @dev Standard math utilities missing in the Solidity language.
+ */
+library Math {
+    /**
+     * @dev Muldiv operation overflow.
+     */
+    error MathOverflowedMulDiv();
+
+    enum Rounding {
+        Floor, // Toward negative infinity
+        Ceil, // Toward positive infinity
+        Trunc, // Toward zero
+        Expand // Away from zero
+    }
+
+    /**
+     * @dev Returns the addition of two unsigned integers, with an overflow flag.
+     */
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, with an overflow flag.
+     */
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, with an overflow flag.
+     */
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the division of two unsigned integers, with a division by zero flag.
+     */
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers, with a division by zero flag.
+     */
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    /**
+     * @dev Returns the largest of two numbers.
+     */
+    function max(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a : b;
+    }
+
+    /**
+     * @dev Returns the smallest of two numbers.
+     */
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    /**
+     * @dev Returns the average of two numbers. The result is rounded towards
+     * zero.
+     */
+    function average(uint256 a, uint256 b) internal pure returns (uint256) {
+        // (a + b) / 2 can overflow.
+        return (a & b) + (a ^ b) / 2;
+    }
+
+    /**
+     * @dev Returns the ceiling of the division of two numbers.
+     *
+     * This differs from standard division with `/` in that it rounds towards infinity instead
+     * of rounding towards zero.
+     */
+    function ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (b == 0) {
+            // Guarantee the same behavior as in a regular Solidity division.
+            return a / b;
+        }
+
+        // (a + b - 1) / b can overflow on addition, so we distribute.
+        return a == 0 ? 0 : (a - 1) / b + 1;
+    }
+
+    /**
+     * @notice Calculates floor(x * y / denominator) with full precision. Throws if result overflows a uint256 or
+     * denominator == 0.
+     * @dev Original credit to Remco Bloemen under MIT license (https://xn--2-umb.com/21/muldiv) with further edits by
+     * Uniswap Labs also under MIT license.
+     */
+    function mulDiv(uint256 x, uint256 y, uint256 denominator) internal pure returns (uint256 result) {
+        unchecked {
+            // 512-bit multiply [prod1 prod0] = x * y. Compute the product mod 2^256 and mod 2^256 - 1, then use
+            // use the Chinese Remainder Theorem to reconstruct the 512 bit result. The result is stored in two 256
+            // variables such that product = prod1 * 2^256 + prod0.
+            uint256 prod0 = x * y; // Least significant 256 bits of the product
+            uint256 prod1; // Most significant 256 bits of the product
+            assembly {
+                let mm := mulmod(x, y, not(0))
+                prod1 := sub(sub(mm, prod0), lt(mm, prod0))
+            }
+
+            // Handle non-overflow cases, 256 by 256 division.
+            if (prod1 == 0) {
+                // Solidity will revert if denominator == 0, unlike the div opcode on its own.
+                // The surrounding unchecked block does not change this fact.
+                // See https://docs.soliditylang.org/en/latest/control-structures.html#checked-or-unchecked-arithmetic.
+                return prod0 / denominator;
+            }
+
+            // Make sure the result is less than 2^256. Also prevents denominator == 0.
+            if (denominator <= prod1) {
+                revert MathOverflowedMulDiv();
+            }
+
+            ///////////////////////////////////////////////
+            // 512 by 256 division.
+            ///////////////////////////////////////////////
+
+            // Make division exact by subtracting the remainder from [prod1 prod0].
+            uint256 remainder;
+            assembly {
+                // Compute remainder using mulmod.
+                remainder := mulmod(x, y, denominator)
+
+                // Subtract 256 bit number from 512 bit number.
+                prod1 := sub(prod1, gt(remainder, prod0))
+                prod0 := sub(prod0, remainder)
+            }
+
+            // Factor powers of two out of denominator and compute largest power of two divisor of denominator.
+            // Always >= 1. See https://cs.stackexchange.com/q/138556/92363.
+
+            uint256 twos = denominator & (0 - denominator);
+            assembly {
+                // Divide denominator by twos.
+                denominator := div(denominator, twos)
+
+                // Divide [prod1 prod0] by twos.
+                prod0 := div(prod0, twos)
+
+                // Flip twos such that it is 2^256 / twos. If twos is zero, then it becomes one.
+                twos := add(div(sub(0, twos), twos), 1)
+            }
+
+            // Shift in bits from prod1 into prod0.
+            prod0 |= prod1 * twos;
+
+            // Invert denominator mod 2^256. Now that denominator is an odd number, it has an inverse modulo 2^256 such
+            // that denominator * inv = 1 mod 2^256. Compute the inverse by starting with a seed that is correct for
+            // four bits. That is, denominator * inv = 1 mod 2^4.
+            uint256 inverse = (3 * denominator) ^ 2;
+
+            // Use the Newton-Raphson iteration to improve the precision. Thanks to Hensel's lifting lemma, this also
+            // works in modular arithmetic, doubling the correct bits in each step.
+            inverse *= 2 - denominator * inverse; // inverse mod 2^8
+            inverse *= 2 - denominator * inverse; // inverse mod 2^16
+            inverse *= 2 - denominator * inverse; // inverse mod 2^32
+            inverse *= 2 - denominator * inverse; // inverse mod 2^64
+            inverse *= 2 - denominator * inverse; // inverse mod 2^128
+            inverse *= 2 - denominator * inverse; // inverse mod 2^256
+
+            // Because the division is now exact we can divide by multiplying with the modular inverse of denominator.
+            // This will give us the correct result modulo 2^256. Since the preconditions guarantee that the outcome is
+            // less than 2^256, this is the final result. We don't need to compute the high bits of the result and prod1
+            // is no longer required.
+            result = prod0 * inverse;
+            return result;
+        }
+    }
+
+    /**
+     * @notice Calculates x * y / denominator with full precision, following the selected rounding direction.
+     */
+    function mulDiv(uint256 x, uint256 y, uint256 denominator, Rounding rounding) internal pure returns (uint256) {
+        uint256 result = mulDiv(x, y, denominator);
+        if (unsignedRoundsUp(rounding) && mulmod(x, y, denominator) > 0) {
+            result += 1;
+        }
+        return result;
+    }
+
+    /**
+     * @dev Returns the square root of a number. If the number is not a perfect square, the value is rounded
+     * towards zero.
+     *
+     * Inspired by Henry S. Warren, Jr.'s "Hacker's Delight" (Chapter 11).
+     */
+    function sqrt(uint256 a) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        // For our first guess, we get the biggest power of 2 which is smaller than the square root of the target.
+        //
+        // We know that the "msb" (most significant bit) of our target number `a` is a power of 2 such that we have
+        // `msb(a) <= a < 2*msb(a)`. This value can be written `msb(a)=2**k` with `k=log2(a)`.
+        //
+        // This can be rewritten `2**log2(a) <= a < 2**(log2(a) + 1)`
+        // → `sqrt(2**k) <= sqrt(a) < sqrt(2**(k+1))`
+        // → `2**(k/2) <= sqrt(a) < 2**((k+1)/2) <= 2**(k/2 + 1)`
+        //
+        // Consequently, `2**(log2(a) / 2)` is a good first approximation of `sqrt(a)` with at least 1 correct bit.
+        uint256 result = 1 << (log2(a) >> 1);
+
+        // At this point `result` is an estimation with one bit of precision. We know the true value is a uint128,
+        // since it is the square root of a uint256. Newton's method converges quadratically (precision doubles at
+        // every iteration). We thus need at most 7 iteration to turn our partial result with one bit of precision
+        // into the expected uint128 result.
+        unchecked {
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            return min(result, a / result);
+        }
+    }
+
+    /**
+     * @notice Calculates sqrt(a), following the selected rounding direction.
+     */
+    function sqrt(uint256 a, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = sqrt(a);
+            return result + (unsignedRoundsUp(rounding) && result * result < a ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 2 of a positive value rounded towards zero.
+     * Returns 0 if given 0.
+     */
+    function log2(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >> 128 > 0) {
+                value >>= 128;
+                result += 128;
+            }
+            if (value >> 64 > 0) {
+                value >>= 64;
+                result += 64;
+            }
+            if (value >> 32 > 0) {
+                value >>= 32;
+                result += 32;
+            }
+            if (value >> 16 > 0) {
+                value >>= 16;
+                result += 16;
+            }
+            if (value >> 8 > 0) {
+                value >>= 8;
+                result += 8;
+            }
+            if (value >> 4 > 0) {
+                value >>= 4;
+                result += 4;
+            }
+            if (value >> 2 > 0) {
+                value >>= 2;
+                result += 2;
+            }
+            if (value >> 1 > 0) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 2, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log2(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log2(value);
+            return result + (unsignedRoundsUp(rounding) && 1 << result < value ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 10 of a positive value rounded towards zero.
+     * Returns 0 if given 0.
+     */
+    function log10(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >= 10 ** 64) {
+                value /= 10 ** 64;
+                result += 64;
+            }
+            if (value >= 10 ** 32) {
+                value /= 10 ** 32;
+                result += 32;
+            }
+            if (value >= 10 ** 16) {
+                value /= 10 ** 16;
+                result += 16;
+            }
+            if (value >= 10 ** 8) {
+                value /= 10 ** 8;
+                result += 8;
+            }
+            if (value >= 10 ** 4) {
+                value /= 10 ** 4;
+                result += 4;
+            }
+            if (value >= 10 ** 2) {
+                value /= 10 ** 2;
+                result += 2;
+            }
+            if (value >= 10 ** 1) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 10, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log10(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log10(value);
+            return result + (unsignedRoundsUp(rounding) && 10 ** result < value ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 256 of a positive value rounded towards zero.
+     * Returns 0 if given 0.
+     *
+     * Adding one to the result gives the number of pairs of hex symbols needed to represent `value` as a hex string.
+     */
+    function log256(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >> 128 > 0) {
+                value >>= 128;
+                result += 16;
+            }
+            if (value >> 64 > 0) {
+                value >>= 64;
+                result += 8;
+            }
+            if (value >> 32 > 0) {
+                value >>= 32;
+                result += 4;
+            }
+            if (value >> 16 > 0) {
+                value >>= 16;
+                result += 2;
+            }
+            if (value >> 8 > 0) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 256, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log256(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log256(value);
+            return result + (unsignedRoundsUp(rounding) && 1 << (result << 3) < value ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Returns whether a provided rounding mode is considered rounding up for unsigned integers.
+     */
+    function unsignedRoundsUp(Rounding rounding) internal pure returns (bool) {
+        return uint8(rounding) % 2 == 1;
+    }
+}
+
+
 // File @openzeppelin/contracts/utils/math/SafeCast.sol@v5.0.2
 
 // Original license: SPDX_License_Identifier: MIT
@@ -1715,9 +2134,6 @@ pragma solidity ^0.8.26;
 
 
 
-interface IBurnable {
-    function burn(uint256 amount) external;
-}
 
 /**
  * @title HCOWProfitShare
@@ -1790,6 +2206,18 @@ contract HCOWProfitShare is ReentrancyGuard {
     ///         the index is a running product, so its error compounds.
     uint256 private constant RAY = 1e27;
 
+    /**
+     * @notice Where consumed principal goes.
+     *
+     * Deliberately a transfer to the standard burn address rather than a call
+     * to the token's own burn function. An exit must never depend on an
+     * external function that could be paused, role gated, or simply absent
+     * from the deployed token: HCOW is not in this repository, and a burn that
+     * reverts would lock every pending position permanently. A transfer works
+     * against any ERC20 and removes the supply just as verifiably.
+     */
+    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+
     /// @notice A settlement must distribute at least this much to participants
     ///         before it may consume principal. One USDT. This is a sanity
     ///         floor against an epoch that pays a rounding error and burns two
@@ -1806,10 +2234,32 @@ contract HCOWProfitShare is ReentrancyGuard {
      * position from quarantine for free and hand it the whole of the next
      * distribution, which is the defect the quarantine exists to prevent.
      * A floor makes an epoch a period of time rather than a call.
+     *
+     * The floor is the unbond cooldown for a reason. Quarantine ends at the
+     * next settlement, so a shorter floor lets an arrival buy eligibility for
+     * a large distribution with a day of exposure. Matching the two means
+     * becoming eligible costs the same real time as leaving does.
      */
-    uint256 public constant MIN_EPOCH_INTERVAL = 1 days;
+    uint256 public constant MIN_EPOCH_INTERVAL = 7 days;
 
-    uint256 private constant ACC_PRECISION = 1e18;
+    /**
+     * @notice Ceiling on how much of the pool may be consumed within one
+     *         window, on top of the per settlement cap.
+     *
+     * A per settlement cap bounds a mistake. It does not bound a campaign:
+     * two percent a week, repeated, still reaches the whole pool. The
+     * published usage rule decays roughly half a percent a month, so three
+     * percent leaves six times the headroom an honest settler needs and puts a
+     * hard floor under the worst case a compromised one can reach.
+     */
+    uint32 public constant MAX_DECAY_PER_WINDOW_PPM = 30_000;
+    uint256 public constant DECAY_WINDOW = 30 days;
+
+    /// @notice Accumulator precision. Finer than the token's own decimals so
+    ///         a small distribution over a large pool is not floored away into
+    ///         value nobody can claim. Every product it appears in uses mulDiv,
+    ///         so the extra orders cost no headroom.
+    uint256 private constant ACC_PRECISION = 1e24;
 
     /// @notice Wait between requesting an unbond and being able to withdraw.
     uint256 public constant UNBOND_COOLDOWN = 7 days;
@@ -1838,6 +2288,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 settledDeducted; // deduction already folded into the total below
         uint256 lifetimeClaimedUsdt;
         uint256 unbondIndex;     // poolIndex at the moment the unbond was requested
+        uint64  unbondEpoch;     // nextEpoch at that moment, the walk's start
         uint128 newShares;       // bonded this epoch, principal already, not yet earning
         uint64  newSharesEpoch;  // the epoch those shares were bonded in
     }
@@ -1873,6 +2324,17 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     /// @notice Timestamp of the last settlement.
     uint64 public lastSettledAt;
+
+    /// @notice poolIndex at the start of the current decay window, and when
+    ///         that window opened.
+    uint256 public decayCheckpoint;
+    uint64 public decayCheckpointAt;
+
+    /// @notice poolIndex and wall clock immediately after each settled epoch.
+    ///         A pending unbond is charged only for the settlements that fell
+    ///         inside its cooldown, and these are what bound that walk.
+    mapping(uint64 => uint256) public poolIndexAtEpoch;
+    mapping(uint64 => uint64) public settledAtEpoch;
 
     /**
      * @notice Deduction accumulator, the mirror of accUsdtPerShare.
@@ -1969,6 +2431,8 @@ contract HCOWProfitShare is ReentrancyGuard {
     error DeductionWithoutDistribution();
     error DeductionRateAboveCap(uint32 requested, uint32 cap);
     error EpochTooSoon(uint64 readyAt);
+    error DecayWindowExhausted(uint256 floorIndex, uint256 wouldBe);
+    error ProfitNotFunded(uint256 expected, uint256 arrived);
     error NothingBonded();
     error InsufficientBonded(uint256 requested, uint256 available);
     error UnbondAlreadyPending();
@@ -2084,6 +2548,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         a.pendingUnbond = hcowAmount.toUint128();
         a.unbondReadyAt = uint64(block.timestamp + UNBOND_COOLDOWN);
         a.unbondIndex = poolIndex;
+        a.unbondEpoch = nextEpoch;
         totalPendingUnbond += hcowAmount;
 
         _bookmark(a);
@@ -2107,14 +2572,18 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         uint256 amount = a.pendingUnbond;
         uint256 startIndex = a.unbondIndex;
+        // A cancel rejoins the pool, so it pays for every settlement since the
+        // request, including any past its cooldown: it never actually left.
+        uint256 endIndex = poolIndex;
         a.pendingUnbond = 0;
         a.unbondReadyAt = 0;
         a.unbondIndex = 0;
+        a.unbondEpoch = 0;
         totalPendingUnbond -= amount;
 
         uint256 restored = startIndex == 0
             ? amount
-            : (amount * poolIndex) / startIndex;
+            : Math.mulDiv(amount, endIndex, startIndex);
         if (restored > amount) restored = amount;
         uint256 forfeited = amount - restored;
         if (restored == 0) revert ZeroAmount();
@@ -2133,8 +2602,9 @@ contract HCOWProfitShare is ReentrancyGuard {
         _bookmark(a);
 
         if (forfeited > 0) {
+            a.settledDeducted += forfeited;
             totalHcowForfeited += forfeited;
-            IBurnable(address(hcow)).burn(forfeited);
+            hcow.safeTransfer(BURN_ADDRESS, forfeited);
         }
 
         emit UnbondCancelled(msg.sender, restored, minted);
@@ -2154,18 +2624,23 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         uint256 amount = a.pendingUnbond;
         uint256 startIndex = a.unbondIndex;
+        uint256 endIndex = _chargeIndex(a);
         a.pendingUnbond = 0;
         a.unbondReadyAt = 0;
         a.unbondIndex = 0;
+        a.unbondEpoch = 0;
         totalPendingUnbond -= amount;
 
-        uint256 payout = startIndex == 0 ? amount : (amount * poolIndex) / startIndex;
+        uint256 payout = startIndex == 0
+            ? amount
+            : Math.mulDiv(amount, endIndex, startIndex);
         if (payout > amount) payout = amount;
         uint256 forfeited = amount - payout;
 
         if (forfeited > 0) {
+            a.settledDeducted += forfeited;
             totalHcowForfeited += forfeited;
-            IBurnable(address(hcow)).burn(forfeited);
+            hcow.safeTransfer(BURN_ADDRESS, forfeited);
         }
         if (payout > 0) hcow.safeTransfer(msg.sender, payout);
         emit Unbonded(msg.sender, payout);
@@ -2241,7 +2716,12 @@ contract HCOWProfitShare is ReentrancyGuard {
             // participant leg to zero, and with nobody eligible the leg is
             // returned to the settler; burning principal against either is the
             // same defect wearing different arithmetic.
-            if (participants < MIN_PARTICIPANT_USDT || eligibleShares == 0) {
+            // Nobody eligible means the participant leg is returned below, so
+            // there is nothing to charge and nothing to charge it against. The
+            // deduction is dropped rather than the settlement refused: a single
+            // dominant holder could otherwise veto every settlement by
+            // front running it with an unbond request.
+            if (eligibleShares != 0 && participants < MIN_PARTICIPANT_USDT) {
                 revert DeductionWithoutDistribution();
             }
         }
@@ -2249,14 +2729,21 @@ contract HCOWProfitShare is ReentrancyGuard {
         // The settler states a rate. The contract owns the arithmetic, so a
         // participant cannot invalidate a signed settlement by shrinking the
         // pool in front of it, and the settler cannot overstate the amount.
-        uint256 hcowToDeduct = (totalShares == 0 || deductPpm == 0)
+        uint256 hcowToDeduct = (eligibleShares == 0 || deductPpm == 0)
             ? 0
             : (totalBondedHcow * deductPpm) / PPM_DENOM;
 
         uint256 snapshot = totalBondedHcow;
 
         if (profit > 0) {
+            // Measure what arrived, exactly as bond does for HCOW. Paying the
+            // two fixed legs out of a figure that was requested rather than
+            // received would take any shortfall out of the participant
+            // reserve, and the contract would be quietly insolvent.
+            uint256 beforeUsdt = usdt.balanceOf(address(this));
             usdt.safeTransferFrom(msg.sender, address(this), profit);
+            uint256 arrived = usdt.balanceOf(address(this)) - beforeUsdt;
+            if (arrived != profit) revert ProfitNotFunded(profit, arrived);
             uint256 toGameCompany = (profit * GAME_COMPANY_BPS) / 10_000;
             // Remainder to the team so rounding never strands dust here.
             uint256 toTeam = profit - participants - toGameCompany;
@@ -2271,29 +2758,44 @@ contract HCOWProfitShare is ReentrancyGuard {
                 usdt.safeTransfer(msg.sender, participants);
                 participants = 0;
             } else {
-                accUsdtPerShare += (participants * ACC_PRECISION) / eligibleShares;
+                accUsdtPerShare += Math.mulDiv(participants, ACC_PRECISION, eligibleShares);
                 totalUsdtDistributed += participants;
             }
         }
 
         if (hcowToDeduct > 0) {
             // totalShares is non-zero: hcowToDeduct is zero when it is not.
-            accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares;
+            accDeductedPerShare += Math.mulDiv(hcowToDeduct, ACC_PRECISION, totalShares);
             // Record the decay so a pending unbond, whichever way it leaves,
             // is charged for exactly the settlements it sat through. The rate
             // is used rather than the rounded amount so that the index means
             // the same thing for the bonded pool and for pending positions.
-            poolIndex = (poolIndex * (PPM_DENOM - deductPpm)) / PPM_DENOM;
-            if (poolIndex == 0) poolIndex = 1;
+            uint256 nextIndex = Math.mulDiv(poolIndex, PPM_DENOM - deductPpm, PPM_DENOM);
+            if (nextIndex == 0) nextIndex = 1;
+
+            // Roll the window forward first, then hold the settlement to the
+            // floor it implies. A per settlement cap bounds a mistake; this is
+            // what bounds a campaign.
+            if (decayCheckpointAt == 0 || block.timestamp >= decayCheckpointAt + DECAY_WINDOW) {
+                decayCheckpoint = poolIndex;
+                decayCheckpointAt = uint64(block.timestamp);
+            }
+            uint256 floorIndex = Math.mulDiv(
+                decayCheckpoint, PPM_DENOM - MAX_DECAY_PER_WINDOW_PPM, PPM_DENOM
+            );
+            if (nextIndex < floorIndex) revert DecayWindowExhausted(floorIndex, nextIndex);
+            poolIndex = nextIndex;
             totalBondedHcow -= hcowToDeduct;
             totalHcowDeducted += hcowToDeduct;
-            IBurnable(address(hcow)).burn(hcowToDeduct);
+            hcow.safeTransfer(BURN_ADDRESS, hcowToDeduct);
         }
 
         // This epoch's arrivals start earning from the next one. Recording
         // the accumulator here is what lets an untouched account be promoted
         // later without losing the epochs in between.
         accAtEpoch[epoch] = accUsdtPerShare;
+        poolIndexAtEpoch[epoch] = poolIndex;
+        settledAtEpoch[epoch] = uint64(block.timestamp);
         totalNewShares = 0;
         lastSettledAt = uint64(block.timestamp);
 
@@ -2331,12 +2833,12 @@ contract HCOWProfitShare is ReentrancyGuard {
     function claimableOf(address account) external view returns (uint256) {
         Account storage a = _accounts[account];
         uint256 elig = uint256(a.shares) - uint256(a.newShares);
-        uint256 accrued = (elig * accUsdtPerShare) / ACC_PRECISION;
+        uint256 accrued = Math.mulDiv(elig, accUsdtPerShare, ACC_PRECISION);
         uint256 total = a.claimableUsdt + (accrued > a.rewardDebt ? accrued - a.rewardDebt : 0);
         if (a.newShares > 0 && nextEpoch > a.newSharesEpoch) {
             uint256 startAcc = accAtEpoch[a.newSharesEpoch];
             if (accUsdtPerShare > startAcc) {
-                total += (uint256(a.newShares) * (accUsdtPerShare - startAcc)) / ACC_PRECISION;
+                total += Math.mulDiv(uint256(a.newShares), accUsdtPerShare - startAcc, ACC_PRECISION);
             }
         }
         return total;
@@ -2357,7 +2859,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         Account storage a = _accounts[account];
         uint256 amount = a.pendingUnbond;
         if (amount == 0 || a.unbondIndex == 0) return amount;
-        uint256 payout = (amount * poolIndex) / a.unbondIndex;
+        uint256 payout = Math.mulDiv(amount, _chargeIndex(a), a.unbondIndex);
         return payout > amount ? amount : payout;
     }
 
@@ -2385,7 +2887,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 s = uint256(a.shares);
         deductedHcow = a.settledDeducted;
         if (s > 0) {
-            uint256 accrued = (s * accDeductedPerShare) / ACC_PRECISION;
+            uint256 accrued = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION);
             if (accrued > a.deductDebt) deductedHcow += accrued - a.deductDebt;
         }
         claimedUsdt = a.lifetimeClaimedUsdt;
@@ -2461,7 +2963,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 s = uint256(a.shares);
         uint256 elig = s - uint256(a.newShares);
         if (elig > 0) {
-            uint256 usdtAccrued = (elig * accUsdtPerShare) / ACC_PRECISION;
+            uint256 usdtAccrued = Math.mulDiv(elig, accUsdtPerShare, ACC_PRECISION);
             if (usdtAccrued > a.rewardDebt) {
                 a.claimableUsdt += usdtAccrued - a.rewardDebt;
             }
@@ -2472,7 +2974,7 @@ contract HCOWProfitShare is ReentrancyGuard {
             uint256 startAcc = accAtEpoch[a.newSharesEpoch];
             if (accUsdtPerShare > startAcc) {
                 a.claimableUsdt +=
-                    (uint256(a.newShares) * (accUsdtPerShare - startAcc)) / ACC_PRECISION;
+                    Math.mulDiv(uint256(a.newShares), accUsdtPerShare - startAcc, ACC_PRECISION);
             }
             a.newShares = 0;
             a.newSharesEpoch = 0;
@@ -2481,12 +2983,35 @@ contract HCOWProfitShare is ReentrancyGuard {
         // shares are principal in the pool, so they absorb usage like any
         // other, and only the USDT leg waits.
         if (s > 0) {
-            uint256 deducted = (s * accDeductedPerShare) / ACC_PRECISION;
+            uint256 deducted = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION);
             if (deducted > a.deductDebt) {
                 a.settledDeducted += deducted - a.deductDebt;
             }
         }
         _bookmark(a);
+    }
+
+    /**
+     * @dev poolIndex as of the last settlement that fell inside a pending
+     *      position's cooldown.
+     *
+     * A position pays for the settlements it was present for. Once its
+     * cooldown has run out it is no longer present: its HCOW is out of the
+     * bonded pool, it earns nothing, and it backs none of the usage a later
+     * settlement is charging for. Charging past that point is unbounded, and
+     * a holder who is simply slow to press withdraw would pay it. The walk is
+     * bounded by MIN_EPOCH_INTERVAL against UNBOND_COOLDOWN, so at most two
+     * settlements can fall inside the window.
+     */
+    function _chargeIndex(Account storage a) private view returns (uint256) {
+        uint256 idx = a.unbondIndex;
+        uint64 readyAt = a.unbondReadyAt;
+        for (uint64 e = a.unbondEpoch; e < nextEpoch; ++e) {
+            uint64 t = settledAtEpoch[e];
+            if (t == 0 || t >= readyAt) break;
+            idx = poolIndexAtEpoch[e];
+        }
+        return idx;
     }
 
     /// @dev Record freshly minted shares as this epoch's arrivals. Call after
@@ -2500,7 +3025,7 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     function _bookmark(Account storage a) private {
         uint256 s = uint256(a.shares);
-        a.rewardDebt = ((s - uint256(a.newShares)) * accUsdtPerShare) / ACC_PRECISION;
-        a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION;
+        a.rewardDebt = Math.mulDiv(s - uint256(a.newShares), accUsdtPerShare, ACC_PRECISION);
+        a.deductDebt = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION);
     }
 }

@@ -5,10 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-
-interface IBurnable {
-    function burn(uint256 amount) external;
-}
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title HCOWProfitShare
@@ -81,6 +78,18 @@ contract HCOWProfitShare is ReentrancyGuard {
     ///         the index is a running product, so its error compounds.
     uint256 private constant RAY = 1e27;
 
+    /**
+     * @notice Where consumed principal goes.
+     *
+     * Deliberately a transfer to the standard burn address rather than a call
+     * to the token's own burn function. An exit must never depend on an
+     * external function that could be paused, role gated, or simply absent
+     * from the deployed token: HCOW is not in this repository, and a burn that
+     * reverts would lock every pending position permanently. A transfer works
+     * against any ERC20 and removes the supply just as verifiably.
+     */
+    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+
     /// @notice A settlement must distribute at least this much to participants
     ///         before it may consume principal. One USDT. This is a sanity
     ///         floor against an epoch that pays a rounding error and burns two
@@ -97,10 +106,32 @@ contract HCOWProfitShare is ReentrancyGuard {
      * position from quarantine for free and hand it the whole of the next
      * distribution, which is the defect the quarantine exists to prevent.
      * A floor makes an epoch a period of time rather than a call.
+     *
+     * The floor is the unbond cooldown for a reason. Quarantine ends at the
+     * next settlement, so a shorter floor lets an arrival buy eligibility for
+     * a large distribution with a day of exposure. Matching the two means
+     * becoming eligible costs the same real time as leaving does.
      */
-    uint256 public constant MIN_EPOCH_INTERVAL = 1 days;
+    uint256 public constant MIN_EPOCH_INTERVAL = 7 days;
 
-    uint256 private constant ACC_PRECISION = 1e18;
+    /**
+     * @notice Ceiling on how much of the pool may be consumed within one
+     *         window, on top of the per settlement cap.
+     *
+     * A per settlement cap bounds a mistake. It does not bound a campaign:
+     * two percent a week, repeated, still reaches the whole pool. The
+     * published usage rule decays roughly half a percent a month, so three
+     * percent leaves six times the headroom an honest settler needs and puts a
+     * hard floor under the worst case a compromised one can reach.
+     */
+    uint32 public constant MAX_DECAY_PER_WINDOW_PPM = 30_000;
+    uint256 public constant DECAY_WINDOW = 30 days;
+
+    /// @notice Accumulator precision. Finer than the token's own decimals so
+    ///         a small distribution over a large pool is not floored away into
+    ///         value nobody can claim. Every product it appears in uses mulDiv,
+    ///         so the extra orders cost no headroom.
+    uint256 private constant ACC_PRECISION = 1e24;
 
     /// @notice Wait between requesting an unbond and being able to withdraw.
     uint256 public constant UNBOND_COOLDOWN = 7 days;
@@ -129,6 +160,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 settledDeducted; // deduction already folded into the total below
         uint256 lifetimeClaimedUsdt;
         uint256 unbondIndex;     // poolIndex at the moment the unbond was requested
+        uint64  unbondEpoch;     // nextEpoch at that moment, the walk's start
         uint128 newShares;       // bonded this epoch, principal already, not yet earning
         uint64  newSharesEpoch;  // the epoch those shares were bonded in
     }
@@ -164,6 +196,17 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     /// @notice Timestamp of the last settlement.
     uint64 public lastSettledAt;
+
+    /// @notice poolIndex at the start of the current decay window, and when
+    ///         that window opened.
+    uint256 public decayCheckpoint;
+    uint64 public decayCheckpointAt;
+
+    /// @notice poolIndex and wall clock immediately after each settled epoch.
+    ///         A pending unbond is charged only for the settlements that fell
+    ///         inside its cooldown, and these are what bound that walk.
+    mapping(uint64 => uint256) public poolIndexAtEpoch;
+    mapping(uint64 => uint64) public settledAtEpoch;
 
     /**
      * @notice Deduction accumulator, the mirror of accUsdtPerShare.
@@ -260,6 +303,8 @@ contract HCOWProfitShare is ReentrancyGuard {
     error DeductionWithoutDistribution();
     error DeductionRateAboveCap(uint32 requested, uint32 cap);
     error EpochTooSoon(uint64 readyAt);
+    error DecayWindowExhausted(uint256 floorIndex, uint256 wouldBe);
+    error ProfitNotFunded(uint256 expected, uint256 arrived);
     error NothingBonded();
     error InsufficientBonded(uint256 requested, uint256 available);
     error UnbondAlreadyPending();
@@ -375,6 +420,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         a.pendingUnbond = hcowAmount.toUint128();
         a.unbondReadyAt = uint64(block.timestamp + UNBOND_COOLDOWN);
         a.unbondIndex = poolIndex;
+        a.unbondEpoch = nextEpoch;
         totalPendingUnbond += hcowAmount;
 
         _bookmark(a);
@@ -398,14 +444,18 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         uint256 amount = a.pendingUnbond;
         uint256 startIndex = a.unbondIndex;
+        // A cancel rejoins the pool, so it pays for every settlement since the
+        // request, including any past its cooldown: it never actually left.
+        uint256 endIndex = poolIndex;
         a.pendingUnbond = 0;
         a.unbondReadyAt = 0;
         a.unbondIndex = 0;
+        a.unbondEpoch = 0;
         totalPendingUnbond -= amount;
 
         uint256 restored = startIndex == 0
             ? amount
-            : (amount * poolIndex) / startIndex;
+            : Math.mulDiv(amount, endIndex, startIndex);
         if (restored > amount) restored = amount;
         uint256 forfeited = amount - restored;
         if (restored == 0) revert ZeroAmount();
@@ -424,8 +474,9 @@ contract HCOWProfitShare is ReentrancyGuard {
         _bookmark(a);
 
         if (forfeited > 0) {
+            a.settledDeducted += forfeited;
             totalHcowForfeited += forfeited;
-            IBurnable(address(hcow)).burn(forfeited);
+            hcow.safeTransfer(BURN_ADDRESS, forfeited);
         }
 
         emit UnbondCancelled(msg.sender, restored, minted);
@@ -445,18 +496,23 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         uint256 amount = a.pendingUnbond;
         uint256 startIndex = a.unbondIndex;
+        uint256 endIndex = _chargeIndex(a);
         a.pendingUnbond = 0;
         a.unbondReadyAt = 0;
         a.unbondIndex = 0;
+        a.unbondEpoch = 0;
         totalPendingUnbond -= amount;
 
-        uint256 payout = startIndex == 0 ? amount : (amount * poolIndex) / startIndex;
+        uint256 payout = startIndex == 0
+            ? amount
+            : Math.mulDiv(amount, endIndex, startIndex);
         if (payout > amount) payout = amount;
         uint256 forfeited = amount - payout;
 
         if (forfeited > 0) {
+            a.settledDeducted += forfeited;
             totalHcowForfeited += forfeited;
-            IBurnable(address(hcow)).burn(forfeited);
+            hcow.safeTransfer(BURN_ADDRESS, forfeited);
         }
         if (payout > 0) hcow.safeTransfer(msg.sender, payout);
         emit Unbonded(msg.sender, payout);
@@ -532,7 +588,12 @@ contract HCOWProfitShare is ReentrancyGuard {
             // participant leg to zero, and with nobody eligible the leg is
             // returned to the settler; burning principal against either is the
             // same defect wearing different arithmetic.
-            if (participants < MIN_PARTICIPANT_USDT || eligibleShares == 0) {
+            // Nobody eligible means the participant leg is returned below, so
+            // there is nothing to charge and nothing to charge it against. The
+            // deduction is dropped rather than the settlement refused: a single
+            // dominant holder could otherwise veto every settlement by
+            // front running it with an unbond request.
+            if (eligibleShares != 0 && participants < MIN_PARTICIPANT_USDT) {
                 revert DeductionWithoutDistribution();
             }
         }
@@ -540,14 +601,21 @@ contract HCOWProfitShare is ReentrancyGuard {
         // The settler states a rate. The contract owns the arithmetic, so a
         // participant cannot invalidate a signed settlement by shrinking the
         // pool in front of it, and the settler cannot overstate the amount.
-        uint256 hcowToDeduct = (totalShares == 0 || deductPpm == 0)
+        uint256 hcowToDeduct = (eligibleShares == 0 || deductPpm == 0)
             ? 0
             : (totalBondedHcow * deductPpm) / PPM_DENOM;
 
         uint256 snapshot = totalBondedHcow;
 
         if (profit > 0) {
+            // Measure what arrived, exactly as bond does for HCOW. Paying the
+            // two fixed legs out of a figure that was requested rather than
+            // received would take any shortfall out of the participant
+            // reserve, and the contract would be quietly insolvent.
+            uint256 beforeUsdt = usdt.balanceOf(address(this));
             usdt.safeTransferFrom(msg.sender, address(this), profit);
+            uint256 arrived = usdt.balanceOf(address(this)) - beforeUsdt;
+            if (arrived != profit) revert ProfitNotFunded(profit, arrived);
             uint256 toGameCompany = (profit * GAME_COMPANY_BPS) / 10_000;
             // Remainder to the team so rounding never strands dust here.
             uint256 toTeam = profit - participants - toGameCompany;
@@ -562,29 +630,44 @@ contract HCOWProfitShare is ReentrancyGuard {
                 usdt.safeTransfer(msg.sender, participants);
                 participants = 0;
             } else {
-                accUsdtPerShare += (participants * ACC_PRECISION) / eligibleShares;
+                accUsdtPerShare += Math.mulDiv(participants, ACC_PRECISION, eligibleShares);
                 totalUsdtDistributed += participants;
             }
         }
 
         if (hcowToDeduct > 0) {
             // totalShares is non-zero: hcowToDeduct is zero when it is not.
-            accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares;
+            accDeductedPerShare += Math.mulDiv(hcowToDeduct, ACC_PRECISION, totalShares);
             // Record the decay so a pending unbond, whichever way it leaves,
             // is charged for exactly the settlements it sat through. The rate
             // is used rather than the rounded amount so that the index means
             // the same thing for the bonded pool and for pending positions.
-            poolIndex = (poolIndex * (PPM_DENOM - deductPpm)) / PPM_DENOM;
-            if (poolIndex == 0) poolIndex = 1;
+            uint256 nextIndex = Math.mulDiv(poolIndex, PPM_DENOM - deductPpm, PPM_DENOM);
+            if (nextIndex == 0) nextIndex = 1;
+
+            // Roll the window forward first, then hold the settlement to the
+            // floor it implies. A per settlement cap bounds a mistake; this is
+            // what bounds a campaign.
+            if (decayCheckpointAt == 0 || block.timestamp >= decayCheckpointAt + DECAY_WINDOW) {
+                decayCheckpoint = poolIndex;
+                decayCheckpointAt = uint64(block.timestamp);
+            }
+            uint256 floorIndex = Math.mulDiv(
+                decayCheckpoint, PPM_DENOM - MAX_DECAY_PER_WINDOW_PPM, PPM_DENOM
+            );
+            if (nextIndex < floorIndex) revert DecayWindowExhausted(floorIndex, nextIndex);
+            poolIndex = nextIndex;
             totalBondedHcow -= hcowToDeduct;
             totalHcowDeducted += hcowToDeduct;
-            IBurnable(address(hcow)).burn(hcowToDeduct);
+            hcow.safeTransfer(BURN_ADDRESS, hcowToDeduct);
         }
 
         // This epoch's arrivals start earning from the next one. Recording
         // the accumulator here is what lets an untouched account be promoted
         // later without losing the epochs in between.
         accAtEpoch[epoch] = accUsdtPerShare;
+        poolIndexAtEpoch[epoch] = poolIndex;
+        settledAtEpoch[epoch] = uint64(block.timestamp);
         totalNewShares = 0;
         lastSettledAt = uint64(block.timestamp);
 
@@ -622,12 +705,12 @@ contract HCOWProfitShare is ReentrancyGuard {
     function claimableOf(address account) external view returns (uint256) {
         Account storage a = _accounts[account];
         uint256 elig = uint256(a.shares) - uint256(a.newShares);
-        uint256 accrued = (elig * accUsdtPerShare) / ACC_PRECISION;
+        uint256 accrued = Math.mulDiv(elig, accUsdtPerShare, ACC_PRECISION);
         uint256 total = a.claimableUsdt + (accrued > a.rewardDebt ? accrued - a.rewardDebt : 0);
         if (a.newShares > 0 && nextEpoch > a.newSharesEpoch) {
             uint256 startAcc = accAtEpoch[a.newSharesEpoch];
             if (accUsdtPerShare > startAcc) {
-                total += (uint256(a.newShares) * (accUsdtPerShare - startAcc)) / ACC_PRECISION;
+                total += Math.mulDiv(uint256(a.newShares), accUsdtPerShare - startAcc, ACC_PRECISION);
             }
         }
         return total;
@@ -648,7 +731,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         Account storage a = _accounts[account];
         uint256 amount = a.pendingUnbond;
         if (amount == 0 || a.unbondIndex == 0) return amount;
-        uint256 payout = (amount * poolIndex) / a.unbondIndex;
+        uint256 payout = Math.mulDiv(amount, _chargeIndex(a), a.unbondIndex);
         return payout > amount ? amount : payout;
     }
 
@@ -676,7 +759,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 s = uint256(a.shares);
         deductedHcow = a.settledDeducted;
         if (s > 0) {
-            uint256 accrued = (s * accDeductedPerShare) / ACC_PRECISION;
+            uint256 accrued = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION);
             if (accrued > a.deductDebt) deductedHcow += accrued - a.deductDebt;
         }
         claimedUsdt = a.lifetimeClaimedUsdt;
@@ -752,7 +835,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 s = uint256(a.shares);
         uint256 elig = s - uint256(a.newShares);
         if (elig > 0) {
-            uint256 usdtAccrued = (elig * accUsdtPerShare) / ACC_PRECISION;
+            uint256 usdtAccrued = Math.mulDiv(elig, accUsdtPerShare, ACC_PRECISION);
             if (usdtAccrued > a.rewardDebt) {
                 a.claimableUsdt += usdtAccrued - a.rewardDebt;
             }
@@ -763,7 +846,7 @@ contract HCOWProfitShare is ReentrancyGuard {
             uint256 startAcc = accAtEpoch[a.newSharesEpoch];
             if (accUsdtPerShare > startAcc) {
                 a.claimableUsdt +=
-                    (uint256(a.newShares) * (accUsdtPerShare - startAcc)) / ACC_PRECISION;
+                    Math.mulDiv(uint256(a.newShares), accUsdtPerShare - startAcc, ACC_PRECISION);
             }
             a.newShares = 0;
             a.newSharesEpoch = 0;
@@ -772,12 +855,35 @@ contract HCOWProfitShare is ReentrancyGuard {
         // shares are principal in the pool, so they absorb usage like any
         // other, and only the USDT leg waits.
         if (s > 0) {
-            uint256 deducted = (s * accDeductedPerShare) / ACC_PRECISION;
+            uint256 deducted = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION);
             if (deducted > a.deductDebt) {
                 a.settledDeducted += deducted - a.deductDebt;
             }
         }
         _bookmark(a);
+    }
+
+    /**
+     * @dev poolIndex as of the last settlement that fell inside a pending
+     *      position's cooldown.
+     *
+     * A position pays for the settlements it was present for. Once its
+     * cooldown has run out it is no longer present: its HCOW is out of the
+     * bonded pool, it earns nothing, and it backs none of the usage a later
+     * settlement is charging for. Charging past that point is unbounded, and
+     * a holder who is simply slow to press withdraw would pay it. The walk is
+     * bounded by MIN_EPOCH_INTERVAL against UNBOND_COOLDOWN, so at most two
+     * settlements can fall inside the window.
+     */
+    function _chargeIndex(Account storage a) private view returns (uint256) {
+        uint256 idx = a.unbondIndex;
+        uint64 readyAt = a.unbondReadyAt;
+        for (uint64 e = a.unbondEpoch; e < nextEpoch; ++e) {
+            uint64 t = settledAtEpoch[e];
+            if (t == 0 || t >= readyAt) break;
+            idx = poolIndexAtEpoch[e];
+        }
+        return idx;
     }
 
     /// @dev Record freshly minted shares as this epoch's arrivals. Call after
@@ -791,7 +897,7 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     function _bookmark(Account storage a) private {
         uint256 s = uint256(a.shares);
-        a.rewardDebt = ((s - uint256(a.newShares)) * accUsdtPerShare) / ACC_PRECISION;
-        a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION;
+        a.rewardDebt = Math.mulDiv(s - uint256(a.newShares), accUsdtPerShare, ACC_PRECISION);
+        a.deductDebt = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION);
     }
 }
