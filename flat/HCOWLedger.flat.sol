@@ -48,9 +48,31 @@ contract HCOWLedger {
         uint64  coversTo;     // latest record timestamp in the batch
     }
 
-    /// @notice Domain separator that every leaf hash must be built with.
-    /// Published on chain so verifiers never have to guess the format.
-    string public constant LEAF_DOMAIN = "HCOWv1|";
+    /// @notice Domain separators leaf hashes are built with, one per record
+    ///         kind. Published on chain so verifiers never have to guess the
+    ///         format. There is deliberately no single LEAF_DOMAIN: the two
+    ///         kinds carry different fields and must not be interchangeable.
+    string public constant LEAF_DOMAIN_SEEDED = "HCOWv1|";
+    string public constant LEAF_DOMAIN_SKILL = "HCOWs1|";
+
+    /// @notice Prefix on every internal node hash. Leaf preimages begin with a
+    ///         domain tag and are not 65 bytes, so no node preimage can ever
+    ///         be read as a leaf preimage. This makes the separation
+    ///         structural rather than a statement about how hard it would be
+    ///         to steer two keccak outputs into a valid record layout.
+    bytes1 private constant NODE_PREFIX = 0x01;
+
+    /// @notice Length of one period, in seconds. An epoch may only be anchored
+    ///         once the period it covers has finished.
+    uint64 public constant EPOCH_SECONDS = 3600;
+
+    /// @notice First epoch this deployment will accept. Set at construction to
+    ///         the current period, so the anchoring worker, which derives the
+    ///         period from the wall clock, has the same origin the contract
+    ///         does. A deployment starting at zero would need one catch up
+    ///         transaction for every hour since 1970 before it could anchor
+    ///         the current one, and there is no path to skip them.
+    uint64 public immutable genesisEpoch;
 
     address public owner;
     mapping(address => bool) public isAnchorer;
@@ -63,6 +85,11 @@ contract HCOWLedger {
     uint256 public totalLiveRecords;
     /// @notice Total records covered by historical batches.
     uint256 public totalHistoricalRecords;
+
+    /// @notice Roots already anchored to a live epoch. A root may only ever
+    ///         sit in one period, so "this round belongs to hour N" is a
+    ///         statement about the chain and not about who chose the slot.
+    mapping(bytes32 => bool) public rootAnchored;
 
     mapping(uint64 => Anchor) private _epochs;
     mapping(uint64 => HistoricalBatch) private _historical;
@@ -85,6 +112,8 @@ contract HCOWLedger {
     error EmptyRootWithRecords();
     error RecordsWithEmptyRoot();
     error BadRange();
+    error EpochNotFinished(uint64 endsAt);
+    error RootAlreadyAnchored(bytes32 root);
     error ZeroAddress();
 
     modifier onlyOwner() {
@@ -99,6 +128,8 @@ contract HCOWLedger {
 
     constructor(address initialOwner, address initialAnchorer) {
         if (initialOwner == address(0)) revert ZeroAddress();
+        genesisEpoch = uint64(block.timestamp) / EPOCH_SECONDS;
+        nextEpoch = genesisEpoch;
         owner = initialOwner;
         emit OwnershipTransferred(address(0), initialOwner);
         if (initialAnchorer != address(0)) {
@@ -121,6 +152,17 @@ contract HCOWLedger {
         if (epoch != nextEpoch) revert WrongEpoch(nextEpoch, epoch);
         if (root == bytes32(0) && recordCount != 0) revert EmptyRootWithRecords();
         if (root != bytes32(0) && recordCount == 0) revert RecordsWithEmptyRoot();
+
+        // An epoch may only be anchored once its period has ended. Without
+        // this a stolen anchorer key could burn a year of future periods for
+        // pocket change, and revoking the key would not give them back.
+        uint64 endsAt = (epoch + 1) * EPOCH_SECONDS;
+        if (block.timestamp < endsAt) revert EpochNotFinished(endsAt);
+
+        if (root != bytes32(0)) {
+            if (rootAnchored[root]) revert RootAlreadyAnchored(root);
+            rootAnchored[root] = true;
+        }
 
         _epochs[epoch] = Anchor({
             root: root,
@@ -150,6 +192,10 @@ contract HCOWLedger {
     ) external onlyAnchorer returns (uint64 batchId) {
         if (root == bytes32(0) || recordCount == 0) revert RecordsWithEmptyRoot();
         if (coversFrom == 0 || coversTo < coversFrom) revert BadRange();
+        // A backfill covers the past by definition.
+        if (coversTo > block.timestamp) revert BadRange();
+        if (rootAnchored[root]) revert RootAlreadyAnchored(root);
+        rootAnchored[root] = true;
 
         batchId = historicalBatchCount;
         _historical[batchId] = HistoricalBatch({
@@ -178,8 +224,8 @@ contract HCOWLedger {
         view
         returns (bool)
     {
-        if (epoch >= nextEpoch) return false;
-        return _verify(proof, _epochs[epoch].root, leaf);
+        if (epoch >= nextEpoch || epoch < genesisEpoch) return false;
+        return _verify(proof, _epochs[epoch].root, leaf, _epochs[epoch].recordCount);
     }
 
     /// @notice Verify a leaf against an anchored historical batch.
@@ -189,31 +235,53 @@ contract HCOWLedger {
         returns (bool)
     {
         if (batchId >= historicalBatchCount) return false;
-        return _verify(proof, _historical[batchId].root, leaf);
+        return _verify(proof, _historical[batchId].root, leaf, _historical[batchId].recordCount);
     }
 
     /**
      * @dev Sorted pair hashing. Proofs carry no direction bits.
      *
-     * Leaves are keccak256 over LEAF_DOMAIN followed by text, while internal
-     * nodes are keccak256 over two concatenated 32 byte hashes. The two
-     * inputs live in different domains, so an internal node cannot be
-     * presented as a record. Callers still MUST compute the leaf from the
-     * record themselves rather than accepting a bare hash from anyone, which
-     * is what the published verifier does.
+     * A leaf preimage is a domain tag followed by text. A node preimage is
+     * NODE_PREFIX followed by two 32 byte hashes, so it is 65 bytes and begins
+     * with a byte no domain tag starts with. Nothing that hashes as a node can
+     * be re-presented as a record, and that is a property of the encoding
+     * rather than an argument about how hard the collision would be.
+     *
+     * The proof length is also checked against the tree the root came from. A
+     * caller cannot hand in an empty proof and have the root itself accepted
+     * as a record. Callers still MUST compute the leaf from the record
+     * themselves rather than accepting a bare hash from anyone, which is what
+     * the published verifier does.
      */
-    function _verify(bytes32[] calldata proof, bytes32 root, bytes32 leaf)
-        private
-        pure
-        returns (bool)
-    {
-        if (root == bytes32(0)) return false;
+    function _verify(
+        bytes32[] calldata proof,
+        bytes32 root,
+        bytes32 leaf,
+        uint64 recordCount
+    ) private pure returns (bool) {
+        if (root == bytes32(0) || recordCount == 0) return false;
+        // An odd node is paired with itself rather than promoted, so every
+        // leaf sits at the same depth and the proof length is fixed by the
+        // record count. Anything else is a forgery attempt, including handing
+        // in the root itself, or an internal node, with a shortened proof.
+        if (proof.length != _proofDepth(recordCount)) return false;
+
         bytes32 h = leaf;
         for (uint256 i = 0; i < proof.length; ++i) {
             bytes32 p = proof[i];
-            h = h <= p ? keccak256(abi.encodePacked(h, p)) : keccak256(abi.encodePacked(p, h));
+            h = h <= p
+                ? keccak256(abi.encodePacked(NODE_PREFIX, h, p))
+                : keccak256(abi.encodePacked(NODE_PREFIX, p, h));
         }
         return h == root;
+    }
+
+    /// @dev Levels in a tree of `n` leaves where an odd node is promoted.
+    function _proofDepth(uint64 n) private pure returns (uint256 d) {
+        while (n > 1) {
+            n = (n + 1) / 2;
+            ++d;
+        }
     }
 
     // ------------------------------------------------------------------

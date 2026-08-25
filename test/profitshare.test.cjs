@@ -242,7 +242,10 @@ async function main() {
   // sender and take the wrong branch. The transaction itself is fine.
   await (await ps.connect(aliceS).withdrawUnbonded({ gasLimit: 300_000 })).wait();
   step('after alice withdraw');
-  eq('alice got her principal back', D((await hcow.balanceOf(alice)) - aliceHcowBefore), 980);
+  // epoch 3 deducted 2% while she was pending, and leaving by the withdraw
+  // door costs exactly what leaving by the cancel door costs.
+  near('withdrawing pays the deductions it sat through',
+    D((await hcow.balanceOf(alice)) - aliceHcowBefore), 980 * 0.98);
   eq('pending unbond cleared', D(await ps.totalPendingUnbond()), 0);
 
   // cancel path
@@ -362,8 +365,9 @@ async function main() {
 
   near('the dodger pays the deduction anyway', D(await ps5.bondedOf(alice)), 980);
   near('the honest participant pays the same', D(await ps5.bondedOf(bob)), 980);
-  near('the forfeited amount was burned too',
-    D(await ps5.totalHcowDeducted()), burnedThisEpoch + 20);
+  near('the forfeit is counted apart from settlement deductions',
+    D(await ps5.totalHcowDeducted()), burnedThisEpoch);
+  near('the forfeit was burned', D(await ps5.totalHcowForfeited()), 20);
   eq('hcow held still matches the books', D(await hcow.balanceOf(ps5Addr)),
     D((await ps5.totalBondedHcow()) + (await ps5.totalPendingUnbond())));
 
@@ -372,6 +376,24 @@ async function main() {
   await (await ps5.connect(bobS).cancelUnbond()).wait();
   near('cancelling without a settlement in between is free',
     D(await ps5.bondedOf(bob)), 980);
+
+  // the same dodge through the withdraw door, which is the cheaper one to try
+  await (await ps5.connect(bobS).requestUnbond(E(980))).wait();
+  near('the pending view reports the amount as requested',
+    D(await ps5.pendingUnbondOf(bob)), 980);
+  await provider.send('evm_increaseTime', [86_401]);
+  await provider.send('evm_mine', []);
+  await (await ps5.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), 20_000)).wait();
+  near('the pending view now reports the charge', D(await ps5.pendingUnbondOf(bob)), 960.4);
+  await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
+  await provider.send('evm_mine', []);
+  const bobHcowBefore = await hcow.balanceOf(bob);
+  await (await ps5.connect(bobS).withdrawUnbonded({ gasLimit: 400_000 })).wait();
+  near('waiting out the cooldown does not dodge it either',
+    D((await hcow.balanceOf(bob)) - bobHcowBefore), 960.4);
+  eq('books still balance after a forfeited withdrawal',
+    D(await hcow.balanceOf(ps5Addr)),
+    D((await ps5.totalBondedHcow()) + (await ps5.totalPendingUnbond())));
 
   step('solvency'); // ----------------
   const owedUsdt = (await ps.claimableOf(bob)) + (await ps.claimableOf(carol))

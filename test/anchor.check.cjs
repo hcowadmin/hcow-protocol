@@ -16,29 +16,44 @@ const toSkill = (r) => ({ gameId:r.gameId, roundId:r.roundId, playerRef:r.player
   const provider = new ethers.BrowserProvider(hre.network.provider);
   const signer = await provider.getSigner(0);
   const owner = await signer.getAddress();
+  // Deploy at a real wall clock time. The contract takes its origin from
+  // block.timestamp, so the epoch numbers below are the ones a production
+  // deployment would actually use. The earlier version of this test rebased
+  // every timestamp to keep epochs at 0, 1, 2, which is precisely why it never
+  // noticed that a real deployment started its cursor at zero.
+  const now0 = (await provider.getBlock('latest')).timestamp;
+  const base = now0 - (now0 % EPOCH_SECONDS) + EPOCH_SECONDS;
+  await provider.send('evm_setNextBlockTimestamp', [base + 10]);
+  await provider.send('evm_mine', []);
+
   const art = await hre.artifacts.readArtifact('HCOWLedger');
   const c = await new ethers.ContractFactory(art.abi, art.bytecode, signer).deploy(owner, owner);
   await c.waitForDeployment();
   const addr = await c.getAddress();
 
+  const e0 = Number(await c.genesisEpoch());
+  if (e0 !== Math.floor(base / EPOCH_SECONDS)) {
+    console.log('genesisEpoch is not the deployment period', e0);
+    process.exit(1);
+  }
+
   // three epochs: 40 records, none, 7 records
-  const base = 1755000000 - (1755000000 % EPOCH_SECONDS);
-  const e0 = Math.floor(base / EPOCH_SECONDS);
   const db = [
     ...Array.from({length:40},(_,i)=>mk(i, base + 5 + i)),
     ...Array.from({length:7},(_,i)=>mk(100+i, base + 2*EPOCH_SECONDS + i)),
   ];
-  const fetch = async (from,to) => db.filter(r=>r.timestamp>=from && r.timestamp<to)
-                                     .sort((a,b)=>a.timestamp-b.timestamp || a.roundId.localeCompare(b.roundId));
+  const fetch2 = async (from,to) => db.filter(r=>r.timestamp>=from && r.timestamp<to)
+                                      .sort((a,b)=>a.timestamp-b.timestamp || a.roundId.localeCompare(b.roundId));
 
-  // the contract cursor starts at 0, so pretend epochs before e0 are empty by
-  // seeding the cursor forward with empty anchors
-  for (let e = 0; e < e0; e += 1) { if (e > 3) break; }
-  // instead: run the worker with a clock just past e0+3 and a shifted contract
-  // by anchoring the gap in bulk would cost a lot of tx; use a small epoch base
-  const shifted = db.map(r => ({...r, timestamp: r.timestamp - base}));
-  const fetch2 = async (from,to) => shifted.filter(r=>r.timestamp>=from && r.timestamp<to)
-                                           .sort((a,b)=>a.timestamp-b.timestamp || a.roundId.localeCompare(b.roundId));
+  /** An epoch may only be anchored once its period has ended. */
+  const finish = async (epoch) => {
+    const endsAt = (epoch + 1) * EPOCH_SECONDS;
+    const now = (await provider.getBlock('latest')).timestamp;
+    if (now < endsAt) {
+      await provider.send('evm_setNextBlockTimestamp', [endsAt + 1]);
+      await provider.send('evm_mine', []);
+    }
+  };
 
   // runOnce builds its own JsonRpcProvider, which does not exist in this
   // harness, so exercise the pure pieces directly against the deployed
@@ -47,7 +62,8 @@ const toSkill = (r) => ({ gameId:r.gameId, roundId:r.roundId, playerRef:r.player
   const { buildTree, getProof } = require('../lib/merkle');
   let fails = 0;
 
-  for (let epoch = 0; epoch < 3; epoch++) {
+  for (let epoch = e0; epoch < e0 + 3; epoch++) {
+    await finish(epoch);
     const recs = await fetch2(epoch*EPOCH_SECONDS, (epoch+1)*EPOCH_SECONDS);
     if (recs.length === 0) { await (await c.anchorEpoch(epoch, ethers.ZeroHash, 0)).wait(); continue; }
     const leaves = recs.map((r,i)=> i%2 ? leafHash(r,'seeded') : leafHash(toSkill(r),'skill'));
@@ -68,7 +84,13 @@ const toSkill = (r) => ({ gameId:r.gameId, roundId:r.roundId, playerRef:r.player
     }
   }
 
-  console.log('epochs anchored:', Number(await c.nextEpoch()));
+  // an epoch whose period has not ended yet must be refused
+  try {
+    await (await c.anchorEpoch(e0 + 3, ethers.ZeroHash, 0)).wait();
+    fails++; console.log('chain anchored a period that has not finished');
+  } catch (_) { /* expected: EpochNotFinished */ }
+
+  console.log('epochs anchored:', Number(await c.nextEpoch()) - e0, 'from genesis', e0);
   console.log('records on chain:', String(await c.totalRecords()));
   console.log(fails === 0 ? 'end to end OK: 47 receipts verified, tampering rejected' : `FAILURES: ${fails}`);
   process.exit(fails ? 1 : 0);

@@ -1888,6 +1888,7 @@ contract HCOWStaking is ReentrancyGuard {
     function updateRepresentative(bytes32 id, address payout, uint16 commissionBps, bool active)
         external
         onlyOwner
+        nonReentrant
     {
         Representative storage r = _reps[id];
         if (!r.exists) revert UnknownRepresentative(id);
@@ -1900,18 +1901,23 @@ contract HCOWStaking is ReentrancyGuard {
         // Settling here means repointing payout can never redirect a balance
         // that accrued under the previous one, which would otherwise let the
         // owner take a representative's accrued commission outright.
-        if (payout != r.payout && r.commissionAccrued > 0) {
-            uint256 owed = r.commissionAccrued;
+        address oldPayout = r.payout;
+        uint256 owed = (payout != oldPayout) ? r.commissionAccrued : 0;
+
+        // Effects first. The transfer below is the only external call and it
+        // must not run with a half-applied representative record behind it.
+        if (owed > 0) {
             r.commissionAccrued = 0;
             totalRewardsOwed -= owed;
-            address oldPayout = r.payout;
-            hcow.safeTransfer(oldPayout, owed);
-            emit CommissionClaimed(id, oldPayout, owed);
         }
-
         r.payout = payout;
         r.commissionBps = commissionBps;
         r.active = active;
+
+        if (owed > 0) {
+            hcow.safeTransfer(oldPayout, owed);
+            emit CommissionClaimed(id, oldPayout, owed);
+        }
         emit RepresentativeUpdated(id, payout, commissionBps, active);
     }
 

@@ -61,6 +61,16 @@ async function main() {
   ok("proof verifies locally before publishing", verifyProof(leaves[2], proof, root));
 
   const nextEpoch = await ledger.nextEpoch();
+  // Refuse to write junk into a live ledger: the epoch numbering is permanent
+  // and a smoke run would offset every real hour after it.
+  const chainId = Number((await ethers.provider.getNetwork()).chainId);
+  if (chainId === 56) throw new Error("smoke.cjs must never run on BNB mainnet");
+  const endsAt = (BigInt(nextEpoch) + 1n) * 3600n;
+  const nowTs = BigInt((await ethers.provider.getBlock("latest")).timestamp);
+  if (nowTs < endsAt) {
+    console.log(`  skipping ledger anchor: epoch ${nextEpoch} ends at ${endsAt}, now ${nowTs}`);
+    return;
+  }
   let tx = await ledger.anchorEpoch(nextEpoch, root, records.length);
   let rc = await tx.wait();
   console.log(`  anchored epoch ${nextEpoch}  tx ${rc.hash}  gas ${rc.gasUsed}`);

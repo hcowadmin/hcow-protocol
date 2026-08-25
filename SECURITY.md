@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-259 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+274 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. Revert assertions are made with a raw `eth_call` carrying an explicit
 sender, because gas estimation through a browser provider omits `from` and can
@@ -44,7 +44,7 @@ classified:
 | `pragma`, `cyclomatic-complexity`, `missing-inheritance` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in section 4**, which is the honest measure of what it is worth.
+in sections 4, 5 or 6**, which is the honest measure of what it is worth.
 
 ### 3. Invariant (property) tests
 
@@ -100,7 +100,39 @@ carries a regression test.
 | L-1 | Low | `cancelUnstake` was gated on the representative being active, so the owner could convert a cancellable unstake request into a forced exit. Principal and accrued rewards were never at risk: `withdrawUnstaked`, `claimHcow` and `redelegate` all remain open. | The gate is removed. Cancelling restores a position the delegator already held; it is not a new delegation. |
 | L-8 | Low | `bondedOf` rounds down, so `totalShares` can reach zero while `totalBondedHcow` retains dust, contradicting a comment and allowing a division by zero. | The deduction path is explicitly guarded on `totalShares > 0`. |
 
-### 5. Known and accepted, not fixed
+### 5. Second review round, same day
+
+The fixes above were themselves reviewed, on the principle that code written
+under time pressure to close a Critical is the most likely place to find the
+next one. Two of them were incomplete.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| R-1 | High | The `poolIndex` charge was applied in `cancelUnbond` only. `withdrawUnbonded` still paid out in full, so the dodge survived intact: request an unbond, let the settlement pass, wait out the seven-day cooldown, withdraw everything, bond again. The first fix taxed only the people who changed their mind. | Both exit doors are priced identically. A position pays for every settlement it was present for, whichever way it leaves. |
+| R-2 | High | Rule 6 tested `participants != 0`, which is satisfied by two wei of profit. One wei was blocked and two wei bought a full 2% burn. An incomplete fix to the Critical it was written for. | `MIN_PARTICIPANT_USDT`, one USDT, as a sanity floor. The economic bound remains the rate limit, not the attacker's cost. |
+| R-3 | Medium | `cancelUnbond` credited the forfeited HCOW to `totalHcowDeducted`, so that figure stopped reconciling with the sum of the settled epochs it is supposed to summarise. | A separate `totalHcowForfeited`. `totalHcowDeducted` now equals the sum of every `Settlement.hcowDeducted` and nothing else. |
+| R-4 | Low | `_bookmark` ran after the forfeit burn, so an HCOW with a transfer hook could read an inflated `claimableOf` mid-burn. State-changing reentry was already blocked by `nonReentrant`. | The bookmark moved above the external call. |
+| R-5 | Low | `updateRepresentative` performed its new commission transfer before writing `r.payout`, and carried no reentrancy guard. With a hooking token the old payout could re-enter `fundRewards` and accrue fresh commission under the old address. | `nonReentrant`, and all effects written before the transfer. |
+| R-6 | Low | `poolIndex` at 1e18 degraded under sustained maximum-rate deduction and could floor to a value where a single settlement charged tens of percent. | The index is a running product, so it now carries 1e27 precision and decays by the stated rate rather than by the rounded amount. |
+
+### 6. Third review round: HCOWLedger and HCOWFaucet
+
+Reviewed after the two contracts above, and fixed in the same pass.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| G-1 | Critical | `nextEpoch` started at zero while the anchoring worker derives the period from the wall clock. A deployment today would have needed roughly half a million catch-up transactions before it could anchor the current hour, with no fast-forward path and no setter. The end-to-end test rebased every timestamp to keep epochs at 0, 1, 2, which is exactly why nobody saw it. | `genesisEpoch` is set from `block.timestamp` at construction and the cursor starts there. The worker reads it and refuses to run if the two disagree by more than a month. The end-to-end test now runs at the real epoch number, currently 496,569. |
+| G-2 | Critical | Three ways for two different records to hash to one leaf: unpaired surrogates collapsed to U+FFFD by `TextEncoder`, database nulls stringified to `"null"`, and integers past 2^53 losing precision. Any of them lets one anchored leaf stand for more than one record, which is the substitution the whole scheme exists to prevent. | Canonicalisation rejects ill-formed strings, requires NFC, and requires safe integers with no negative zero. The database reader refuses null and parses integers from their string form. |
+| G-3 | High | A stolen anchorer key could anchor empty roots forward past the current hour, permanently consuming the epoch namespace for about thirty cents a year. Revoking the key would not give it back. | An epoch may only be anchored once its period has ended. A stolen key is confined to the past. |
+| G-4 | High | Nothing stopped the same root being anchored to more than one epoch, so a receipt verified in several periods at once and "this round belongs to hour N" was the operator's choice rather than the chain's. | A root may be anchored once, live or historical. |
+| G-5 | High | Leaf and node hashes shared a preimage space, and an odd node was promoted rather than paired, so two different leaf sets could produce one root and a shortened proof let the root itself be presented as a record. | Node hashes carry a `0x01` prefix, odd nodes are paired with themselves, and the proof length must equal the depth implied by the record count. The separation is now structural rather than an argument about collision difficulty. |
+| G-6 | Medium | The published `LEAF_DOMAIN` was the seeded tag, but the sixteen puzzle and arcade titles use a different one. An independent verifier following the on-chain constant would fail on every skill record. | `LEAF_DOMAIN_SEEDED` and `LEAF_DOMAIN_SKILL`, both published. |
+| G-7 | Medium | The faucet required both token balances before dispensing either, and USDT drains fifty times faster than HCOW, so the expected steady state was a faucet holding tens of millions of test HCOW and refusing to give any of it out. | Each side is dispensed on its own. Refusal only when both are short. |
+| G-8 | Low | `setAmounts(0, 0)` let a claim succeed paying nothing while still burning the caller's cooldown, and reported an infinite number of claims left. A faucet deployed with one address for both tokens bricked on its first claim. `anchorHistorical` accepted a range ending in the future. `smoke.cjs` would anchor fabricated data into whatever ledger it was pointed at. | All four refused outright. |
+
+### 7. Open, not yet fixed
+
+
 
 Stated here rather than discovered later.
 
@@ -116,6 +148,18 @@ Stated here rather than discovered later.
   commission can be avoided by moving to a zero-commission representative
   around a funding round. The correct fix is time-weighted accrual, which
   replaces the reward mechanism. Same deferral, same mitigation.
+- **The seed commitment is not independently timestamped.** For seeded rounds
+  `serverSeedHash` and `serverSeed` are both fields of the same record,
+  anchored together after the round settled, and the chain never sees either
+  on its own. `keccak(seed) == hash` is a relation that can be satisfied at any
+  time, so it proves the revealed seed is the one this record was written with
+  and nothing more. It does **not** prove the outcome was fixed before play.
+  Closing it needs the commitment published on chain ahead of the round. The
+  stronger claim has been removed from the README and from the public verifier
+  page, and should not be made anywhere else until the mechanism exists.
+- **`recordCount` is asserted by the anchorer** and is not bound to the tree,
+  so published record totals are not chain-proven figures even though the
+  proofs themselves are. Do not quote the totals as if they were.
 - **The revenue and cost figures are produced off chain.** No contract can
   audit an Apple or Google bank transfer. What is enforced is that the
   published waterfall cannot be edited afterwards and that the money actually
@@ -129,7 +173,7 @@ Stated here rather than discovered later.
   repository.** Confirming that the deployed HCOW burns from `msg.sender` with
   no fee and no allowlist is a mainnet deployment gate.
 
-### 6. Deployed-bytecode parity
+### 8. Deployed-bytecode parity
 
 `scripts/checkflat.cjs` compiles each flattened source standalone and compares
 creation bytecode against the Hardhat artifact, stripping the trailing

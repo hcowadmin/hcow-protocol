@@ -116,10 +116,24 @@ async function main() {
   // Three claims of 50,000 have drained the HCOW side exactly.
   near('hcow drained', D(await hcow.balanceOf(addr)), 0);
   ok('usdt still held', (await usdt.balanceOf(addr)) > 0n);
-  await rv('claiming an empty faucet reverts even mid-cooldown-free',
-    faucet, carolS, 'claim', [], 'FaucetEmpty');
+  // One empty side must not kill the other. USDT drains fifty times faster
+  // than HCOW at these amounts, so "both or nothing" would be the normal
+  // state of the faucet, not an edge case.
+  const carolHcowBefore = await hcow.balanceOf(carol);
+  const carolUsdtBefore = await usdt.balanceOf(carol);
+  await (await faucet.connect(carolS).claim()).wait();
+  near('the drained side pays nothing', D((await hcow.balanceOf(carol)) - carolHcowBefore), 0);
+  ok('the funded side still pays', (await usdt.balanceOf(carol)) - carolUsdtBefore > 0n);
   st = await faucet.status(carol);
   eq('claims left reports zero', st[5], 0n);
+
+  // both sides empty is still a refusal, and does not burn the cooldown
+  const drained = await usdt.balanceOf(addr);
+  await (await faucet.withdraw(await usdt.getAddress(), owner, drained)).wait();
+  await rv('claiming a fully empty faucet reverts',
+    faucet, bobS, 'claim', [], 'FaucetEmpty');
+  await rv('zero amounts are refused', faucet, ownerS, 'setAmounts', [0, E(1)], 'ZeroAmounts');
+  await (await usdt.transfer(addr, drained)).wait();
 
   step('administration'); // ----------------
   await rv('stranger cannot change amounts', faucet, aliceS, 'setAmounts', [E(1), E(1)], 'NotOwner');

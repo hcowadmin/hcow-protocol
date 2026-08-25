@@ -513,6 +513,8 @@ contract HCOWFaucet {
     error ZeroAddress();
     error CooldownActive(uint64 readyAt);
     error FaucetEmpty(address token, uint256 requested, uint256 available);
+    error SameToken();
+    error ZeroAmounts();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -523,6 +525,10 @@ contract HCOWFaucet {
         if (hcowToken == address(0) || usdtToken == address(0) || initialOwner == address(0)) {
             revert ZeroAddress();
         }
+        // One address for both tokens double counts the balance in `status`
+        // and then reverts halfway through `claim`, leaving the faucet dead
+        // with no way back. Cheaper to refuse the deployment.
+        if (hcowToken == usdtToken) revert SameToken();
         hcow = IERC20(hcowToken);
         usdt = IERC20(usdtToken);
         owner = initialOwner;
@@ -543,19 +549,26 @@ contract HCOWFaucet {
             revert CooldownActive(readyAt);
         }
 
+        // Per token, not both or nothing. USDT drains far faster than HCOW at
+        // any sensible ratio, so requiring both would leave the HCOW side
+        // stranded and the faucet useless for its main purpose, in what is
+        // the expected steady state rather than an edge case.
         uint256 hcowHeld = hcow.balanceOf(address(this));
-        if (hcowHeld < hcowAmount) revert FaucetEmpty(address(hcow), hcowAmount, hcowHeld);
         uint256 usdtHeld = usdt.balanceOf(address(this));
-        if (usdtHeld < usdtAmount) revert FaucetEmpty(address(usdt), usdtAmount, usdtHeld);
+        uint256 hcowOut = hcowHeld >= hcowAmount ? hcowAmount : 0;
+        uint256 usdtOut = usdtHeld >= usdtAmount ? usdtAmount : 0;
+        if (hcowOut == 0 && usdtOut == 0) {
+            revert FaucetEmpty(address(hcow), hcowAmount, hcowHeld);
+        }
 
         if (lastClaimAt[msg.sender] == 0) claimerCount += 1;
         lastClaimAt[msg.sender] = uint64(block.timestamp);
         totalClaims += 1;
 
-        hcow.safeTransfer(msg.sender, hcowAmount);
-        usdt.safeTransfer(msg.sender, usdtAmount);
+        if (hcowOut > 0) hcow.safeTransfer(msg.sender, hcowOut);
+        if (usdtOut > 0) usdt.safeTransfer(msg.sender, usdtOut);
 
-        emit Claimed(msg.sender, hcowAmount, usdtAmount);
+        emit Claimed(msg.sender, hcowOut, usdtOut);
     }
 
     // ------------------------------------------------------------------
@@ -597,8 +610,10 @@ contract HCOWFaucet {
         }
 
         // The binding constraint, so the UI can say "3 claims left" honestly.
-        uint256 byHcow = hcowAmount == 0 ? type(uint256).max : hcowRemaining / hcowAmount;
-        uint256 byUsdt = usdtAmount == 0 ? type(uint256).max : usdtRemaining / usdtAmount;
+        // Both amounts are non-zero by construction, so there is no infinite
+        // branch to report.
+        uint256 byHcow = hcowRemaining / hcowAmount;
+        uint256 byUsdt = usdtRemaining / usdtAmount;
         claimsLeft = byHcow < byUsdt ? byHcow : byUsdt;
     }
 
@@ -607,6 +622,10 @@ contract HCOWFaucet {
     // ------------------------------------------------------------------
 
     function setAmounts(uint256 newHcowAmount, uint256 newUsdtAmount) external onlyOwner {
+        // Zero would let claim() succeed, pay nothing, and still burn the
+        // caller's 24 hour cooldown, while status() reported an infinite
+        // number of claims left.
+        if (newHcowAmount == 0 || newUsdtAmount == 0) revert ZeroAmounts();
         hcowAmount = newHcowAmount;
         usdtAmount = newUsdtAmount;
         emit AmountsChanged(newHcowAmount, newUsdtAmount);

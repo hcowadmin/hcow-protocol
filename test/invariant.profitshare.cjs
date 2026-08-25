@@ -158,7 +158,13 @@ async function runSeed(seed, opCount) {
           const opex = (gross * BigInt(int(0, 4000))) / 10_000n;
           await (await ps.connect(settler).settleEpoch(epoch, gross, 0n, opex, 20_000)).wait();
           creditedToParticipants += (await ps.getSettlement(epoch)).participantsUsdt;
-          await (await ps.connect(actor).cancelUnbond()).wait();
+          if (rnd() < 0.5) {
+            await (await ps.connect(actor).cancelUnbond()).wait();
+          } else {
+            await hre.network.provider.send('evm_increaseTime', [7 * 86400 + 1]);
+            await hre.network.provider.send('evm_mine', []);
+            await (await ps.connect(actor).withdrawUnbonded({ gasLimit: 400_000 })).wait();
+          }
         }
       } else if (action === 'warp') {
         await hre.network.provider.send('evm_increaseTime', [int(1, 10) * (rnd() < 0.5 ? 3600 : 86400)]);
@@ -260,12 +266,21 @@ async function runSeed(seed, opCount) {
       totalBonded - sumBondedOf <= BigInt(actors.length),
       `unattributed=${totalBonded - sumBondedOf} holders=${holders}`);
 
+    // I16 A pending unbond can never redeem more than it reserved.
+    let sumRedeemable = 0n;
+    for (const a of actors) {
+      sumRedeemable += await ps.pendingUnbondOf(await a.getAddress());
+    }
+    must(seed, op, 'I16 pending redeems no more than reserved',
+      sumRedeemable <= totalPending, `redeem=${sumRedeemable} reserve=${totalPending}`);
+
     // I15 The pool decay index never rises, and never reaches zero.
     const idx = await ps.poolIndex();
     must(seed, op, 'I15 poolIndex monotonic and live',
       idx <= lastPoolIndex && idx > 0n, `${idx} vs ${lastPoolIndex}`);
 
-    // I13 Reported pending equals the pool reserve.
+    // I13 Reported pending equals the pool reserve. The reserve holds the
+    //     amounts as requested; the charge is applied when the position leaves.
     must(seed, op, 'I13 pending reserve exact', sumPending === totalPending,
       `sum=${sumPending} total=${totalPending}`);
 

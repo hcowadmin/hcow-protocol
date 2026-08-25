@@ -1786,6 +1786,17 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     uint256 private constant PPM_DENOM = 1_000_000;
 
+    /// @notice Precision of poolIndex. Deliberately finer than ACC_PRECISION:
+    ///         the index is a running product, so its error compounds.
+    uint256 private constant RAY = 1e27;
+
+    /// @notice A settlement must distribute at least this much to participants
+    ///         before it may consume principal. One USDT. This is a sanity
+    ///         floor against an epoch that pays a rounding error and burns two
+    ///         percent of the pool, not an economic bound. The economic bound
+    ///         is the rate limit below.
+    uint256 public constant MIN_PARTICIPANT_USDT = 1e18;
+
     /// @notice Minimum wait between two deductions. Settlements themselves are
     ///         not rate limited; only the consumption of principal is.
     uint256 public constant DEDUCT_COOLDOWN = 1 days;
@@ -1850,7 +1861,7 @@ contract HCOWProfitShare is ReentrancyGuard {
      *         participant could step out before a settlement and step back in
      *         after it, and never pay for usage at all.
      */
-    uint256 public poolIndex = ACC_PRECISION;
+    uint256 public poolIndex = RAY;
 
     /// @notice Timestamp of the last settlement that consumed principal.
     uint64 public lastDeductionAt;
@@ -1858,7 +1869,15 @@ contract HCOWProfitShare is ReentrancyGuard {
     /// @notice Accounts currently holding shares. A pending unbond is not counted.
     uint256 public participantCount;
     uint256 public totalUsdtDistributed;
+
+    /// @notice HCOW burned by settlements. Equals the sum of every settled
+    ///         epoch's hcowDeducted, and nothing else, so the two reconcile.
     uint256 public totalHcowDeducted;
+
+    /// @notice HCOW burned when a pending unbond settled the deductions it sat
+    ///         through. Counted apart from totalHcowDeducted so that neither
+    ///         figure has to be explained twice.
+    uint256 public totalHcowForfeited;
 
     /// @notice Next epoch expected. Also the number of settled epochs.
     uint64 public nextEpoch;
@@ -2070,28 +2089,45 @@ contract HCOWProfitShare is ReentrancyGuard {
         totalShares += minted;
         totalBondedHcow += restored;
 
+        _bookmark(a);
+
         if (forfeited > 0) {
-            totalHcowDeducted += forfeited;
+            totalHcowForfeited += forfeited;
             IBurnable(address(hcow)).burn(forfeited);
         }
 
-        _bookmark(a);
         emit UnbondCancelled(msg.sender, restored, minted);
     }
 
-    /// @notice Take out a pending unbond once the cooldown has passed.
+    /**
+     * @notice Take out a pending unbond once the cooldown has passed.
+     * @dev Priced exactly like cancelUnbond. Requesting an unbond is not a way
+     *      to sit out a settlement: whichever door the position leaves by, it
+     *      pays for the deductions it was present for. Charging only the
+     *      cancel path would simply move the dodge to this one.
+     */
     function withdrawUnbonded() external nonReentrant {
         Account storage a = _accounts[msg.sender];
         if (a.unbondReadyAt == 0) revert NoPendingUnbond();
         if (block.timestamp < a.unbondReadyAt) revert CooldownActive(a.unbondReadyAt);
 
         uint256 amount = a.pendingUnbond;
+        uint256 startIndex = a.unbondIndex;
         a.pendingUnbond = 0;
         a.unbondReadyAt = 0;
+        a.unbondIndex = 0;
         totalPendingUnbond -= amount;
 
-        hcow.safeTransfer(msg.sender, amount);
-        emit Unbonded(msg.sender, amount);
+        uint256 payout = startIndex == 0 ? amount : (amount * poolIndex) / startIndex;
+        if (payout > amount) payout = amount;
+        uint256 forfeited = amount - payout;
+
+        if (forfeited > 0) {
+            totalHcowForfeited += forfeited;
+            IBurnable(address(hcow)).burn(forfeited);
+        }
+        if (payout > 0) hcow.safeTransfer(msg.sender, payout);
+        emit Unbonded(msg.sender, payout);
     }
 
     /// @notice Take the USDT accumulated across settled epochs.
@@ -2157,7 +2193,9 @@ contract HCOWProfitShare is ReentrancyGuard {
             // actually pays participants. Testing profit alone is not enough:
             // one wei of profit rounds the participant leg to zero and would
             // otherwise buy a full size deduction.
-            if (participants == 0) revert DeductionWithoutDistribution();
+            if (participants < MIN_PARTICIPANT_USDT) {
+                revert DeductionWithoutDistribution();
+            }
             uint64 readyAt = lastDeductionAt + uint64(DEDUCT_COOLDOWN);
             if (lastDeductionAt != 0 && block.timestamp < readyAt) {
                 revert DeductionTooSoon(readyAt);
@@ -2197,9 +2235,11 @@ contract HCOWProfitShare is ReentrancyGuard {
         if (hcowToDeduct > 0) {
             // totalShares is non-zero: hcowToDeduct is zero when it is not.
             accDeductedPerShare += (hcowToDeduct * ACC_PRECISION) / totalShares;
-            // Record the decay before shrinking, so a pending unbond that
-            // rejoins later can be charged for exactly this settlement.
-            poolIndex = (poolIndex * (totalBondedHcow - hcowToDeduct)) / totalBondedHcow;
+            // Record the decay so a pending unbond, whichever way it leaves,
+            // is charged for exactly the settlements it sat through. The rate
+            // is used rather than the rounded amount so that the index means
+            // the same thing for the bonded pool and for pending positions.
+            poolIndex = (poolIndex * (PPM_DENOM - deductPpm)) / PPM_DENOM;
             if (poolIndex == 0) poolIndex = 1;
             totalBondedHcow -= hcowToDeduct;
             totalHcowDeducted += hcowToDeduct;
@@ -2242,6 +2282,17 @@ contract HCOWProfitShare is ReentrancyGuard {
         Account storage a = _accounts[account];
         uint256 accrued = (uint256(a.shares) * accUsdtPerShare) / ACC_PRECISION;
         return a.claimableUsdt + (accrued > a.rewardDebt ? accrued - a.rewardDebt : 0);
+    }
+
+    /// @notice HCOW a pending unbond would actually pay out right now, after
+    ///         the deductions it has sat through. `pendingUnbond` in
+    ///         `accountOf` is the amount as requested, before that charge.
+    function pendingUnbondOf(address account) public view returns (uint256) {
+        Account storage a = _accounts[account];
+        uint256 amount = a.pendingUnbond;
+        if (amount == 0 || a.unbondIndex == 0) return amount;
+        uint256 payout = (amount * poolIndex) / a.unbondIndex;
+        return payout > amount ? amount : payout;
     }
 
     function accountOf(address account)

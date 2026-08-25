@@ -175,7 +175,12 @@ function canonical(rec,kind){
   return k.fields.map(f=>String(rec[f]).replace(/\\/g,'\\\\').replace(/\t/g,'\\t').replace(/\n/g,'\\n')).join('\t')+'\n';
 }
 const leafOf=(rec,kind)=>kUtf8(KINDS[kind].domain+canonical(rec,kind));
-const pair=(a,b)=>a.toLowerCase()<=b.toLowerCase()?kHex(a+b.slice(2)):kHex(b+a.slice(2));
+// 0x01 prefix matches HCOWLedger.NODE_PREFIX and lib/merkle.js. Without it a
+// node preimage and a leaf preimage share a space.
+const NODE_PREFIX='01';
+const pair=(a,b)=>a.toLowerCase()<=b.toLowerCase()
+  ?kHex('0x'+NODE_PREFIX+a.slice(2)+b.slice(2))
+  :kHex('0x'+NODE_PREFIX+b.slice(2)+a.slice(2));
 function rootFrom(leaf,proof){let h=leaf.toLowerCase();for(const p of proof)h=pair(h,p.toLowerCase());return h;}
 
 /* =============================== chain =============================== */
@@ -230,8 +235,8 @@ $('go').onclick=async()=>{
   if(kind==='seeded'){
     const committed=kUtf8(rec.serverSeed).toLowerCase()===String(rec.serverSeedHash).toLowerCase();
     out.push(committed
-      ? {state:'pass',title:'Seed matches the commitment published before the round',
-         body:'keccak256 of the revealed seed equals serverSeedHash, so the outcome could not have been chosen after you played.'}
+      ? {state:'pass',title:'Seed matches the hash stored in this record',
+         body:'keccak256 of the revealed seed equals serverSeedHash, and both are inside the anchored record, so neither was swapped afterwards. This does not by itself prove the seed existed before the round: that commitment is not yet published on chain ahead of play.'}
       : {state:'fail',title:'Seed does not match the commitment',
          body:'The revealed seed does not hash to serverSeedHash. Please report this receipt to us.'});
   }

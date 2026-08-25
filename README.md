@@ -32,9 +32,18 @@ Roots cannot be rewritten. There is no admin function that edits history,
 not even for the owner. Leaderboards, tournaments and reward payouts become
 auditable, because a score cannot be inserted or edited later to suit us.
 
-**For seeded rounds it also proves the outcome was not chosen after the
-fact,** because the server seed is committed before the round and revealed
-after.
+**For seeded rounds it proves the revealed seed is the one the record was
+written with.** `keccak256(serverSeed)` must equal `serverSeedHash`, and both
+sit inside the anchored leaf, so neither can be swapped afterwards.
+
+**It does not yet prove the outcome was fixed before you played.** The
+commitment and the reveal are anchored together, after the round settled, and
+the chain never sees the commitment on its own. Nothing on chain records when
+`serverSeedHash` first existed, so the operator could in principle choose a
+seed after seeing the player's input and still produce a record that verifies.
+Closing this needs the commitment published on chain before play, which is
+planned and not built. Until it is, we do not claim the stronger property, and
+neither should anyone quoting us.
 
 **It does not prove the player played honestly.** Our puzzle and arcade
 titles run in the browser, so a determined player can submit a score they
@@ -60,7 +69,7 @@ only ever sees a leaf.
 | kind | domain | used by | claim |
 |---|---|---|---|
 | `skill` | `HCOWs1\|` | the 16 puzzle and arcade titles | this result happened and has not been edited |
-| `seeded` | `HCOWv1\|` | any title where the server picks the outcome | plus, the randomness was committed before play |
+| `seeded` | `HCOWv1\|` | any title where the server picks the outcome | plus, the revealed seed is the one this record was written with |
 
 ```
 skill    gameId roundId playerRef mode level score durationMs outcome endedAt

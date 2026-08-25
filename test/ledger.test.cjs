@@ -72,9 +72,26 @@ async function main() {
   eq('owner set', await c.owner(), owner);
   ok('anchorer set', await c.isAnchorer(anchorer));
   ok('stranger is not anchorer', !(await c.isAnchorer(await strangerS.getAddress())));
-  eq('nextEpoch starts at 0', await c.nextEpoch(), 0);
+  // The cursor starts at the period the contract was deployed in, not at
+  // zero. A ledger starting at zero would need one catch up transaction for
+  // every hour since 1970 before it could anchor the current one.
+  const G = await c.genesisEpoch();
+  const nowTs = BigInt((await provider.getBlock('latest')).timestamp);
+  eq('genesisEpoch is the deployment period', G, nowTs / 3600n);
+  eq('nextEpoch starts at genesisEpoch', await c.nextEpoch(), G);
+  /** Move the chain past the end of `epoch` so it may be anchored. */
+  const finish = async (epoch) => {
+    const endsAt = Number((BigInt(epoch) + 1n) * 3600n);
+    const t = (await provider.getBlock('latest')).timestamp;
+    if (t < endsAt) {
+      await provider.send('evm_setNextBlockTimestamp', [endsAt + 1]);
+      await provider.send('evm_mine', []);
+    }
+  };
   eq('historicalBatchCount starts at 0', await c.historicalBatchCount(), 0);
-  eq('leaf domain published', await c.LEAF_DOMAIN(), 'HCOWv1|');
+  eq('seeded domain published', await c.LEAF_DOMAIN_SEEDED(), 'HCOWv1|');
+  eq('skill domain published', await c.LEAF_DOMAIN_SKILL(), 'HCOWs1|');
+  eq('epoch length published', Number(await c.EPOCH_SECONDS()), 3600);
 
   // ---------------- canonical form ----------------
   const r1 = record();
@@ -144,45 +161,56 @@ async function main() {
      `depth ${getProof(tree.levels, 0).length}`);
 
   // ---------------- anchoring rules ----------------
-  await reverts('stranger cannot anchor', asStranger.anchorEpoch(0, tree.root, N), 'NotAnchorer');
-  await reverts('epoch must be sequential', asAnchor.anchorEpoch(5, tree.root, N), 'WrongEpoch');
-  await reverts('root without records rejected', asAnchor.anchorEpoch(0, tree.root, 0), 'RecordsWithEmptyRoot');
+  await reverts('stranger cannot anchor', asStranger.anchorEpoch(G, tree.root, N), 'NotAnchorer');
+  await reverts('epoch must be sequential', asAnchor.anchorEpoch(G + 5n, tree.root, N), 'WrongEpoch');
+  await reverts('root without records rejected', asAnchor.anchorEpoch(G, tree.root, 0), 'RecordsWithEmptyRoot');
   await reverts('records without root rejected',
-    asAnchor.anchorEpoch(0, ethers.ZeroHash, 5), 'EmptyRootWithRecords');
+    asAnchor.anchorEpoch(G, ethers.ZeroHash, 5), 'EmptyRootWithRecords');
 
-  const tx = await asAnchor.anchorEpoch(0, tree.root, N);
+  await finish(G);
+  const tx = await asAnchor.anchorEpoch(G, tree.root, N);
   const rc = await tx.wait();
-  eq('nextEpoch advanced', await c.nextEpoch(), 1);
-  ok('epoch 0 anchored', await c.isEpochAnchored(0));
-  ok('epoch 1 not anchored', !(await c.isEpochAnchored(1)));
+  eq('nextEpoch advanced', await c.nextEpoch(), G + 1n);
+  ok('epoch anchored', await c.isEpochAnchored(G));
+  ok('next epoch not anchored', !(await c.isEpochAnchored(G + 1n)));
   eq('totalLiveRecords', await c.totalLiveRecords(), N);
 
-  const stored = await c.getEpoch(0);
+  const stored = await c.getEpoch(G);
   eq('stored root matches', stored.root, tree.root);
   eq('stored count matches', stored.recordCount, N);
   ok('anchoredAt set', Number(stored.anchoredAt) > 0);
 
-  await reverts('cannot rewrite an anchored epoch', asAnchor.anchorEpoch(0, ethers.ZeroHash, 0), 'WrongEpoch');
+  await reverts('cannot rewrite an anchored epoch', asAnchor.anchorEpoch(G, ethers.ZeroHash, 0), 'WrongEpoch');
 
   // empty period still occupies its slot, so the chain has no hole
-  await asAnchor.anchorEpoch(1, ethers.ZeroHash, 0);
-  eq('empty epoch anchored', await c.nextEpoch(), 2);
+  await finish(G + 1n);
+  await asAnchor.anchorEpoch(G + 1n, ethers.ZeroHash, 0);
+  eq('empty epoch anchored', await c.nextEpoch(), G + 2n);
   eq('empty epoch adds no records', await c.totalLiveRecords(), N);
 
   // ---------------- on chain verification ----------------
   const idx = 500;
   const proof = getProof(tree.levels, idx);
-  ok('on chain verify accepts a real record', await c.verifyEpochRecord(0, leaves[idx], proof));
+  ok('on chain verify accepts a real record', await c.verifyEpochRecord(G, leaves[idx], proof));
   ok('on chain verify rejects a tampered record',
-    !(await c.verifyEpochRecord(0, leafHash({ ...recs[idx], outcome: 'solved:1move' }, 'seeded'), proof)));
+    !(await c.verifyEpochRecord(G, leafHash({ ...recs[idx], outcome: 'solved:1move' }, 'seeded'), proof)));
   ok('on chain verify rejects a wrong proof',
-    !(await c.verifyEpochRecord(0, leaves[idx], getProof(tree.levels, idx + 1))));
-  ok('on chain verify rejects an empty epoch', !(await c.verifyEpochRecord(1, leaves[idx], proof)));
-  ok('on chain verify rejects a future epoch', !(await c.verifyEpochRecord(99, leaves[idx], proof)));
+    !(await c.verifyEpochRecord(G, leaves[idx], getProof(tree.levels, idx + 1))));
+  ok('on chain verify rejects an empty epoch', !(await c.verifyEpochRecord(G + 1n, leaves[idx], proof)));
+
+  // structural forgeries: the proof length is fixed by the record count, so
+  // the root itself and any internal node are refused as records
+  ok('the root cannot be presented as a record',
+    !(await c.verifyEpochRecord(G, tree.root, [])));
+  ok('an internal node cannot be presented as a record',
+    !(await c.verifyEpochRecord(G, tree.levels[1][0], proof.slice(1))));
+  ok('an over long proof is refused',
+    !(await c.verifyEpochRecord(G, leaves[idx], [...proof, tree.root])));
+  ok('on chain verify rejects a future epoch', !(await c.verifyEpochRecord(G + 99n, leaves[idx], proof)));
 
   let allChain = true;
   for (const i of [0, 1, 2, 499, 500, 998, 999, 1000]) {
-    if (!(await c.verifyEpochRecord(0, leaves[i], getProof(tree.levels, i)))) { allChain = false; break; }
+    if (!(await c.verifyEpochRecord(G, leaves[i], getProof(tree.levels, i)))) { allChain = false; break; }
   }
   ok('chain and js agree on sampled indices', allChain);
 
@@ -210,20 +238,27 @@ async function main() {
   await reverts('owner cannot be zero', c.transferOwnership(ethers.ZeroAddress), 'ZeroAddress');
 
   // no admin path can alter an anchored root
-  const before = (await c.getEpoch(0)).root;
+  const before = (await c.getEpoch(G)).root;
   await c.setAnchorer(owner, true);
-  await reverts('owner cannot rewrite either', c.anchorEpoch(0, ethers.ZeroHash, 0), 'WrongEpoch');
-  eq('root unchanged after admin activity', (await c.getEpoch(0)).root, before);
+  await reverts('owner cannot rewrite either', c.anchorEpoch(G, ethers.ZeroHash, 0), 'WrongEpoch');
+  eq('root unchanged after admin activity', (await c.getEpoch(G)).root, before);
 
   await c.renounceOwnership();
   eq('ownership renounced', await c.owner(), ethers.ZeroAddress);
   await reverts('no admin after renounce', c.setAnchorer(owner, true), 'NotOwner');
-  const after = await asAnchor.anchorEpoch(2, hist.root, 300);
+  // a fresh root: a root already anchored anywhere cannot be reused, so a
+  // receipt can never verify in two different periods
+  const later = buildTree(leaves.slice(0, 64).map((l) => l));
+  await finish(G + 2n);
+  await reverts('a root cannot be anchored twice', asAnchor.anchorEpoch(G + 2n, hist.root, 300),
+    'RootAlreadyAnchored');
+  const after = await asAnchor.anchorEpoch(G + 2n, later.root, 64);
   await after.wait();
-  eq('anchoring still works after renounce', await c.nextEpoch(), 3);
+  eq('anchoring still works after renounce', await c.nextEpoch(), G + 3n);
 
   // ---------------- cost ----------------
-  const warm = await (await asAnchor.anchorEpoch(3, tree.root, N)).wait();
+  await finish(G + 3n);
+  const warm = await (await asAnchor.anchorEpoch(G + 3n, buildTree(leaves.slice(0, 128)).root, 128)).wait();
   const gas = rc.gasUsed;
   results.push(['INFO', 'gas, first anchor (cold)', `${gas}`]);
   results.push(['INFO', 'gas, steady state anchor', `${warm.gasUsed}`]);
