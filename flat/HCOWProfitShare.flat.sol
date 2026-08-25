@@ -571,6 +571,9 @@ interface IBurnable {
  *   - The 50 / 25 / 25 split is computed here. It is never passed in.
  *   - The opex cap is checked here. Operating costs above OPEX_CAP_BPS of net
  *     revenue are rejected, so the cap cannot be quietly exceeded.
+ *   - Rule 5, the per settlement deduction cap. No single settlement can
+ *     consume more than MAX_DEDUCT_BPS of the bonded pool, so the worst case
+ *     for a participant is bounded by the code and not by trust.
  *   - Rule 4, no distribution no deduction. If an epoch produces zero
  *     distributable profit, bonded principal cannot be deducted for it. The
  *     spec says to enforce this at the contract level, so it is enforced here
@@ -608,6 +611,13 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint16 public constant PARTICIPANT_BPS = 5000; // 50%
     uint16 public constant GAME_COMPANY_BPS = 2500; // 25%
     uint16 public constant TEAM_BPS = 2500; // 25%
+
+    /// @notice Bonded principal deductible in a single settlement, as a share
+    ///         of the pool. 2%. This is a hard ceiling, not a target. The
+    ///         settler computes the deduction off chain from the value rule
+    ///         published in the protocol documents, and this cap bounds the
+    ///         worst case regardless of what that computation returns.
+    uint16 public constant MAX_DEDUCT_BPS = 200;
 
     uint256 private constant ACC_PRECISION = 1e18;
 
@@ -726,7 +736,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     error CostsExceedRevenue();
     error OpexAboveCap(uint256 submitted, uint256 cap);
     error DeductionWithoutDistribution();
-    error DeductionExceedsPool(uint256 requested, uint256 available);
+    error DeductionAboveCap(uint256 requested, uint256 cap);
     error NothingBonded();
     error InsufficientBonded(uint256 requested, uint256 available);
     error UnbondAlreadyPending();
@@ -928,8 +938,12 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         // Rule 4. No distribution, no deduction.
         if (profit == 0 && hcowToDeduct != 0) revert DeductionWithoutDistribution();
-        if (hcowToDeduct > totalBondedHcow) {
-            revert DeductionExceedsPool(hcowToDeduct, totalBondedHcow);
+        // Rule 5. The deduction is capped per settlement. Even a compromised
+        // or mistaken settler cannot consume more than MAX_DEDUCT_BPS of the
+        // bonded pool in one epoch.
+        uint256 deductCap = (totalBondedHcow * MAX_DEDUCT_BPS) / 10_000;
+        if (hcowToDeduct > deductCap) {
+            revert DeductionAboveCap(hcowToDeduct, deductCap);
         }
 
         uint256 participants = (profit * PARTICIPANT_BPS) / 10_000;
