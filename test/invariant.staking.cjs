@@ -119,7 +119,10 @@ async function runSeed(seed, opCount) {
       } else if (action === 'claimCommission') {
         await (await st.connect(deployer).claimCommission(pick(REPS))).wait();
       } else if (action === 'fundRewards') {
-        await (await st.connect(funder).fundRewards(E(int(1, 20_000)))).wait();
+        // Rewards stream over a period now, so a funding carries a duration
+        // and the clock has to move for anything to accrue.
+        await (await st.connect(funder)
+          .fundRewards(E(int(1, 20_000)), int(1, 30) * 86400)).wait();
       } else if (action === 'updateRep') {
         const id = pick(REPS);
         const r = await st.representativeOf(id);
@@ -162,7 +165,7 @@ async function runSeed(seed, opCount) {
     for (const id of REPS) {
       const r = await st.representativeOf(id);
       sumRepDelegated += r.totalDelegated;
-      sumCommission += r.commissionAccrued;
+      sumCommission += await st.commissionOf(id);
       // S6: commission can never be configured above the hard cap.
       must(seed, op, 'S6 commission within cap', r.commissionBps <= 1000n,
         `bps=${r.commissionBps}`);

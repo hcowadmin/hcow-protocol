@@ -266,6 +266,12 @@ async function runSeed(seed, opCount) {
       totalBonded - sumBondedOf <= BigInt(actors.length),
       `unattributed=${totalBonded - sumBondedOf} holders=${holders}`);
 
+    // I17 Shares bonded during the open epoch are counted, and never exceed
+    //     the total. If they did, the settlement divisor would underflow.
+    const newShares = await ps.totalNewShares();
+    must(seed, op, 'I17 new shares within total', newShares <= totalShares,
+      `new=${newShares} total=${totalShares}`);
+
     // I16 A pending unbond can never redeem more than it reserved.
     let sumRedeemable = 0n;
     for (const a of actors) {

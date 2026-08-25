@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-274 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+290 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. Revert assertions are made with a raw `eth_call` carrying an explicit
 sender, because gas estimation through a browser provider omits `from` and can
@@ -44,7 +44,7 @@ classified:
 | `pragma`, `cyclomatic-complexity`, `missing-inheritance` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in sections 4, 5 or 6**, which is the honest measure of what it is worth.
+in sections 4 to 7**, which is the honest measure of what it is worth.
 
 ### 3. Invariant (property) tests
 
@@ -130,24 +130,32 @@ Reviewed after the two contracts above, and fixed in the same pass.
 | G-7 | Medium | The faucet required both token balances before dispensing either, and USDT drains fifty times faster than HCOW, so the expected steady state was a faucet holding tens of millions of test HCOW and refusing to give any of it out. | Each side is dispensed on its own. Refusal only when both are short. |
 | G-8 | Low | `setAmounts(0, 0)` let a claim succeed paying nothing while still burning the caller's cooldown, and reported an infinite number of claims left. A faucet deployed with one address for both tokens bricked on its first claim. `anchorHistorical` accepted a range ending in the future. `smoke.cjs` would anchor fabricated data into whatever ledger it was pointed at. | All four refused outright. |
 
-### 7. Open, not yet fixed
+### 7. Fourth round: the two design changes
+
+The three rounds above fixed defects without changing what the contracts do.
+These two change it, because the problem was the mechanism rather than a
+mistake inside it. Both were known and deferred; deferring them turned out not
+to be viable, because a partial fix in either place is trivially routed around.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| D-1 | High | `HCOWProfitShare` credited the participant leg to whoever held shares at the instant of settlement. No time weighting, no eligibility delay, and settlement parameters are visible in the mempool, so a holder could bond immediately before a settlement, take a full pro rata cut of a quarter's profit for one block of exposure, and unbond. Measured: an arrival with nine times the pool's stake took nine tenths of the distribution. | Shares bonded during the open epoch are principal immediately, so they back `bondedOf` and absorb deduction, but they do not earn until that epoch closes. `accAtEpoch` records the accumulator at each settlement, so a position is credited for every epoch after the one it joined even if the account is never touched in between. |
+| D-2 | High | `HCOWStaking` split each funding as a lump sum by instantaneous weight. A position staked for one block earned what a position staked all quarter earned, and `redelegate` was free and instant, so commission could be avoided entirely by moving to a zero commission representative around a funding round. | Rewards stream per second over a declared period. There is no moment to jump into or out of. Measured: 900,000 HCOW staked for ten seconds of a 90,000 second period now earns 0.89 HCOW rather than most of the round. Commission is taken at the rate that was in force while the reward accrued, using a per representative anchor, so changing it never reaches backwards and a hop cannot claw it back. |
+
+Two consequences worth stating plainly. `fundRewards` now takes a duration,
+between one day and one year, and seconds that elapse with nothing staked are
+carried into the next period rather than handed to whoever stakes first.
+And the `active` flag on a representative now gates new delegations only, not
+accrual: punishing a delegator for a decision the owner made about their
+representative was never the point of the flag, and it stranded them mid
+cooldown.
+
+### 8. Open, not yet fixed
 
 
 
 Stated here rather than discovered later.
 
-- **Same-epoch bonding.** `accUsdtPerShare` credits whoever holds shares at the
-  instant of settlement. There is no time weighting and no eligibility delay,
-  so an account that bonds shortly before a settlement receives a full share of
-  that epoch. Correcting this requires separating eligible from ineligible
-  shares, which is a design change rather than a fix, and it is deferred to the
-  audited revision. Until then settlements are submitted through a private
-  relay so the parameters are not visible in the public mempool.
-- **Lump-sum staking rewards.** `fundRewards` splits by instantaneous weight,
-  with the same consequence, and `redelegate` is free and instant, so
-  commission can be avoided by moving to a zero-commission representative
-  around a funding round. The correct fix is time-weighted accrual, which
-  replaces the reward mechanism. Same deferral, same mitigation.
 - **The seed commitment is not independently timestamped.** For seeded rounds
   `serverSeedHash` and `serverSeed` are both fields of the same record,
   anchored together after the round settled, and the chain never sees either
@@ -173,7 +181,7 @@ Stated here rather than discovered later.
   repository.** Confirming that the deployed HCOW burns from `msg.sender` with
   no fee and no allowlist is a mainnet deployment gate.
 
-### 8. Deployed-bytecode parity
+### 9. Deployed-bytecode parity
 
 `scripts/checkflat.cjs` compiles each flattened source standalone and compares
 creation bytecode against the Hardhat artifact, stripping the trailing

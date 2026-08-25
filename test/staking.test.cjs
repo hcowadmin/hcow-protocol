@@ -102,21 +102,32 @@ async function main() {
   eq('adding to the same rep works', D((await st.delegationOf(alice))[1]), 2000);
 
   // ---------------- rewards ----------------
-  await rv('only the funder can fund', st, aliceS, 'fundRewards', [E(100)], 'NotFunder');
-  await rv('cannot fund zero', st, funderS, 'fundRewards', [0], 'ZeroAmount');
+  const DUR = 90_000;
+  /** Run the clock to the end of the current funding period. */
+  const runPeriod = async () => {
+    await provider.send('evm_increaseTime', [DUR + 1]);
+    await provider.send('evm_mine', []);
+  };
+  await rv('only the funder can fund', st, aliceS, 'fundRewards', [E(100), DUR], 'NotFunder');
+  await rv('cannot fund zero', st, funderS, 'fundRewards', [0, DUR], 'ZeroAmount');
+  await rv('a period cannot be shorter than a day', st, funderS, 'fundRewards', [E(100), 3600], 'BadDuration');
+  await rv('a period cannot run past a year', st, funderS, 'fundRewards',
+    [E(100), 366 * 24 * 3600], 'BadDuration');
 
-  // weight now: A 5000, B 4000, total 9000
-  // fund 9000 -> A gets 5000, B gets 4000
-  // A commission 10% = 500, delegators 4500  (alice 2/5, bob 3/5)
-  // B commission 0%,        delegators 4000  (carol all)
-  await (await st.connect(funderS).fundRewards(E(9_000))).wait();
+  // weight now: A 5000 (alice 2000, bob 3000), B 4000 (carol), total 9000.
+  // 9000 HCOW streamed over the whole period is exactly 1 per staked token.
+  // A takes 10% commission, B takes none.
+  await (await st.connect(funderS).fundRewards(E(9_000), DUR)).wait();
+  await runPeriod();
 
-  near('alice reward is her share of rep A', D(await st.pendingRewardOf(alice)), 1800);
-  near('bob reward is his share of rep A', D(await st.pendingRewardOf(bob)), 2700);
-  near('carol takes all of rep B', D(await st.pendingRewardOf(carol)), 4000);
-  eq('rep A commission accrued', D((await st.representativeOf(A))[7]), 500);
-  eq('rep B commission is zero', D((await st.representativeOf(B))[7]), 0);
-  near('nothing unaccounted', D(await st.totalRewardsOwed()), 9000);
+  near('alice earned her tokens less commission', D(await st.pendingRewardOf(alice)), 1800);
+  near('bob earned his tokens less commission', D(await st.pendingRewardOf(bob)), 2700);
+  near('carol pays no commission', D(await st.pendingRewardOf(carol)), 4000);
+  near('rep A commission accrued', D(await st.commissionOf(A)), 500);
+  eq('rep B commission is zero', D(await st.commissionOf(B)), 0);
+  near('everything funded is accounted for',
+    D(await st.pendingRewardOf(alice)) + D(await st.pendingRewardOf(bob))
+    + D(await st.pendingRewardOf(carol)) + D(await st.commissionOf(A)), 9000, 1e-6);
 
   // ---------------- claiming ----------------
   const aliceBefore = await hcow.balanceOf(alice);
@@ -129,6 +140,8 @@ async function main() {
   await (await st.connect(aliceS).claimCommission(A)).wait();
   near('commission went to the payout address, not the caller',
     D((await hcow.balanceOf(repAPayout)) - repABefore), 500);
+  // A representative is paid without waiting for its delegators to act.
+  eq('bob has still not touched his position', D(await st.pendingRewardOf(bob)), 2700);
   await rv('commission cannot be drained twice', st, aliceS, 'claimCommission', [A], 'NothingToClaim');
 
   // ---------------- late staker gets nothing retroactively ----------------
@@ -140,17 +153,45 @@ async function main() {
   eq('dave has no retroactive reward', D(await st.pendingRewardOf(dave)), 0);
   near('bob keeps his unclaimed reward', D(await st.pendingRewardOf(bob)), 2700);
 
+  // ---------------- a stake held for a moment earns a moment ----------------
+  // The old design split a lump sum by whoever was staked at the instant of
+  // funding, so this position took most of the round for one block.
+  const flashS = await provider.getSigner(8);
+  const flash = await flashS.getAddress();
+  await (await hcow.transfer(flash, E(900_000))).wait();
+  await (await hcow.connect(flashS).approve(addr, ethers.MaxUint256)).wait();
+  await (await st.connect(funderS).fundRewards(E(9_000), DUR)).wait();
+  await provider.send('evm_increaseTime', [DUR - 10]);
+  await provider.send('evm_mine', []);
+  await (await st.connect(flashS).stake(E(900_000), B)).wait();
+  await provider.send('evm_increaseTime', [10]);
+  await provider.send('evm_mine', []);
+  ok('a position held for ten seconds of a period earns ten seconds of it',
+    D(await st.pendingRewardOf(flash)) < 2, `got ${D(await st.pendingRewardOf(flash))}`);
+  await (await st.connect(flashS).requestUnstake(E(900_000))).wait();
+  await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
+  await provider.send('evm_mine', []);
+  await (await st.connect(flashS).withdrawUnstaked({ gasLimit: 300_000 })).wait();
+  eq('the flash position is gone', D(await st.totalPendingUnstake()), 0);
+
   // ---------------- redelegation ----------------
   await rv('cannot redelegate to the same rep', st, aliceS, 'redelegate', [A], 'SameRepresentative');
   await rv('cannot redelegate to an unknown rep', st, aliceS, 'redelegate', [C], 'UnknownRepresentative');
 
   // fund again so alice has something pending at rep A before moving
-  // weight: A 10000 (alice 2000, bob 3000, dave 5000), B 4000, total 14000
-  await (await st.connect(funderS).fundRewards(E(14_000))).wait();
+  await (await st.connect(funderS).fundRewards(E(14_000), DUR)).wait();
+  await runPeriod();
   const alicePendingAtA = D(await st.pendingRewardOf(alice));
-  near('alice earned at rep A before moving', alicePendingAtA, 1800);
+  ok('alice earned at rep A before moving', alicePendingAtA > 1800,
+    `got ${alicePendingAtA}`);
 
+  // Moving to a zero commission representative must not claw back commission
+  // that already accrued at the old one. Under the lump sum design a hop
+  // timed around a funding round avoided it entirely.
+  const repACommBefore = D(await st.commissionOf(A));
   await (await st.connect(aliceS).redelegate(B)).wait();
+  near('commission already earned survives the move', D(await st.commissionOf(A)),
+    repACommBefore, 1e-6);
   eq('alice now delegates to rep B', (await st.delegationOf(alice))[0], B);
   near('redelegation preserved her earned reward', D(await st.pendingRewardOf(alice)), alicePendingAtA);
   eq('rep A lost her weight', D((await st.representativeOf(A))[5]), 8000);
@@ -165,21 +206,25 @@ async function main() {
 
   const bobPendingBefore = D(await st.pendingRewardOf(bob));
   const repBWeight = D((await st.representativeOf(B))[5]);
-  await (await st.connect(funderS).fundRewards(E(1_000))).wait();
-  near('an inactive rep receives nothing new', D(await st.pendingRewardOf(bob)), bobPendingBefore);
-  near('the active rep took the whole round',
-    D(await st.pendingRewardOf(carol)) + D(await st.pendingRewardOf(alice)),
-    4000 + 4000 + alicePendingAtA + 1000, 1e-6);
+  await (await st.connect(funderS).fundRewards(E(1_000), DUR)).wait();
+  await runPeriod();
+  // active gates new delegations, not accrual. Punishing a delegator for a
+  // decision the owner made about their representative is not the point of
+  // the flag, and it would strand them mid cooldown.
+  ok('a delegator of a deactivated rep keeps earning',
+    D(await st.pendingRewardOf(bob)) > bobPendingBefore,
+    `${D(await st.pendingRewardOf(bob))} vs ${bobPendingBefore}`);
   ok('weights unchanged by funding', D((await st.representativeOf(B))[5]) === repBWeight);
 
   // ---------------- unstaking ----------------
   await rv('cannot cancel without a pending unstake', st, bobS, 'cancelUnstake', [], 'NoPendingUnstake');
   await rv('cannot unstake more than staked', st, bobS, 'requestUnstake', [E(99_999)], 'InsufficientStake');
 
+  const bobBeforeUnstake = D(await st.pendingRewardOf(bob));
   await (await st.connect(bobS).requestUnstake(E(3_000))).wait();
   eq('bob stake is zero', D((await st.delegationOf(bob))[1]), 0);
   eq('pending unstake recorded', D(await st.totalPendingUnstake()), 3000);
-  near('bob keeps what he already earned', D(await st.pendingRewardOf(bob)), bobPendingBefore);
+  near('bob keeps what he already earned', D(await st.pendingRewardOf(bob)), bobBeforeUnstake, 1e-3);
   await rv('only one unstake at a time', st, bobS, 'requestUnstake', [E(1)], 'UnstakeAlreadyPending');
   await rv('cooldown blocks withdrawal', st, bobS, 'withdrawUnstaked', [], 'CooldownActive');
 
@@ -202,7 +247,15 @@ async function main() {
   // ---------------- funding with no active weight ----------------
   const st2 = await deploy('HCOWStaking', ownerS, [await hcow.getAddress(), owner, funder]);
   await (await hcow.connect(funderS).approve(await st2.getAddress(), ethers.MaxUint256)).wait();
-  await rv('cannot fund when nobody is staked', st2, funderS, 'fundRewards', [E(100)], 'NoActiveWeight');
+  // Funding an empty pool is allowed. The seconds that elapse with nothing
+  // staked are carried into the next period rather than handed to whoever
+  // stakes first, which would be the lump sum problem again.
+  await (await st2.connect(funderS).fundRewards(E(100), 86_400)).wait();
+  await provider.send('evm_increaseTime', [86_401]);
+  await provider.send('evm_mine', []);
+  await (await st2.connect(funderS).fundRewards(E(100), 86_400)).wait();
+  ok('an empty period is carried, not lost',
+    D(await st2.totalRewardsFunded()) === 200, `${D(await st2.totalRewardsFunded())}`);
 
   // ---------------- administration ----------------
   await rv('stranger cannot change the funder', st, aliceS, 'setRewardFunder', [alice], 'NotOwner');
@@ -213,7 +266,8 @@ async function main() {
   // ---------------- solvency ----------------
   let owed = 0n;
   for (const who of [alice, bob, carol, dave]) owed += await st.pendingRewardOf(who);
-  for (const id of [A, B]) owed += (await st.representativeOf(id))[7];
+  for (const id of [A, B]) owed += await st.commissionOf(id);
+  owed += await st.pendingRewardOf(flash);
   const accounted = (await st.totalStaked()) + (await st.totalPendingUnstake()) + owed;
   const held = await hcow.balanceOf(addr);
   ok('contract holds at least stake plus pending plus rewards owed',

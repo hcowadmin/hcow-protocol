@@ -80,9 +80,19 @@ contract HCOWLedger {
     /// @notice Total records covered by historical batches.
     uint256 public totalHistoricalRecords;
 
-    /// @notice Roots already anchored to a live epoch. A root may only ever
-    ///         sit in one period, so "this round belongs to hour N" is a
-    ///         statement about the chain and not about who chose the slot.
+    /**
+     * @notice Roots already anchored to a live epoch, so a receipt cannot be
+     *         made to verify in more than one period.
+     *
+     * Deliberately NOT written by anchorHistorical. Live epochs are strictly
+     * sequential with no way to move the cursor, so anything that can make the
+     * next epoch's root unusable stops the ledger for good. Backfilling an
+     * hour historically and then anchoring it live is an ordinary operational
+     * sequence, and an unsequenced historical write would also let a stolen
+     * key poison a pending live root by front running it. Two live epochs
+     * cannot honestly share a root anyway: round ids differ, so their leaf
+     * sets differ, and empty periods are excluded below.
+     */
     mapping(bytes32 => bool) public rootAnchored;
 
     mapping(uint64 => Anchor) private _epochs;
@@ -188,8 +198,6 @@ contract HCOWLedger {
         if (coversFrom == 0 || coversTo < coversFrom) revert BadRange();
         // A backfill covers the past by definition.
         if (coversTo > block.timestamp) revert BadRange();
-        if (rootAnchored[root]) revert RootAlreadyAnchored(root);
-        rootAnchored[root] = true;
 
         batchId = historicalBatchCount;
         _historical[batchId] = HistoricalBatch({
@@ -270,11 +278,17 @@ contract HCOWLedger {
         return h == root;
     }
 
-    /// @dev Levels in a tree of `n` leaves where an odd node is promoted.
+    /// @dev Levels in a tree of `n` leaves. An odd node is paired with itself,
+    ///      so every leaf sits at the same depth and this is the exact proof
+    ///      length. Unchecked because `n + 1` would overflow at
+    ///      type(uint64).max and a view documented to return false must not
+    ///      panic on a number it was simply handed.
     function _proofDepth(uint64 n) private pure returns (uint256 d) {
-        while (n > 1) {
-            n = (n + 1) / 2;
-            ++d;
+        unchecked {
+            while (n > 1) {
+                n = (n >> 1) + (n & 1);
+                ++d;
+            }
         }
     }
 

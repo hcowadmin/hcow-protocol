@@ -558,11 +558,18 @@ contract HCOWFaucet {
         uint256 hcowOut = hcowHeld >= hcowAmount ? hcowAmount : 0;
         uint256 usdtOut = usdtHeld >= usdtAmount ? usdtAmount : 0;
         if (hcowOut == 0 && usdtOut == 0) {
-            revert FaucetEmpty(address(hcow), hcowAmount, hcowHeld);
+            revert FaucetEmpty(
+                hcowHeld < usdtHeld ? address(hcow) : address(usdt),
+                hcowHeld < usdtHeld ? hcowAmount : usdtAmount,
+                hcowHeld < usdtHeld ? hcowHeld : usdtHeld
+            );
         }
 
         if (lastClaimAt[msg.sender] == 0) claimerCount += 1;
-        lastClaimAt[msg.sender] = uint64(block.timestamp);
+        // The cooldown is only spent on a full allowance. A tester who arrived
+        // while one side was dry should not be locked out of the side that
+        // matters for a day because the other one happened to be empty.
+        if (hcowOut > 0 && usdtOut > 0) lastClaimAt[msg.sender] = uint64(block.timestamp);
         totalClaims += 1;
 
         if (hcowOut > 0) hcow.safeTransfer(msg.sender, hcowOut);
@@ -610,11 +617,12 @@ contract HCOWFaucet {
         }
 
         // The binding constraint, so the UI can say "3 claims left" honestly.
-        // Both amounts are non-zero by construction, so there is no infinite
-        // branch to report.
+        // Each side is dispensed on its own, so a claim succeeds while either
+        // side can still pay. Reporting the smaller figure would disable a
+        // button that still works.
         uint256 byHcow = hcowRemaining / hcowAmount;
         uint256 byUsdt = usdtRemaining / usdtAmount;
-        claimsLeft = byHcow < byUsdt ? byHcow : byUsdt;
+        claimsLeft = byHcow > byUsdt ? byHcow : byUsdt;
     }
 
     // ------------------------------------------------------------------

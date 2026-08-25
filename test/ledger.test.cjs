@@ -250,15 +250,26 @@ async function main() {
   // receipt can never verify in two different periods
   const later = buildTree(leaves.slice(0, 64).map((l) => l));
   await finish(G + 2n);
-  await reverts('a root cannot be anchored twice', asAnchor.anchorEpoch(G + 2n, hist.root, 300),
+  // A root already used by a live epoch cannot be reused by another, so a
+  // receipt can never be made to verify in two different periods.
+  await reverts('a live root cannot be anchored twice', asAnchor.anchorEpoch(G + 2n, tree.root, N),
     'RootAlreadyAnchored');
-  const after = await asAnchor.anchorEpoch(G + 2n, later.root, 64);
+  // A historical backfill does NOT reserve the root. Backfilling an hour and
+  // then anchoring it live is ordinary operations, and reserving it there
+  // would stop the sequence for good with no way to move the cursor.
+  const backfill = buildTree(leaves.slice(200, 232));
+  await asAnchor.anchorHistorical(backfill.root, 32, 1700000000, 1754000000);
+  await (await asAnchor.anchorEpoch(G + 2n, backfill.root, 32)).wait();
+  ok('a historical root does not block the same root going live',
+    await c.isEpochAnchored(G + 2n));
+  await finish(G + 3n);
+  const after = await asAnchor.anchorEpoch(G + 3n, later.root, 64);
   await after.wait();
-  eq('anchoring still works after renounce', await c.nextEpoch(), G + 3n);
+  eq('anchoring still works after renounce', await c.nextEpoch(), G + 4n);
 
   // ---------------- cost ----------------
-  await finish(G + 3n);
-  const warm = await (await asAnchor.anchorEpoch(G + 3n, buildTree(leaves.slice(0, 128)).root, 128)).wait();
+  await finish(G + 4n);
+  const warm = await (await asAnchor.anchorEpoch(G + 4n, buildTree(leaves.slice(0, 128)).root, 128)).wait();
   const gas = rc.gasUsed;
   results.push(['INFO', 'gas, first anchor (cold)', `${gas}`]);
   results.push(['INFO', 'gas, steady state anchor', `${warm.gasUsed}`]);

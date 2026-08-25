@@ -167,8 +167,23 @@ function canonical(rec,kind){
   const k=KINDS[kind]; if(!k) throw new Error('unknown record kind: '+kind);
   for(const f of k.fields){
     if(!(f in rec)) throw new Error('missing field: '+f);
-    if(k.ints.includes(f)){ if(!Number.isInteger(rec[f])||rec[f]<0) throw new Error(f+' must be a non negative integer'); }
-    else if(typeof rec[f]!=='string'||!rec[f].length) throw new Error(f+' must be a non empty string');
+    const v=rec[f];
+    if(k.ints.includes(f)){
+      // Must match lib/canonical.js exactly. Past 2^53 two different scores
+      // round to one number and therefore to one leaf, and -0 serialises as
+      // "0". The anchor side refuses to create such records, so this page is
+      // the only place left where a swapped record could still verify.
+      if(typeof v!=='number'||!Number.isSafeInteger(v)) throw new Error(f+' must be a safe integer');
+      if(v<0||Object.is(v,-0)) throw new Error(f+' must be a non negative integer');
+    } else {
+      if(typeof v!=='string'||!v.length) throw new Error(f+' must be a non empty string');
+      // A lone surrogate becomes U+FFFD on the way to UTF-8, so many distinct
+      // strings would share one leaf.
+      const wf = typeof v.isWellFormed==='function' ? v.isWellFormed()
+        : !/[\uD800-\uDFFF]/.test(v.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g,''));
+      if(!wf) throw new Error(f+' contains an unpaired surrogate');
+      if(v.normalize('NFC')!==v) throw new Error(f+' must be Unicode NFC normalised');
+    }
   }
   const extra=Object.keys(rec).filter(x=>!k.fields.includes(x));
   if(extra.length) throw new Error('unexpected field(s): '+extra.join(', '));

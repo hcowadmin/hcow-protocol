@@ -205,9 +205,12 @@ async function main() {
   // (epoch 2 deducts nothing, so the cooldown from epoch 1 is irrelevant here)
   await (await ps.connect(settlerS).settleEpoch(2, E(20_000), 0, E(8_000), 0)).wait();
   // profit 12,000 -> participants 6,000. carol 50%, alice 12.5%, bob 37.5%
-  eq('carol earned half of the new epoch', D(await ps.claimableOf(carol)), 3000);
-  eq('alice earned an eighth', D(await ps.claimableOf(alice)), 750);
-  eq('bob earned three eighths', D(await ps.claimableOf(bob)), 20250 + 2250);
+  // Carol bonded during epoch 2, so epoch 2 is not hers. The 6,000 goes to
+  // the two who were already earning, in their 980:2940 ratio.
+  eq('a new bonder earns nothing in the epoch it arrived in',
+    D(await ps.claimableOf(carol)), 0);
+  eq('alice earned her quarter', D(await ps.claimableOf(alice)), 1500);
+  eq('bob earned his three quarters', D(await ps.claimableOf(bob)), 20250 + 4500);
 
   step('unbonding'); // ---------------- unbonding ----------------
   await rv('cannot cancel without a pending unbond', ps, aliceS, 'cancelUnbond', [], 'NoPendingUnbond');
@@ -228,7 +231,10 @@ async function main() {
   await (await ps.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), 20_000)).wait();
   eq('pool absorbed the deduction', D(await ps.totalBondedHcow()), D(poolBefore) * 0.98);
   eq('pending unbond untouched by deduction', D(await ps.totalPendingUnbond()), 980);
-  eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 750);
+  eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 1500);
+  // epoch 3 is the first one carol was present for the whole of
+  near('a new bonder earns from the next epoch on',
+    D(await ps.claimableOf(carol)), 3000 * (3920 / 6860), 1e-6);
 
   step('time travel');
   await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
@@ -308,8 +314,15 @@ async function main() {
   await (await ps4.connect(bobS).bond(E(1_000))).wait();
   eq('second bonder counts', Number(await ps4.participantCount()), 2);
 
+  // Shares bonded during an epoch do not earn that epoch, so close it first
+  // with a settlement that distributes nothing.
+  await (await ps4.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+  eq('nothing is earning in the epoch it arrived in', D(await ps4.claimableOf(alice)), 0);
+  eq('and the shares are promoted once it closes',
+    D(await ps4.eligibleSharesOf(alice)), D(await ps4.bondedOf(alice)));
+
   // profit 800 on a 4000/1000 pool. 2% of 5000 is 100, and it splits 80/20.
-  await (await ps4.connect(settlerS).settleEpoch(0, E(1_000), 0, E(200), 20_000)).wait();
+  await (await ps4.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), 20_000)).wait();
 
   const aLife = await ps4.lifetimeOf(alice);
   const bLife = await ps4.lifetimeOf(bob);
@@ -327,7 +340,7 @@ async function main() {
   // pool is 4900 now, so 2% is 98. alice holds four fifths of it.
   await provider.send('evm_increaseTime', [86_401]);
   await provider.send('evm_mine', []);
-  await (await ps4.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), 20_000)).wait();
+  await (await ps4.connect(settlerS).settleEpoch(2, E(1_000), 0, E(200), 20_000)).wait();
   near('deduction accumulates across epochs', D((await ps4.lifetimeOf(alice))[0]), 80 + 78.4);
 
   // Full exit clears the participant slot but keeps the history.
@@ -340,7 +353,40 @@ async function main() {
   eq('cancelling restores the participant', Number(await ps4.participantCount()), 2);
 
   await rv('deduction still cannot run without distribution', ps4, settlerS,
-    'settleEpoch', [2, E(1_000), E(1_000), 0, 1], 'DeductionWithoutDistribution');
+    'settleEpoch', [3, E(1_000), E(1_000), 0, 1], 'DeductionWithoutDistribution');
+
+  step('flash bond'); // ---- bonding into a settlement earns nothing ----
+  const ps6 = await deploy('HCOWProfitShare', deployerS, [
+    await hcow.getAddress(), await usdt.getAddress(),
+    deployer, settler, gameCo, teamAddr,
+  ]);
+  const ps6Addr = await ps6.getAddress();
+  await (await usdt.connect(settlerS).approve(ps6Addr, ethers.MaxUint256)).wait();
+  await (await hcow.connect(aliceS).approve(ps6Addr, ethers.MaxUint256)).wait();
+  await (await hcow.connect(bobS).approve(ps6Addr, ethers.MaxUint256)).wait();
+
+  // alice holds for the whole period; bob arrives in the settlement block with
+  // nine times the stake, which used to take nine tenths of the distribution.
+  await (await ps6.connect(aliceS).bond(E(1_000))).wait();
+  await (await ps6.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+  await (await ps6.connect(bobS).bond(E(9_000))).wait();
+  await (await ps6.connect(settlerS).settleEpoch(1, E(10_000), 0, E(4_000), 0)).wait();
+
+  eq('the holder keeps the whole distribution', D(await ps6.claimableOf(alice)), 3000);
+  eq('the arrival takes none of it', D(await ps6.claimableOf(bob)), 0);
+  eq('but the arrival is principal immediately', D(await ps6.bondedOf(bob)), 9000);
+  eq('and it is earning from the next epoch',
+    D(await ps6.eligibleSharesOf(bob)), D(await ps6.bondedOf(bob)));
+
+  // the next epoch is shared normally
+  await (await ps6.connect(settlerS).settleEpoch(2, E(10_000), 0, E(4_000), 0)).wait();
+  eq('the next epoch splits by weight', D(await ps6.claimableOf(bob)), 2700);
+  eq('and the holder takes the rest', D(await ps6.claimableOf(alice)), 3000 + 300);
+
+  // an untouched account is still credited for every epoch after it joined
+  await (await ps6.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), 0)).wait();
+  eq('promotion is not lost by never touching the account',
+    D(await ps6.claimableOf(bob)), 2700 * 2);
 
   step('deduction dodge'); // ---- stepping out around a settlement costs ----
   // A participant who requests an unbond before a settlement and cancels it
@@ -357,9 +403,10 @@ async function main() {
   await (await hcow.connect(bobS).approve(ps5Addr, ethers.MaxUint256)).wait();
   await (await ps5.connect(aliceS).bond(E(1_000))).wait();
   await (await ps5.connect(bobS).bond(E(1_000))).wait();
+  await (await ps5.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
 
   await (await ps5.connect(aliceS).requestUnbond(E(1_000))).wait();   // step out
-  await (await ps5.connect(settlerS).settleEpoch(0, E(1_000), 0, E(200), 20_000)).wait();
+  await (await ps5.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), 20_000)).wait();
   const burnedThisEpoch = D(await ps5.totalHcowDeducted());
   await (await ps5.connect(aliceS).cancelUnbond()).wait();            // step back
 
@@ -383,7 +430,7 @@ async function main() {
     D(await ps5.pendingUnbondOf(bob)), 980);
   await provider.send('evm_increaseTime', [86_401]);
   await provider.send('evm_mine', []);
-  await (await ps5.connect(settlerS).settleEpoch(1, E(1_000), 0, E(200), 20_000)).wait();
+  await (await ps5.connect(settlerS).settleEpoch(2, E(1_000), 0, E(200), 20_000)).wait();
   near('the pending view now reports the charge', D(await ps5.pendingUnbondOf(bob)), 960.4);
   await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
   await provider.send('evm_mine', []);

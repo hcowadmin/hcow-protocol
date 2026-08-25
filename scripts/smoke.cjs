@@ -131,21 +131,30 @@ async function main() {
   tx = await staking.stake(STAKE, REP); rc = await tx.wait();
   console.log(`  staked ${fmt(STAKE)} HCOW  tx ${rc.hash}`);
 
+  // Rewards stream over a period. A smoke run cannot wait one out, so fund a
+  // one day period and check that it starts flowing rather than that it has
+  // finished.
   const REWARD = E(100);
+  const DURATION = 24 * 60 * 60;
   tx = await hcow.approve(a.HCOWStaking, REWARD); await tx.wait();
-  tx = await staking.fundRewards(REWARD); rc = await tx.wait();
-  console.log(`  funded ${fmt(REWARD)} HCOW of rewards  tx ${rc.hash}`);
+  tx = await staking.fundRewards(REWARD, DURATION); rc = await tx.wait();
+  console.log(`  funded ${fmt(REWARD)} HCOW over ${DURATION}s  tx ${rc.hash}`);
 
-  // 5% commission on 100 leaves 95 to the single delegator.
+  const rate = await staking.rewardRate();
+  ok("reward rate is the amount over the duration", rate === REWARD / BigInt(DURATION), String(rate));
+  ok("the period is open", (await staking.periodFinish()) > BigInt(Math.floor(Date.now() / 1000)));
+
+  // A few seconds of a day long stream is a very small number, so assert the
+  // shape rather than an exact figure.
+  await new Promise((r) => setTimeout(r, 6000));
   const pending = await staking.pendingRewardOf(me);
-  ok("delegator reward is 95 after 5% commission", pending === E(95), fmt(pending));
-  const rep = await staking.representativeOf(REP);
-  ok("commission accrued to the representative", rep.commissionAccrued === E(5), fmt(rep.commissionAccrued));
-
-  const hb = await hcow.balanceOf(me);
-  tx = await staking.claimHcow(); rc = await tx.wait();
-  ok("reward actually paid out", (await hcow.balanceOf(me)) - hb === E(95));
-  console.log(`  claimed 95 HCOW  tx ${rc.hash}`);
+  ok("the single delegator is accruing", pending > 0n, fmt(pending));
+  ok("and is accruing less than the whole period", pending < REWARD, fmt(pending));
+  const commission = await staking.commissionOf(REP);
+  ok("commission is accruing to the representative", commission > 0n, fmt(commission));
+  ok("commission is 5% of what has been released",
+     commission * 19n >= pending - 2n && commission * 19n <= pending + 2n,
+     `${fmt(commission)} vs ${fmt(pending)}`);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;

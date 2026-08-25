@@ -63,12 +63,19 @@ contract HCOWStaking is ReentrancyGuard {
     struct Representative {
         address payout;            // receives commission
         uint16  commissionBps;     // <= MAX_COMMISSION_BPS
-        bool    active;            // inactive reps receive no new rewards
+        bool    active;            // gates NEW delegations, not accrual
         bool    isFoundation;
         bool    exists;
         uint256 totalDelegated;
         uint256 delegatorCount;
-        uint256 accRewardPerShare;
+        /// Net-of-commission accumulator, frozen at the last commission change.
+        uint256 accNetBase;
+        /// Global accumulator at that same moment.
+        uint256 accNetAnchor;
+        /// Global accumulator when commission was last folded into the total
+        /// below. Separate from the net anchor because commission is an
+        /// aggregate over the representative's weight, not a per share figure.
+        uint256 commAnchor;
         uint256 commissionAccrued;
         uint256 lifetimeRewards;   // delegator rewards routed through this rep
         string  name;
@@ -79,7 +86,8 @@ contract HCOWStaking is ReentrancyGuard {
         uint128 amount;
         uint128 pendingUnstake;
         uint64  unstakeReadyAt;
-        uint256 rewardDebt;
+        uint256 rewardDebtGross;  // bookmark on the global accumulator
+        uint256 rewardDebtNet;    // bookmark on the representative's net one
         uint256 claimable;
         uint256 lifetimeClaimed;
     }
@@ -92,9 +100,37 @@ contract HCOWStaking is ReentrancyGuard {
     uint256 public totalStaked;
     /// @notice HCOW held for pending unstakes. Not earning, not distributable.
     uint256 public totalPendingUnstake;
-    /// @notice HCOW held to pay accrued delegator rewards and commission.
-    uint256 public totalRewardsOwed;
+    /// @dev Advanced by _updateGlobal and reduced by claims. Read it through
+    ///      totalRewardsOwed(), which also counts the seconds that have
+    ///      elapsed since the last state changing call.
+    uint256 private _rewardsOwed;
     uint256 public totalRewardsFunded;
+
+    /**
+     * @notice Rewards accrue per second, not in lumps.
+     *
+     * A lump sum split by whoever happens to be staked at the instant of
+     * funding pays a position that has been there for one block exactly what
+     * it pays a position that has been there all quarter. That is not a
+     * rounding problem, it is the whole reward budget going to whoever has the
+     * most idle HCOW at the right moment. It also makes commission optional:
+     * redelegating to a zero commission representative for one block costs
+     * nothing. Accruing per second removes both, because there is no moment to
+     * jump into or out of.
+     */
+    uint256 public accRewardPerShare;
+    uint256 public rewardRate;      // HCOW per second for the current period
+    uint64  public periodFinish;    // when the current period runs out
+    uint64  public lastUpdateTime;
+
+    /// @notice Funded HCOW that elapsed while nothing was staked. Nobody was
+    ///         owed it, so it is carried into the next funding rather than
+    ///         stranded.
+    uint256 public undistributed;
+
+    /// @notice Shortest and longest a funding period may run.
+    uint64 public constant MIN_REWARD_DURATION = 1 days;
+    uint64 public constant MAX_REWARD_DURATION = 365 days;
 
     event RepresentativeRegistered(bytes32 indexed id, string name, address payout, uint16 commissionBps, bool isFoundation);
     event RepresentativeUpdated(bytes32 indexed id, address payout, uint16 commissionBps, bool active);
@@ -105,7 +141,7 @@ contract HCOWStaking is ReentrancyGuard {
     event Unstaked(address indexed account, uint256 amount);
     event RewardsClaimed(address indexed account, uint256 amount);
     event CommissionClaimed(bytes32 indexed repId, address indexed payout, uint256 amount);
-    event RewardsFunded(uint256 amount, uint256 activeWeight, uint256 activeReps);
+    event RewardsFunded(uint256 amount, uint256 rewardRate, uint64 duration);
     event RewardFunderChanged(address indexed account);
     event OwnershipTransferred(address indexed from, address indexed to);
 
@@ -124,9 +160,9 @@ contract HCOWStaking is ReentrancyGuard {
     error NoPendingUnstake();
     error CooldownActive(uint64 readyAt);
     error NothingToClaim();
-    error NoActiveWeight();
     error SameRepresentative();
     error TooManyRepresentatives(uint256 max);
+    error BadDuration(uint64 given);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -168,6 +204,9 @@ contract HCOWStaking is ReentrancyGuard {
         r.isFoundation = isFoundation;
         r.exists = true;
         r.name = name;
+        _updateGlobal();
+        r.accNetAnchor = accRewardPerShare;
+        r.commAnchor = accRewardPerShare;
         if (_repIds.length >= MAX_REPRESENTATIVES) {
             revert TooManyRepresentatives(MAX_REPRESENTATIVES);
         }
@@ -192,6 +231,13 @@ contract HCOWStaking is ReentrancyGuard {
         // Settling here means repointing payout can never redirect a balance
         // that accrued under the previous one, which would otherwise let the
         // owner take a representative's accrued commission outright.
+        // Advance the stream and freeze this representative's net accumulator
+        // at the commission that was actually in force, so a change applies
+        // only from here on.
+        _updateGlobal();
+        _accrueRepCommission(r);
+        _freezeCommission(r);
+
         address oldPayout = r.payout;
         uint256 owed = (payout != oldPayout) ? r.commissionAccrued : 0;
 
@@ -199,7 +245,7 @@ contract HCOWStaking is ReentrancyGuard {
         // must not run with a half-applied representative record behind it.
         if (owed > 0) {
             r.commissionAccrued = 0;
-            totalRewardsOwed -= owed;
+            _rewardsOwed -= owed;
         }
         r.payout = payout;
         r.commissionBps = commissionBps;
@@ -228,6 +274,7 @@ contract HCOWStaking is ReentrancyGuard {
         if (d.amount > 0 && d.repId != repId) revert AlreadyDelegatedElsewhere(d.repId);
 
         _harvest(d);
+        _accrueRepCommission(r);
 
         uint256 before = hcow.balanceOf(address(this));
         hcow.safeTransferFrom(msg.sender, address(this), amount);
@@ -242,7 +289,7 @@ contract HCOWStaking is ReentrancyGuard {
         r.totalDelegated += received;
         totalStaked += received;
 
-        d.rewardDebt = (uint256(d.amount) * r.accRewardPerShare) / ACC_PRECISION;
+        _bookmark(d, r);
         emit Staked(msg.sender, repId, received);
     }
 
@@ -262,6 +309,8 @@ contract HCOWStaking is ReentrancyGuard {
         _harvest(d);
 
         Representative storage from = _reps[fromId];
+        _accrueRepCommission(from);
+        _accrueRepCommission(to);
         uint256 amount = d.amount;
         from.totalDelegated -= amount;
         from.delegatorCount -= 1;
@@ -269,7 +318,7 @@ contract HCOWStaking is ReentrancyGuard {
         d.repId = toRepId;
         to.totalDelegated += amount;
         to.delegatorCount += 1;
-        d.rewardDebt = (amount * to.accRewardPerShare) / ACC_PRECISION;
+        _bookmark(d, to);
 
         emit Redelegated(msg.sender, fromId, toRepId, amount);
     }
@@ -284,6 +333,7 @@ contract HCOWStaking is ReentrancyGuard {
         _harvest(d);
 
         Representative storage r = _reps[d.repId];
+        _accrueRepCommission(r);
         d.amount -= amount.toUint128();
         r.totalDelegated -= amount;
         totalStaked -= amount;
@@ -294,7 +344,7 @@ contract HCOWStaking is ReentrancyGuard {
         d.unstakeReadyAt = uint64(block.timestamp + UNSTAKE_COOLDOWN);
         totalPendingUnstake += amount;
 
-        d.rewardDebt = (uint256(d.amount) * r.accRewardPerShare) / ACC_PRECISION;
+        _bookmark(d, r);
         emit UnstakeRequested(msg.sender, amount, d.unstakeReadyAt);
     }
 
@@ -309,6 +359,7 @@ contract HCOWStaking is ReentrancyGuard {
         Representative storage r = _reps[d.repId];
 
         _harvest(d);
+        _accrueRepCommission(r);
 
         uint256 amount = d.pendingUnstake;
         d.pendingUnstake = 0;
@@ -320,7 +371,7 @@ contract HCOWStaking is ReentrancyGuard {
         r.totalDelegated += amount;
         totalStaked += amount;
 
-        d.rewardDebt = (uint256(d.amount) * r.accRewardPerShare) / ACC_PRECISION;
+        _bookmark(d, r);
         emit UnstakeCancelled(msg.sender, amount);
     }
 
@@ -346,7 +397,7 @@ contract HCOWStaking is ReentrancyGuard {
         if (amount == 0) revert NothingToClaim();
         d.claimable = 0;
         d.lifetimeClaimed += amount;
-        totalRewardsOwed -= amount;
+        _rewardsOwed -= amount;
 
         hcow.safeTransfer(msg.sender, amount);
         emit RewardsClaimed(msg.sender, amount);
@@ -358,10 +409,13 @@ contract HCOWStaking is ReentrancyGuard {
         Representative storage r = _reps[repId];
         if (!r.exists) revert UnknownRepresentative(repId);
 
+        _updateGlobal();
+        _accrueRepCommission(r);
+
         uint256 amount = r.commissionAccrued;
         if (amount == 0) revert NothingToClaim();
         r.commissionAccrued = 0;
-        totalRewardsOwed -= amount;
+        _rewardsOwed -= amount;
 
         hcow.safeTransfer(r.payout, amount);
         emit CommissionClaimed(repId, r.payout, amount);
@@ -378,51 +432,39 @@ contract HCOWStaking is ReentrancyGuard {
      * @dev HCOW cannot be minted, so the funder must hold and approve the
      *      tokens. Nothing is created here.
      */
-    function fundRewards(uint256 amount) external nonReentrant {
+    function fundRewards(uint256 amount, uint64 duration) external nonReentrant {
         if (msg.sender != rewardFunder) revert NotFunder();
         if (amount == 0) revert ZeroAmount();
-
-        uint256 activeWeight;
-        uint256 activeCount;
-        uint256 n = _repIds.length;
-        for (uint256 i = 0; i < n; ++i) {
-            Representative storage r = _reps[_repIds[i]];
-            if (r.active && r.totalDelegated > 0) {
-                activeWeight += r.totalDelegated;
-                activeCount += 1;
-            }
+        if (duration < MIN_REWARD_DURATION || duration > MAX_REWARD_DURATION) {
+            revert BadDuration(duration);
         }
-        if (activeWeight == 0) revert NoActiveWeight();
+
+        _updateGlobal();
 
         uint256 before = hcow.balanceOf(address(this));
         hcow.safeTransferFrom(msg.sender, address(this), amount);
         uint256 received = hcow.balanceOf(address(this)) - before;
         if (received == 0) revert ZeroAmount();
 
-        uint256 handedOut;
-        for (uint256 i = 0; i < n; ++i) {
-            bytes32 id = _repIds[i];
-            Representative storage r = _reps[id];
-            if (!r.active || r.totalDelegated == 0) continue;
+        // Whatever the running period has not released yet, plus anything that
+        // elapsed while nothing was staked, rolls into the new one. Funding
+        // early therefore stretches the budget rather than discarding it.
+        uint256 leftover = block.timestamp < periodFinish
+            ? (uint256(periodFinish) - block.timestamp) * rewardRate
+            : 0;
+        uint256 pool = received + leftover + undistributed;
+        undistributed = 0;
 
-            uint256 slice = (received * r.totalDelegated) / activeWeight;
-            if (slice == 0) continue;
-            handedOut += slice;
+        rewardRate = pool / duration;
+        if (rewardRate == 0) revert ZeroAmount();
+        // The remainder of the division would otherwise be lost for good.
+        undistributed = pool - rewardRate * duration;
 
-            uint256 commission = (slice * r.commissionBps) / 10_000;
-            uint256 toDelegators = slice - commission;
-
-            r.commissionAccrued += commission;
-            r.accRewardPerShare += (toDelegators * ACC_PRECISION) / r.totalDelegated;
-            r.lifetimeRewards += toDelegators;
-        }
-
-        // Rounding dust stays in the contract and is picked up by the next
-        // round, rather than being stranded or silently pocketed.
-        totalRewardsOwed += handedOut;
+        lastUpdateTime = uint64(block.timestamp);
+        periodFinish = uint64(block.timestamp) + duration;
         totalRewardsFunded += received;
 
-        emit RewardsFunded(received, activeWeight, activeCount);
+        emit RewardsFunded(received, rewardRate, duration);
     }
 
     // ------------------------------------------------------------------
@@ -432,8 +474,21 @@ contract HCOWStaking is ReentrancyGuard {
     function pendingRewardOf(address account) public view returns (uint256) {
         Delegation storage d = _delegations[account];
         if (d.amount == 0) return d.claimable;
-        uint256 accrued = (uint256(d.amount) * _reps[d.repId].accRewardPerShare) / ACC_PRECISION;
-        return d.claimable + (accrued > d.rewardDebt ? accrued - d.rewardDebt : 0);
+
+        // Project the accumulator forward the same way _updateGlobal would.
+        uint256 acc = accRewardPerShare;
+        uint64 t = uint64(block.timestamp) < periodFinish
+            ? uint64(block.timestamp)
+            : periodFinish;
+        if (t > lastUpdateTime && totalStaked > 0) {
+            acc += ((uint256(t - lastUpdateTime) * rewardRate) * ACC_PRECISION) / totalStaked;
+        }
+
+        Representative storage r = _reps[d.repId];
+        uint256 netAcc = r.accNetBase
+            + ((acc - r.accNetAnchor) * (10_000 - r.commissionBps)) / 10_000;
+        uint256 net = (uint256(d.amount) * netAcc) / ACC_PRECISION;
+        return d.claimable + (net > d.rewardDebtNet ? net - d.rewardDebtNet : 0);
     }
 
     function delegationOf(address account)
@@ -505,13 +560,136 @@ contract HCOWStaking is ReentrancyGuard {
     // internal
     // ------------------------------------------------------------------
 
-    function _harvest(Delegation storage d) private {
-        if (d.amount > 0) {
-            uint256 accrued = (uint256(d.amount) * _reps[d.repId].accRewardPerShare) / ACC_PRECISION;
-            if (accrued > d.rewardDebt) {
-                d.claimable += accrued - d.rewardDebt;
+    /**
+     * @dev Advance the global accumulator to now.
+     *
+     * Must run before anything that changes totalStaked, and before anything
+     * that reads an account's accrual, or the seconds either side of the
+     * change are priced at the wrong weight.
+     */
+    function _updateGlobal() private {
+        uint64 t = uint64(block.timestamp) < periodFinish
+            ? uint64(block.timestamp)
+            : periodFinish;
+        if (t <= lastUpdateTime) return;
+
+        uint256 elapsed = uint256(t - lastUpdateTime);
+        uint256 released = elapsed * rewardRate;
+        if (released > 0) {
+            if (totalStaked > 0) {
+                accRewardPerShare += (released * ACC_PRECISION) / totalStaked;
+                _rewardsOwed += released;
+            } else {
+                // Nobody was owed these seconds. Carry them rather than either
+                // stranding them or handing the whole window to whoever stakes
+                // next, which would be the lump sum problem again.
+                undistributed += released;
             }
-            d.rewardDebt = accrued;
+        }
+        lastUpdateTime = t;
+    }
+
+    /// @dev The representative's net-of-commission accumulator. Exact without
+    ///      touching storage on every rep, because the commission fraction is
+    ///      constant between changes and the anchor records where it changed.
+    function _netAcc(Representative storage r) private view returns (uint256) {
+        return r.accNetBase
+            + ((accRewardPerShare - r.accNetAnchor) * (10_000 - r.commissionBps)) / 10_000;
+    }
+
+    /// @dev Freeze the representative's net accumulator at the current
+    ///      commission before that commission changes, so a change can never
+    ///      reach backwards into rewards that already accrued.
+    function _freezeCommission(Representative storage r) private {
+        r.accNetBase = _netAcc(r);
+        r.accNetAnchor = accRewardPerShare;
+    }
+
+    /**
+     * @dev Fold commission earned since the last anchor into the
+     *      representative's balance. Must run before any change to its
+     *      delegated weight or its commission rate, because both are constant
+     *      between calls and that is what makes the integral exact.
+     */
+    function _accrueRepCommission(Representative storage r) private {
+        uint256 delta = accRewardPerShare - r.commAnchor;
+        if (delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0) {
+            uint256 earned =
+                (r.totalDelegated * delta * r.commissionBps) / (10_000 * ACC_PRECISION);
+            if (earned > 0) r.commissionAccrued += earned;
+        }
+        r.commAnchor = accRewardPerShare;
+    }
+
+    /**
+     * @notice HCOW held to pay accrued delegator rewards and commission.
+     *
+     * Projected to this second. The stored figure only moves when someone
+     * calls in, so a view that returned it directly would understate the
+     * liability for as long as the contract sits idle, and would disagree with
+     * pendingRewardOf.
+     */
+    function totalRewardsOwed() public view returns (uint256) {
+        uint256 owed = _rewardsOwed;
+        uint64 t = uint64(block.timestamp) < periodFinish
+            ? uint64(block.timestamp)
+            : periodFinish;
+        if (t > lastUpdateTime && totalStaked > 0) {
+            owed += uint256(t - lastUpdateTime) * rewardRate;
+        }
+        return owed;
+    }
+
+    /// @notice Commission a representative could claim right now.
+    function commissionOf(bytes32 id) external view returns (uint256) {
+        Representative storage r = _reps[id];
+        uint256 acc = accRewardPerShare;
+        uint64 t = uint64(block.timestamp) < periodFinish
+            ? uint64(block.timestamp)
+            : periodFinish;
+        if (t > lastUpdateTime && totalStaked > 0) {
+            acc += ((uint256(t - lastUpdateTime) * rewardRate) * ACC_PRECISION) / totalStaked;
+        }
+        uint256 delta = acc - r.commAnchor;
+        uint256 pending = (delta > 0 && r.totalDelegated > 0 && r.commissionBps > 0)
+            ? (r.totalDelegated * delta * r.commissionBps) / (10_000 * ACC_PRECISION)
+            : 0;
+        return r.commissionAccrued + pending;
+    }
+
+    function _bookmark(Delegation storage d, Representative storage r) private {
+        uint256 amt = uint256(d.amount);
+        d.rewardDebtGross = (amt * accRewardPerShare) / ACC_PRECISION;
+        d.rewardDebtNet = (amt * _netAcc(r)) / ACC_PRECISION;
+    }
+
+    /**
+     * @dev Fold accrual into stored balances. Commission is the difference
+     *      between what the stream produced for the position and what the
+     *      representative's net accumulator says the delegator keeps, so it is
+     *      taken at the rate that was in force while it accrued.
+     */
+    function _harvest(Delegation storage d) private {
+        _updateGlobal();
+        if (d.amount > 0) {
+            Representative storage r = _reps[d.repId];
+            uint256 amt = uint256(d.amount);
+            uint256 gross = (amt * accRewardPerShare) / ACC_PRECISION;
+            uint256 net = (amt * _netAcc(r)) / ACC_PRECISION;
+            uint256 netDelta = net > d.rewardDebtNet ? net - d.rewardDebtNet : 0;
+            if (netDelta > 0) {
+                d.claimable += netDelta;
+                r.lifetimeRewards += netDelta;
+            }
+            // Commission is deliberately not taken here. It is an aggregate
+            // over the representative's whole weight, folded in by
+            // _accrueRepCommission, so a representative is paid without having
+            // to wait for every delegator to touch their position.
+            d.rewardDebtGross = gross;
+            d.rewardDebtNet = net;
+        } else {
+            d.rewardDebtGross = 0;
+            d.rewardDebtNet = 0;
         }
     }
 }

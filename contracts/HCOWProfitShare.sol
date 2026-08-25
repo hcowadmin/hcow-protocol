@@ -121,6 +121,8 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 settledDeducted; // deduction already folded into the total below
         uint256 lifetimeClaimedUsdt;
         uint256 unbondIndex;     // poolIndex at the moment the unbond was requested
+        uint128 newShares;       // bonded this epoch, principal already, not yet earning
+        uint64  newSharesEpoch;  // the epoch those shares were bonded in
     }
 
     mapping(address => Account) private _accounts;
@@ -133,6 +135,24 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint256 public totalPendingUnbond;
 
     uint256 public accUsdtPerShare;
+
+    /**
+     * @notice Shares bonded during the epoch now being settled.
+     *
+     * They are principal from the moment they are minted, so they count in
+     * totalShares, back bondedOf and absorb deduction. They do not earn the
+     * epoch they arrived in. Without this a holder can bond immediately before
+     * a settlement, take a full pro rata cut of a quarter's profit for one
+     * block of exposure, and unbond. Settlement parameters are visible in the
+     * mempool, so the payoff is known before the position is even opened.
+     */
+    uint256 public totalNewShares;
+
+    /// @notice accUsdtPerShare as it stood immediately after each settled
+    ///         epoch. A position promoted out of totalNewShares is credited
+    ///         from the value recorded here, so it earns every epoch after the
+    ///         one it joined even if nobody touches the account in between.
+    mapping(uint64 => uint256) public accAtEpoch;
 
     /**
      * @notice Deduction accumulator, the mirror of accUsdtPerShare.
@@ -301,6 +321,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         a.shares += minted.toUint128();
         totalShares += minted;
         totalBondedHcow += received;
+        _markNew(a, minted);
 
         _bookmark(a);
         emit Bonded(msg.sender, received, minted);
@@ -327,6 +348,14 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 sharesToBurn = (hcowAmount * uint256(a.shares)) / owned;
         if (sharesToBurn == 0) revert ZeroAmount();
 
+        // Take it out of this epoch's arrivals first. They are the shares
+        // that are not earning yet, so removing them costs the holder nothing
+        // they had, and it keeps the account and the global counter in step.
+        uint256 fromNew = sharesToBurn > a.newShares ? a.newShares : sharesToBurn;
+        if (fromNew > 0) {
+            a.newShares -= fromNew.toUint128();
+            totalNewShares -= fromNew;
+        }
         a.shares -= sharesToBurn.toUint128();
         if (a.shares == 0) participantCount -= 1;
         totalShares -= sharesToBurn;
@@ -379,6 +408,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         a.shares += minted.toUint128();
         totalShares += minted;
         totalBondedHcow += restored;
+        _markNew(a, minted);
 
         _bookmark(a);
 
@@ -511,14 +541,16 @@ contract HCOWProfitShare is ReentrancyGuard {
             if (toTeam > 0) usdt.safeTransfer(team, toTeam);
         }
 
+        uint256 eligibleShares = totalShares - totalNewShares;
+
         if (participants > 0) {
-            if (totalShares == 0) {
+            if (eligibleShares == 0) {
                 // Nobody is bonded. Send the participant share back rather
                 // than stranding it in a pool with no claimants.
                 usdt.safeTransfer(msg.sender, participants);
                 participants = 0;
             } else {
-                accUsdtPerShare += (participants * ACC_PRECISION) / totalShares;
+                accUsdtPerShare += (participants * ACC_PRECISION) / eligibleShares;
                 totalUsdtDistributed += participants;
             }
         }
@@ -537,6 +569,12 @@ contract HCOWProfitShare is ReentrancyGuard {
             lastDeductionAt = uint64(block.timestamp);
             IBurnable(address(hcow)).burn(hcowToDeduct);
         }
+
+        // Everything bonded during this epoch starts earning from the next
+        // one. Recording the accumulator here is what lets an untouched
+        // account be promoted later without losing the epochs in between.
+        accAtEpoch[epoch] = accUsdtPerShare;
+        totalNewShares = 0;
 
         _settlements[epoch] = Settlement({
             grossReceivedUsdt: grossReceivedUsdt.toUint128(),
@@ -571,8 +609,24 @@ contract HCOWProfitShare is ReentrancyGuard {
     /// @notice USDT an account could claim right now.
     function claimableOf(address account) external view returns (uint256) {
         Account storage a = _accounts[account];
-        uint256 accrued = (uint256(a.shares) * accUsdtPerShare) / ACC_PRECISION;
-        return a.claimableUsdt + (accrued > a.rewardDebt ? accrued - a.rewardDebt : 0);
+        uint256 elig = uint256(a.shares) - uint256(a.newShares);
+        uint256 accrued = (elig * accUsdtPerShare) / ACC_PRECISION;
+        uint256 total = a.claimableUsdt + (accrued > a.rewardDebt ? accrued - a.rewardDebt : 0);
+        if (a.newShares > 0 && nextEpoch > a.newSharesEpoch) {
+            uint256 startAcc = accAtEpoch[a.newSharesEpoch];
+            if (accUsdtPerShare > startAcc) {
+                total += (uint256(a.newShares) * (accUsdtPerShare - startAcc)) / ACC_PRECISION;
+            }
+        }
+        return total;
+    }
+
+    /// @notice Shares that are earning right now. Anything bonded during the
+    ///         open epoch is principal but does not earn until it closes.
+    function eligibleSharesOf(address account) external view returns (uint256) {
+        Account storage a = _accounts[account];
+        if (a.newShares > 0 && nextEpoch > a.newSharesEpoch) return a.shares;
+        return uint256(a.shares) - uint256(a.newShares);
     }
 
     /// @notice HCOW a pending unbond would actually pay out right now, after
@@ -681,11 +735,28 @@ contract HCOWProfitShare is ReentrancyGuard {
      */
     function _settle(Account storage a) private {
         uint256 s = uint256(a.shares);
-        if (s > 0) {
-            uint256 usdtAccrued = (s * accUsdtPerShare) / ACC_PRECISION;
+        uint256 elig = s - uint256(a.newShares);
+        if (elig > 0) {
+            uint256 usdtAccrued = (elig * accUsdtPerShare) / ACC_PRECISION;
             if (usdtAccrued > a.rewardDebt) {
                 a.claimableUsdt += usdtAccrued - a.rewardDebt;
             }
+        }
+        // Promote this epoch's arrivals once a settlement has passed over
+        // them, crediting every epoch since from the recorded accumulator.
+        if (a.newShares > 0 && nextEpoch > a.newSharesEpoch) {
+            uint256 startAcc = accAtEpoch[a.newSharesEpoch];
+            if (accUsdtPerShare > startAcc) {
+                a.claimableUsdt +=
+                    (uint256(a.newShares) * (accUsdtPerShare - startAcc)) / ACC_PRECISION;
+            }
+            a.newShares = 0;
+            a.newSharesEpoch = 0;
+        }
+        // Deduction applies to every share from the moment it exists. New
+        // shares are principal in the pool, so they absorb usage like any
+        // other, and only the USDT leg waits.
+        if (s > 0) {
             uint256 deducted = (s * accDeductedPerShare) / ACC_PRECISION;
             if (deducted > a.deductDebt) {
                 a.settledDeducted += deducted - a.deductDebt;
@@ -694,9 +765,18 @@ contract HCOWProfitShare is ReentrancyGuard {
         _bookmark(a);
     }
 
+    /// @dev Record freshly minted shares as this epoch's arrivals. Call after
+    ///      _settle, which guarantees any older batch has already been
+    ///      promoted, so newSharesEpoch always refers to the open epoch.
+    function _markNew(Account storage a, uint256 minted) private {
+        a.newShares += minted.toUint128();
+        a.newSharesEpoch = nextEpoch;
+        totalNewShares += minted;
+    }
+
     function _bookmark(Account storage a) private {
         uint256 s = uint256(a.shares);
-        a.rewardDebt = (s * accUsdtPerShare) / ACC_PRECISION;
+        a.rewardDebt = ((s - uint256(a.newShares)) * accUsdtPerShare) / ACC_PRECISION;
         a.deductDebt = (s * accDeductedPerShare) / ACC_PRECISION;
     }
 }
