@@ -85,7 +85,7 @@ footer a{color:var(--ink-2);margin-right:18px;font-weight:600}
 
 <main class="wrap">
   <h1>Check a round. <em>Without trusting us.</em></h1>
-  <p class="lede">Paste the receipt from any round. This page recomputes the record hash, checks the seed that was published before the round was played, and compares the result against the anchor stored on BNB Chain.</p>
+  <p class="lede">Paste the receipt from any round. This page recomputes the record hash, checks the revealed seed against the commitment stored inside the record, and asks the HCOWLedger contract on BNB Chain whether that record is part of the epoch it claims.</p>
   <p class="note">Everything runs in your browser. No library is loaded from anywhere. The only network request is a read call to a public BNB Chain node, and you can point it at your own node below. The full record format is published so you can write your own checker instead of using this one.</p>
 
   <label for="receipt">Round receipt</label>
@@ -104,7 +104,7 @@ footer a{color:var(--ink-2);margin-right:18px;font-weight:600}
     <summary>Settings and record format</summary>
     <div class="adv">
       <label for="rpc">BNB Chain RPC endpoint</label>
-      <input id="rpc" value="https://bsc-dataseed.binance.org">
+      <input id="rpc" value="https://data-seed-prebsc-1-s1.bnbchain.org:8545">
       <label for="addr">HCOWLedger contract</label>
       <input id="addr" placeholder="0x... (published after deployment)">
     </div>
@@ -199,6 +199,31 @@ const pair=(a,b)=>a.toLowerCase()<=b.toLowerCase()
 function rootFrom(leaf,proof){let h=leaf.toLowerCase();for(const p of proof)h=pair(h,p.toLowerCase());return h;}
 
 /* =============================== chain =============================== */
+async function ethCall(rpc,addr,data){
+  const res=await fetch(rpc,{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:addr,data},'latest']})});
+  const j=await res.json();
+  if(j.error) throw new Error(j.error.message||'rpc error');
+  return (j.result||'').replace(/^0x/,'');
+}
+// Ask the contract itself. Recomputing the root in the page and comparing it
+// is a weaker check than the one the chain runs: it does not test the proof
+// length against the record count the epoch was anchored with, and it does not
+// test that the epoch is inside the anchored range. Those are exactly the two
+// substitutions the contract refuses, so a page that skips them can call a
+// receipt verified that the chain rejects. This is the authoritative answer.
+async function verifyOnChain(rpc,addr,epoch,leaf,proof){
+  const sel='0x7a05560c'; // verifyEpochRecord(uint64,bytes32,bytes32[])
+  const w=n=>BigInt(n).toString(16).padStart(64,'0');
+  // Head is three words: epoch, leaf, and the offset to the array. The offset
+  // is 96 because it is measured from the start of the arguments, not from the
+  // selector. Then the array: its length, then its elements.
+  const data=sel+w(epoch)+leaf.replace(/^0x/,'').toLowerCase().padStart(64,'0')+w(96)
+    +w(proof.length)+proof.map(p=>p.replace(/^0x/,'').toLowerCase().padStart(64,'0')).join('');
+  const d=await ethCall(rpc,addr,data);
+  if(d.length<64) throw new Error('unexpected response from the contract');
+  return BigInt('0x'+d.slice(0,64))===1n;
+}
 async function readEpochRoot(rpc,addr,epoch){
   const sel='0x12a02c82'; // getEpoch(uint64)
   const arg=BigInt(epoch).toString(16).padStart(64,'0');
@@ -253,6 +278,18 @@ $('go').onclick=async()=>{
   const rec=parsed.record, proof=parsed.proof||[], epoch=parsed.epoch;
   const kind=parsed.kind||'seeded';
 
+  // The receipt is text a visitor pasted. A proof that is a string rather than
+  // an array makes rootFrom iterate its characters and throws a RangeError
+  // outside every try below, and the page then silently does nothing at all.
+  if(!Array.isArray(proof)||!proof.every(h=>typeof h==='string'&&/^0x[0-9a-fA-F]{64}$/.test(h))){
+    render([{state:'fail',title:'Receipt could not be read',
+      body:'"proof" must be an array of 32 byte hex strings.'}]); return;
+  }
+  if(!Number.isInteger(epoch)||epoch<0){
+    render([{state:'fail',title:'Receipt could not be read',
+      body:'"epoch" must be a non negative whole number.'}]); return;
+  }
+
   // 1. record hash
   let leaf=null;
   try{ leaf=leafOf(rec,kind);
@@ -282,12 +319,15 @@ $('go').onclick=async()=>{
   }
   try{
     const on=await readEpochRoot(rpc,addr,epoch);
+    const accepted=await verifyOnChain(rpc,addr,epoch,leaf,proof);
     const match=on.root.toLowerCase()===computed.toLowerCase();
-    out.push(match
-      ? {state:'pass',title:'Matches the root anchored on BNB Chain',
-         body:'Epoch '+epoch+' holds '+on.recordCount+' records, anchored '+new Date(on.anchoredAt*1000).toISOString().replace('T',' ').slice(0,19)+' UTC. Root '+on.root}
-      : {state:'fail',title:'Does not match the anchored root',
-         body:'Computed '+computed+' but the chain holds '+on.root+'. Either the receipt was altered or the proof belongs to a different epoch.'});
+    out.push(accepted
+      ? {state:'pass',title:'The contract on BNB Chain accepts this record',
+         body:'HCOWLedger.verifyEpochRecord returned true. Epoch '+epoch+' holds '+on.recordCount+' records, anchored '+new Date(on.anchoredAt*1000).toISOString().replace('T',' ').slice(0,19)+' UTC. Root '+on.root}
+      : {state:'fail',title:'The contract on BNB Chain rejects this record',
+         body:'Computed root '+computed+', chain holds '+on.root+'.'+(match
+           ? ' The roots agree, so the proof is the wrong length for an epoch of '+on.recordCount+' records, or the epoch is outside the anchored range.'
+           : ' Either the receipt was altered or the proof belongs to a different epoch.')});
     render(out);
     const all=out.every(i=>i.state==='pass');
     verdict(all,all?'This round is exactly as it was recorded. Nothing was changed afterwards.':'This round did not verify.');

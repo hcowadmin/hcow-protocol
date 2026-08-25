@@ -103,6 +103,13 @@ select
   (args->>'operatingCostsUsdt')::numeric    as operating_costs_usdt,
   (args->>'distributableProfitUsdt')::numeric as distributable_profit_usdt,
   (args->>'participantsUsdt')::numeric      as participants_usdt,
+  -- The part of the participant leg the eligible pool could not take, returned
+  -- to the settler in the same transaction. Zero whenever every share is
+  -- eligible, which is the steady state. The waterfall is
+  -- distributable = participants + refunded + gameCompany + team, and it does
+  -- not reconcile without this column. coalesce so the view still works over
+  -- rows indexed before the field existed.
+  coalesce((args->>'refundedUsdt')::numeric, 0) as refunded_usdt,
   (args->>'hcowDeducted')::numeric          as hcow_deducted,
   (args->>'snapshotBondedHcow')::numeric    as snapshot_bonded_hcow
 from chain_events

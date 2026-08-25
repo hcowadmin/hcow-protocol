@@ -47,6 +47,7 @@ const RPC_URLS = (Deno.env.get("RPC_URLS") ?? Deno.env.get("RPC_URL") ?? [
 const CHAIN_ID = Number(Deno.env.get("CHAIN_ID") ?? "97");
 const GENESIS_BLOCK = Number(Deno.env.get("GENESIS_BLOCK") ?? "124862688");
 
+const LEDGER = (Deno.env.get("LEDGER_ADDRESS") ?? "").toLowerCase();
 const PROFIT_SHARE = (Deno.env.get("PROFIT_SHARE_ADDRESS") ?? "").toLowerCase();
 const STAKING = (Deno.env.get("STAKING_ADDRESS") ?? "").toLowerCase();
 
@@ -65,8 +66,20 @@ const MIN_CHUNK = 100;
 const MAX_CHUNK = 5_000;
 const MAX_CHUNKS = 40;
 
-/** Node messages that mean "same request, smaller range" rather than "broken". */
-const RANGE_ERRORS = /limit exceeded|too many|exceed|range|query returned more than/i;
+/**
+ * Node messages that mean "same request, smaller range" rather than "broken".
+ *
+ * Deliberately narrow. The wide form also matched "rate limit exceeded",
+ * "429 Too Many Requests" and "daily request count exceeded", which are the
+ * exact conditions the multi endpoint list exists for: matching them here
+ * suppressed failover and shrank the window to the floor against a node that
+ * was never going to answer.
+ */
+const RANGE_ERRORS =
+  /block range|query returned more than|logs? matched|more than \d+ results|exceeds? (the )?(maximum|max|allowed) (block )?range|requested too many blocks|response size/i;
+
+/** Messages that mean "this endpoint, right now" and should move to the next one. */
+const ENDPOINT_ERRORS = /rate limit|too many requests|429|request count|quota|forbidden|unauthorized|timeout|timed out|econn|socket|fetch failed/i;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -76,7 +89,26 @@ const PROFIT_SHARE_EVENTS = [
   "event UnbondCancelled(address indexed account, uint256 hcowAmount, uint256 sharesMinted, uint256 forfeited)",
   "event Unbonded(address indexed account, uint256 hcowAmount, uint256 forfeited)",
   "event UsdtClaimed(address indexed account, uint256 amount)",
-  "event EpochSettled(uint64 indexed epoch, uint256 grossReceivedUsdt, uint256 directCostsUsdt, uint256 netRevenueUsdt, uint256 operatingCostsUsdt, uint256 distributableProfitUsdt, uint256 participantsUsdt, uint256 hcowDeducted, uint256 snapshotBondedHcow)",
+  "event EpochSettled(uint64 indexed epoch, uint256 grossReceivedUsdt, uint256 directCostsUsdt, uint256 netRevenueUsdt, uint256 operatingCostsUsdt, uint256 distributableProfitUsdt, uint256 participantsUsdt, uint256 refundedUsdt, uint256 hcowDeducted, uint256 snapshotBondedHcow)",
+  // Governance. These belong to HCOWProfitShare and were previously declared
+  // against HCOWStaking, which emits none of them: the interface used for the
+  // ProfitShare address did not know the topics, parseLog returned null and
+  // every one of them was silently dropped. The settler and the two payout
+  // recipients could be changed with no row anywhere.
+  //
+  // Both RecipientsChanged parameters are indexed in the contract. Declaring
+  // them non indexed produces the identical topic0 with an incompatible
+  // layout, so the decode throws rather than returning null.
+  "event SettlerChanged(address indexed account)",
+  "event RecipientsChanged(address indexed gameCompany, address indexed team)",
+  "event OwnershipTransferred(address indexed from, address indexed to)",
+];
+
+const LEDGER_EVENTS = [
+  "event EpochAnchored(uint64 indexed epoch, bytes32 root, uint64 recordCount, uint64 anchoredAt)",
+  "event HistoricalBatchAnchored(uint64 indexed batchId, bytes32 root, uint64 recordCount, uint64 coversFrom, uint64 coversTo, uint64 anchoredAt)",
+  "event AnchorerSet(address indexed account, bool allowed)",
+  "event OwnershipTransferred(address indexed from, address indexed to)",
 ];
 
 const STAKING_EVENTS = [
@@ -90,9 +122,7 @@ const STAKING_EVENTS = [
   "event RepresentativeUpdated(bytes32 indexed id, address payout, uint16 commissionBps, bool active)",
   "event CommissionClaimed(bytes32 indexed repId, address indexed payout, uint256 amount)",
   "event RewardFunderChanged(address indexed account)",
-  "event SettlerChanged(address indexed settler)",
-  "event RecipientsChanged(address gameCompany, address team)",
-  "event OwnershipTransferred(address indexed previousOwner, address indexed newOwner)",
+  "event OwnershipTransferred(address indexed from, address indexed to)",
   "event Unstaked(address indexed account, uint256 amount)",
   "event RewardsClaimed(address indexed account, uint256 amount)",
   "event RewardsFunded(uint256 amount, uint256 rewardRate, uint64 duration)",
@@ -101,6 +131,7 @@ const STAKING_EVENTS = [
 const SOURCES = [
   { address: PROFIT_SHARE, iface: new Interface(PROFIT_SHARE_EVENTS) },
   { address: STAKING, iface: new Interface(STAKING_EVENTS) },
+  { address: LEDGER, iface: new Interface(LEDGER_EVENTS) },
 ].filter((s) => s.address.startsWith("0x"));
 
 // ---------------------------------------------------------------------------
@@ -135,7 +166,11 @@ async function rpc<T>(method: string, params: unknown[]): Promise<T> {
       // A range refusal is not an endpoint failure. Surface it immediately so
       // the caller can retry smaller instead of burning every endpoint on a
       // request all of them would refuse.
-      if (RANGE_ERRORS.test(lastError.message)) break;
+      // "limit exceeded" and "query timeout" are matched by both patterns:
+      // some nodes say them for a range refusal and some for a rate limit.
+      // Failover is the cheaper guess, so the endpoint pattern wins here.
+      // getLogsAdaptive then shrinks on either, so neither reading is fatal.
+      if (RANGE_ERRORS.test(lastError.message) && !ENDPOINT_ERRORS.test(lastError.message)) break;
     }
   }
   throw new Error(`rpc ${method}: ${lastError?.message ?? "no endpoint answered"}`);
@@ -164,7 +199,11 @@ async function getLogsAdaptive(
       return { logs, to, size: width };
     } catch (e) {
       const msg = (e as Error).message;
-      if (!RANGE_ERRORS.test(msg) || width <= MIN_CHUNK) throw e;
+      // Shrink on either pattern. Halving costs one round trip; throwing costs
+      // the whole run and the cursor does not advance. A node's phrasing for
+      // "too much at once" is not standardised and will not stay matched
+      // forever, so the failure mode here has to be retry, not death.
+      if ((!RANGE_ERRORS.test(msg) && !ENDPOINT_ERRORS.test(msg)) || width <= MIN_CHUNK) throw e;
       width = Math.max(MIN_CHUNK, Math.floor(width / 2));
       await sleep(250);
     }
@@ -202,7 +241,18 @@ async function blockTime(n: number): Promise<string> {
 
 /** BigInt values are stored as decimal strings so no precision is lost. */
 function decodeArgs(iface: Interface, log: RawLog) {
-  const parsed = iface.parseLog({ topics: [...log.topics], data: log.data });
+  // parseLog returns null for a topic0 it does not know, but throws when it
+  // knows the topic0 and the layout disagrees, which is what a drifted indexed
+  // flag looks like. An uncaught throw here propagates out of run(), the cursor
+  // never advances, and the indexer stops on that block permanently. A log it
+  // cannot decode must degrade to a skipped row, never to a halt.
+  let parsed;
+  try {
+    parsed = iface.parseLog({ topics: [...log.topics], data: log.data });
+  } catch (e) {
+    console.warn(`undecodable log at ${log.blockNumber} topic0 ${log.topics[0]}: ${(e as Error).message}`);
+    return null;
+  }
   if (!parsed) return null;
   const args: Record<string, string> = {};
   parsed.fragment.inputs.forEach((input, i) => {

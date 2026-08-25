@@ -221,13 +221,24 @@ async function main() {
   // (epoch 2 deducts nothing, so the cooldown from epoch 1 is irrelevant here)
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
   await (await ps.connect(settlerS).settleEpoch(2, E(20_000), 0, E(8_000), 0)).wait();
-  // profit 12,000 -> participants 6,000. carol 50%, alice 12.5%, bob 37.5%
-  // Carol bonded during epoch 2, so epoch 2 is not hers. The 6,000 goes to
-  // the two who were already earning, in their 980:2940 ratio.
+  // profit 12,000 -> participants 6,000. Carol bonded during epoch 2, so
+  // epoch 2 is not hers: she holds half the pool and half the leg is returned
+  // to the settler, who funds it again in the epoch she becomes eligible for.
+  // The other half goes to the two who were already earning, 980:2940.
   eq('a new bonder earns nothing in the epoch it arrived in',
     D(await ps.claimableOf(carol)), 0);
-  eq('alice earned her quarter', D(await ps.claimableOf(alice)), 1500);
-  eq('bob earned his three quarters', D(await ps.claimableOf(bob)), 20250 + 4500);
+  eq('and her half of the leg is not handed to the incumbents either',
+    D(await ps.claimableOf(alice)) + D(await ps.claimableOf(bob)) - 20250, 3000);
+  eq('her half is returned to the settler, not handed to the incumbents',
+    D((await ps.getSettlement(2)).refundedUsdt), 3000);
+  eq('alice earned her quarter of the eligible half', D(await ps.claimableOf(alice)), 750);
+  {
+    const st = await ps.getSettlement(2);
+    eq('and the waterfall reconciles exactly in the log',
+      D(st.distributableProfitUsdt),
+      D(st.participantsUsdt) + D(st.refundedUsdt) + D(st.distributableProfitUsdt) / 2);
+  }
+  eq('bob earned his three quarters', D(await ps.claimableOf(bob)), 20250 + 2250);
 
   step('unbonding'); // ---------------- unbonding ----------------
   await rv('cannot cancel without a pending unbond', ps, aliceS, 'cancelUnbond', [], 'NoPendingUnbond');
@@ -249,10 +260,12 @@ async function main() {
   await (await ps.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), 20_000)).wait();
   eq('pool absorbed the deduction', D(await ps.totalBondedHcow()), D(poolBefore) * 0.98);
   eq('pending unbond untouched by deduction', D(await ps.totalPendingUnbond()), 980);
-  eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 1500);
+  eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 750);
   // epoch 3 is the first one carol was present for the whole of
   near('a new bonder earns from the next epoch on',
     D(await ps.claimableOf(carol)), 3000 * (3920 / 6860), 1e-6);
+  eq('and with everyone eligible nothing is returned',
+    D((await ps.getSettlement(3)).refundedUsdt), 0);
 
   step('time travel');
   await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
@@ -405,8 +418,16 @@ async function main() {
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
   await (await ps6.connect(settlerS).settleEpoch(1, E(10_000), 0, E(4_000), 0)).wait();
 
-  eq('the holder keeps the whole distribution', D(await ps6.claimableOf(alice)), 3000);
+  // Alice is one tenth of the pool, so she takes one tenth of the leg and the
+  // other nine tenths go back to the settler. Paying her the whole leg because
+  // she is the only eligible holder is the defect this replaced: one wei bonded
+  // an epoch early would otherwise take the entire distribution away from a
+  // pool a hundred million times its size.
+  eq('the holder takes her share of the pool, not the whole leg',
+    D(await ps6.claimableOf(alice)), 300);
   eq('the arrival takes none of it', D(await ps6.claimableOf(bob)), 0);
+  eq('the rest is returned to the settler and named in the settlement',
+    D((await ps6.getSettlement(1)).refundedUsdt), 2700);
   eq('but the arrival is principal immediately', D(await ps6.bondedOf(bob)), 9000);
   eq('and it is earning from the next epoch',
     D(await ps6.eligibleSharesOf(bob)), D(await ps6.bondedOf(bob)));
@@ -415,7 +436,9 @@ async function main() {
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
   await (await ps6.connect(settlerS).settleEpoch(2, E(10_000), 0, E(4_000), 0)).wait();
   eq('the next epoch splits by weight', D(await ps6.claimableOf(bob)), 2700);
-  eq('and the holder takes the rest', D(await ps6.claimableOf(alice)), 3000 + 300);
+  eq('and the holder takes the rest', D(await ps6.claimableOf(alice)), 300 + 300);
+  eq('with everyone eligible nothing is returned',
+    D((await ps6.getSettlement(2)).refundedUsdt), 0);
 
   // an untouched account is still credited for every epoch after it joined
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
@@ -516,7 +539,7 @@ async function main() {
   await (await usdt.connect(settlerS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
   await (await hcow.connect(aliceS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
   await (await hcow.connect(bobS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
-  eq('window ceiling is 3%', Number(await ps8.MAX_DECAY_PER_WINDOW_PPM()), 30_000);
+  eq('window ceiling is 3% per window', Number(await ps8.MAX_DECAY_PER_WINDOW_PPM()), 30_000);
   eq('window is thirty days', Number(await ps8.DECAY_WINDOW()), 30 * 86_400);
 
   await (await ps8.connect(aliceS).bond(E(1_000))).wait();
@@ -524,32 +547,44 @@ async function main() {
   await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
   await (await ps8.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
 
-  // The ceiling is 3% of the live bonded pool at each settlement, never a
-  // figure snapshotted when the window opened. Pool 2,000 gives 60 HCOW; two
-  // settlements at the maximum rate come to 79.2 and the second is refused.
+  // The ceiling is a rate, not a token figure. Three percent per thirty days
+  // means 30,000 ppm of allowance, whatever the pool is doing.
   await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
   await (await ps8.connect(settlerS).settleEpoch(1, E(10_000), 0, E(4_000), 20_000)).wait();
-  near('the window is metered in HCOW', D(await ps8.decayWindowBurned()), 40);
+  eq('the window is metered in ppm of rate', Number(await ps8.decayWindowPpm()), 20_000);
   await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
   await rv('a campaign cannot outrun the window ceiling', ps8, settlerS, 'settleEpoch',
     [2, E(10_000), 0, E(4_000), 20_000], 'DecayWindowExhausted');
   // the honest rate is far below it and still goes through
   await (await ps8.connect(settlerS).settleEpoch(2, E(10_000), 0, E(4_000), 5_000)).wait();
-  near('an honest rate is unaffected', D(await ps8.bondedOf(bob)), 980 * 0.995);
+  eq('an honest rate is unaffected', Number(await ps8.decayWindowPpm()), 25_000);
+  near('and it lands on the pool', D(await ps8.bondedOf(bob)), 980 * 0.995);
 
-  // Capital parked in the pool to inflate the ceiling and pulled out again
-  // must not buy the settler extra room. The ceiling is read live, so the
-  // allowance leaves with the capital.
+  // Capital parked in the pool and pulled out again must not buy the settler
+  // extra room. With no base in the ceiling there is nothing for it to move.
   const bondedNow = D(await ps8.totalBondedHcow());
-  await (await hcow.connect(aliceS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
   await (await ps8.connect(aliceS).bond(E(1_500))).wait();
-  near('the ceiling follows the pool up', D(await ps8.totalBondedHcow()), bondedNow + 1_500);
-  await (await ps8.connect(aliceS).requestUnbond(E(1_500))).wait();
-  near('and back down when the capital leaves',
-    D(await ps8.totalBondedHcow()), bondedNow, 1e-6);
+  near('parking capital moves the pool', D(await ps8.totalBondedHcow()), bondedNow + 1_500);
   await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
-  await rv('parked capital does not widen the window', ps8, settlerS, 'settleEpoch',
+  await rv('but it does not widen the window', ps8, settlerS, 'settleEpoch',
     [3, E(10_000), 0, E(4_000), 20_000], 'DecayWindowExhausted');
+
+  // And the mirror attack. A dominant holder must not be able to shrink the
+  // ceiling in front of a settlement and veto it for free. Under a ceiling
+  // measured against the live bonded pool this reverted, and the holder then
+  // cancelled at no cost.
+  await (await ps8.connect(aliceS).requestUnbond(E(1_500))).wait();
+  await (await ps8.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), 5_000)).wait();
+  eq('a whale cannot veto a settlement by requesting an unbond in front of it',
+    Number(await ps8.decayWindowPpm()), 30_000);
+  await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+  await rv('and the ceiling still binds at exactly 30,000 ppm', ps8, settlerS, 'settleEpoch',
+    [4, E(10_000), 0, E(4_000), 1], 'DecayWindowExhausted');
+
+  // Thirty days on, the allowance is fresh.
+  await provider.send('evm_increaseTime', [30 * 86_400 + 1]); await provider.send('evm_mine', []);
+  await (await ps8.connect(settlerS).settleEpoch(4, E(10_000), 0, E(4_000), 20_000)).wait();
+  eq('a new window starts the allowance again', Number(await ps8.decayWindowPpm()), 20_000);
 
   step('solvency'); // ----------------
   const owedUsdt = (await ps.claimableOf(bob)) + (await ps.claimableOf(carol))
@@ -561,6 +596,63 @@ async function main() {
   const heldHcow = await hcow.balanceOf(psAddr);
   const accountedHcow = (await ps.totalBondedHcow()) + (await ps.totalPendingUnbond());
   eq('hcow held equals bonded plus pending', D(heldHcow), D(accountedHcow));
+
+  // ---- Rule 6 is tested on what is credited, not on what was computed ----
+  // A pool whose eligible part is a rounding error computes a large leg and
+  // credits nothing. Testing the computed figure let that burn the whole
+  // pool's principal for one USDT, which is the original Critical returning.
+  {
+    const ps9 = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr,
+    ]);
+    const a9 = await ps9.getAddress();
+    await (await usdt.connect(settlerS).approve(a9, ethers.MaxUint256)).wait();
+    await (await hcow.connect(aliceS).approve(a9, ethers.MaxUint256)).wait();
+    await (await hcow.connect(bobS).approve(a9, ethers.MaxUint256)).wait();
+
+    await (await ps9.connect(aliceS).bond(1n)).wait();          // one wei, eligible
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await ps9.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+    await (await ps9.connect(bobS).bond(E(1_000))).wait();  // the real pool, not eligible yet
+
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await rv('a deduction cannot run when the credited leg rounds to nothing',
+      ps9, settlerS, 'settleEpoch', [1, E(4), 0, 0, 20_000], 'DeductionWithoutDistribution');
+    eq('so the pool is untouched', D(await ps9.bondedOf(bob)), 1_000);
+    // and with no deduction the settlement still goes through and the leg is
+    // returned rather than being concentrated on the one wei holder
+    await (await ps9.connect(settlerS).settleEpoch(1, E(4), 0, 0, 0)).wait();
+    near('the whole leg is returned to the settler',
+      D((await ps9.getSettlement(1)).refundedUsdt), 2, 1e-6);
+    eq('and none of it went to the one wei holder', D(await ps9.claimableOf(alice)), 0);
+  }
+
+  // ---- Rule 4 ----
+  // An epoch with no distributable profit cannot consume principal, whatever
+  // else is true. Testing the credited participant figure alone let a carried
+  // balance satisfy the gate in an epoch that brought no money in at all.
+  {
+    const psR = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr,
+    ]);
+    const aR = await psR.getAddress();
+    await (await usdt.connect(settlerS).approve(aR, ethers.MaxUint256)).wait();
+    await (await hcow.connect(aliceS).approve(aR, ethers.MaxUint256)).wait();
+    await (await hcow.transfer(alice, E(1_000))).wait();
+    await (await psR.connect(aliceS).bond(E(1_000))).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psR.connect(settlerS).settleEpoch(0, E(2_000), 0, E(800), 0)).wait();
+    const bondedBefore = D(await psR.bondedOf(alice));
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await rv('a zero profit epoch cannot deduct principal', psR, settlerS, 'settleEpoch',
+      [1, 0, 0, 0, 20_000], 'DeductionWithoutDistribution');
+    await (await psR.connect(settlerS).settleEpoch(1, 0, 0, 0, 0)).wait();
+    eq('and the pool is untouched by it', D(await psR.bondedOf(alice)), bondedBefore);
+    eq('nothing was returned either, there was nothing to return',
+      D((await psR.getSettlement(1)).refundedUsdt), 0);
+  }
 
   // ---------------- report ----------------
   step('report');

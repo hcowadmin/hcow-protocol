@@ -13,9 +13,11 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-317 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+343 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
-path. Revert assertions are made with a raw `eth_call` carrying an explicit
+path. `test/eventsigs.check.cjs` additionally checks every event the indexer
+declares against the compiled ABIs, in both directions, because a hand written
+signature list drifted twice and neither drift was visible in any test. Revert assertions are made with a raw `eth_call` carrying an explicit
 sender, because gas estimation through a browser provider omits `from` and can
 surface the wrong error.
 
@@ -31,20 +33,19 @@ Slither 0.11.6 over the full source.
 npm run analyze
 ```
 
-Eleven detector categories fire. Every instance was reviewed by hand and
-classified:
+Nine detector categories fire, 72 results. Every instance was reviewed by hand
+and classified:
 
 | Detector | Assessment |
 | --- | --- |
-| `reentrancy-balance` / `reentrancy-no-eth` / `reentrancy-benign` / `reentrancy-events` | Not exploitable. Every function named carries OpenZeppelin `nonReentrant` off a single shared guard, so cross-function reentrancy is covered too, and the only cross-function paths Slither identifies are `view` functions. The external calls are to HCOW and to BSC-USD, neither of which has a transfer hook. |
+| `reentrancy-balance` / `reentrancy-no-eth` / `reentrancy-benign` / `reentrancy-events` | Not exploitable. In `HCOWProfitShare` and `HCOWStaking` every function named carries OpenZeppelin `nonReentrant` off a single shared guard, so cross-function reentrancy is covered too, and the only cross-function paths Slither identifies are `view` functions. `HCOWFaucet` is the exception and has no guard: it writes `lastClaimAt` and both counters before either transfer, and it is a testnet contract holding stand-in tokens. The external calls are to HCOW and to BSC-USD, neither of which has a transfer hook. |
 | `incorrect-equality` | Not applicable. The detector targets strict equality against balances. Every instance here is a zero check on an internally computed delta, or the Merkle root comparison in `HCOWLedger._verify`, which must be strict equality by definition. |
 | `divide-before-multiply` | Intentional. `participants` and `slice` are amounts that are actually transferred, so they must be rounded to a token amount before being scaled into an accumulator. Reversing the order would credit shares that no transfer backs. |
-| `uninitialized-local` | Style only. Solidity zero-initialises these. |
 | `timestamp` | Not applicable. `block.timestamp` is used for cooldowns measured in days, where validator drift of seconds is irrelevant. |
-| `pragma`, `cyclomatic-complexity`, `missing-inheritance` | Informational. |
+| `pragma`, `cyclomatic-complexity` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in sections 4 to 11**, which is the honest measure of what it is worth.
+in sections 4 to 16**, which is the honest measure of what it is worth.
 
 ### 3. Invariant (property) tests
 
@@ -121,10 +122,10 @@ Reviewed after the two contracts above, and fixed in the same pass.
 
 | ID | Severity | Defect | Fix |
 | --- | --- | --- | --- |
-| G-1 | Critical | `nextEpoch` started at zero while the anchoring worker derives the period from the wall clock. A deployment today would have needed roughly half a million catch-up transactions before it could anchor the current hour, with no fast-forward path and no setter. The end-to-end test rebased every timestamp to keep epochs at 0, 1, 2, which is exactly why nobody saw it. | `genesisEpoch` is set from `block.timestamp` at construction and the cursor starts there. The worker reads it and refuses to run if the two disagree by more than a month. The end-to-end test now runs at the real epoch number, currently 496,569. |
+| G-1 | Critical | `nextEpoch` started at zero while the anchoring worker derives the period from the wall clock. A deployment today would have needed roughly half a million catch-up transactions before it could anchor the current hour, with no fast-forward path and no setter. The end-to-end test rebased every timestamp to keep epochs at 0, 1, 2, which is exactly why nobody saw it. | `genesisEpoch` is set from `block.timestamp` at construction and the cursor starts there. The worker reads it and refuses to run if the cursor is below genesis, which is a configuration error. A genuine backlog is different and is drained rather than refused: `MAX_CATCHUP_EPOCHS` caps the work per run at thirty days and successive runs continue. The end-to-end test now runs at the real epoch number. |
 | G-2 | Critical | Three ways for two different records to hash to one leaf: unpaired surrogates collapsed to U+FFFD by `TextEncoder`, database nulls stringified to `"null"`, and integers past 2^53 losing precision. Any of them lets one anchored leaf stand for more than one record, which is the substitution the whole scheme exists to prevent. | Canonicalisation rejects ill-formed strings, requires NFC, and requires safe integers with no negative zero. The database reader refuses null and parses integers from their string form. |
 | G-3 | High | A stolen anchorer key could anchor empty roots forward past the current hour, permanently consuming the epoch namespace for about thirty cents a year. Revoking the key would not give it back. | An epoch may only be anchored once its period has ended. A stolen key is confined to the past. |
-| G-4 | High | Nothing stopped the same root being anchored to more than one epoch, so a receipt verified in several periods at once and "this round belongs to hour N" was the operator's choice rather than the chain's. | A root may be anchored once, live or historical. |
+| G-4 | High | Nothing stopped the same root being anchored to more than one epoch, so a receipt verified in several periods at once and "this round belongs to hour N" was the operator's choice rather than the chain's. | A root may be anchored once **to a live epoch**. Historical batches are deliberately outside that rule and outside the sequence: `anchorHistorical` neither reads nor writes `rootAnchored`, because writing it in both let a backfill consume a root a live epoch then needed and bricked the ledger. A historical root can be re-submitted, and `totalRecords()` counts whatever a historical batch asserts, so neither is a chain-proven figure. |
 | G-5 | High | Leaf and node hashes shared a preimage space, and an odd node was promoted rather than paired, so two different leaf sets could produce one root and a shortened proof let the root itself be presented as a record. | Node hashes carry a `0x01` prefix, odd nodes are paired with themselves, and the proof length must equal the depth implied by the record count. The separation is now structural rather than an argument about collision difficulty. |
 | G-6 | Medium | The published `LEAF_DOMAIN` was the seeded tag, but the sixteen puzzle and arcade titles use a different one. An independent verifier following the on-chain constant would fail on every skill record. | `LEAF_DOMAIN_SEEDED` and `LEAF_DOMAIN_SKILL`, both published. |
 | G-7 | Medium | The faucet required both token balances before dispensing either, and USDT drains fifty times faster than HCOW, so the expected steady state was a faucet holding tens of millions of test HCOW and refusing to give any of it out. | Each side is dispensed on its own. Refusal only when both are short. |
@@ -178,7 +179,7 @@ work from the previous round.
 
 | ID | Severity | Defect | Fix |
 | --- | --- | --- | --- |
-| A-1 | Critical | The per settlement cap bounds a mistake but not a campaign. At two percent a day a compromised settler reduced a 1,000,000 HCOW pool to 627 HCOW in a year, for 730 USDT of funding, 370 of which came back through the two fixed legs. | `MAX_DECAY_PER_WINDOW_PPM`, three percent per thirty days, on top of the per settlement cap. The published usage rule decays about half a percent a month, so this is six times the headroom honest operation needs. |
+| A-1 | Critical | The per settlement cap bounds a mistake but not a campaign. At two percent a day a compromised settler reduced a 1,000,000 HCOW pool to 627 HCOW in a year, for 730 USDT of funding, 370 of which came back through the two fixed legs. | `MAX_DECAY_PER_WINDOW_PPM`, three percent per window, on top of the per settlement cap. Windows are fixed rather than sliding, so two can be packed and the honest worst case over an arbitrary thirty days is six percent. The published usage rule decays about half a percent a month, so this is six times the headroom honest operation needs. |
 | A-2 | High | A pending unbond kept paying the deduction rate forever, including long after its cooldown had run out. Measured: a position that was slow to press withdraw lost 999,372 of 1,000,000 HCOW. The position was not in the pool for any of those settlements. | The charge stops at `unbondReadyAt`. `poolIndexAtEpoch` and `settledAtEpoch` make the window exact, and `MIN_EPOCH_INTERVAL` against `UNBOND_COOLDOWN` bounds the walk to two settlements. |
 | A-3 | High | Quarantine ended at the next settlement and the floor on epoch length was one day, so an arrival could buy eligibility for a quarterly distribution with one day of exposure. Measured: 270,000 of a 300,000 USDT leg. | `MIN_EPOCH_INTERVAL` raised to seven days, matching `UNBOND_COOLDOWN`. Becoming eligible now costs the same real time as leaving. |
 | A-4 | High | Both exit doors called the token's own `burn`. HCOW is not in this repository; a burn that is absent, paused or role gated would have locked every pending position permanently, on a contract with no admin recovery. | Consumed principal is transferred to the standard burn address. That works against any ERC20 and removes supply just as verifiably, and no exit depends on an external function any more. |
@@ -216,8 +217,8 @@ finding, and the rounds that removed things did not.
 | ID | Severity | Defect | Fix |
 | --- | --- | --- | --- |
 | C-1 | High | `fundRewards` folded the absolute `MIN_REWARD_DURATION` into the "must reach the current end date" rule, and in doing so dropped it whenever a period was live. In the last seconds of a period any duration was accepted, so a top up could be released into a one second window. Measured: 999,980 of a 1,000,000 HCOW funding taken by a same block arrival. A-5 in a smaller window. | Both floors apply, and the binding one is whichever is larger. |
-| C-2 | High | The decay ceiling was measured against a reserve snapshotted when the window opened, and never reconciled with it again. Capital parked in the pool at that instant and withdrawn a block later still counted, so the ceiling could be inflated for free: measured, a victim pool lost 7.76% inside a window whose stated ceiling was 3%. The mirror also held, a pool that grew after the snapshot was held to an allowance sized for one that no longer existed, which is B-3 returning. | The ceiling is computed from the live bonded pool at every settlement. It and the deduction then scale together, so neither inflating nor shrinking the pool changes anything. |
-| C-3 | Low | The off-chain event indexer still declared the pre-change signatures for `UnstakeCancelled` and `RewardsFunded`, so both were being dropped silently. Several figures in this document described controls that had since been removed or reshaped. | Signatures updated; the affected rows above now say what was withdrawn and why. |
+| C-2 | High | The decay ceiling was measured against a reserve snapshotted when the window opened, and never reconciled with it again. Capital parked in the pool at that instant and withdrawn a block later still counted, so the ceiling could be inflated for free: measured, a victim pool lost 7.76% inside a window whose stated ceiling was 3%. The mirror also held, a pool that grew after the snapshot was held to an allowance sized for one that no longer existed, which is B-3 returning. | Superseded by E-2 in section 14. The ceiling has no base at all any more. |
+| C-3 | Low | The off-chain event indexer still declared the pre-change signatures for `UnstakeCancelled` and `RewardsFunded`, so both were being dropped silently. Several figures in this document described controls that had since been removed or reshaped. | Signatures updated; the affected rows above now say what was withdrawn and why. This fix was itself incomplete: see E-6 in section 14, which is why signatures are now checked by a test rather than by reading. |
 
 ### 12. Open, not yet fixed
 
@@ -242,9 +243,10 @@ Stated here rather than discovered later.
   address is final. Left as it is deliberately: at this point in the review
   every round that added code produced a finding, and this one is disclosed
   rather than patched under time pressure.
-- **`HCOWToken` and `HCOWVesting` are not in this repository** and are not
-  covered by anything in this document. They hold the entire supply and the
-  unlock schedule. See the scope note at the top of the README.
+- **`HCOWToken` and `HCOWVesting` are not in this repository.** They hold the
+  entire supply and the unlock schedule and live in `hcow-contracts`. They were
+  reviewed for the first time in section 14 and must be inside the external
+  audit scope. See the scope note at the top of the README.
 - **`recordCount` is asserted by the anchorer** and is not bound to the tree,
   so published record totals are not chain-proven figures even though the
   proofs themselves are. Do not quote the totals as if they were.
@@ -257,6 +259,37 @@ Stated here rather than discovered later.
   the rate matches the published value rule.
 - **Rounding dust is not recoverable.** Both contracts round in the protocol's
   favour and neither has a sweep function.
+- **A newly bonded position absorbs the next deduction while earning nothing
+  from it.** Eligibility is deferred by one epoch so that a same-epoch arrival
+  cannot claim that epoch's revenue, but the pool decays uniformly, so a bond
+  made just before a settlement pays up to 2% and receives no distribution for
+  it. Charging new shares separately would need a second decay index applying
+  to pending unbonds as well, and at this point in the review every round that
+  added state produced a finding. Disclosed rather than patched.
+- **`MIN_PARTICIPANT_USDT` is an absolute floor, not a proportional one.** One
+  USDT reaching participants satisfies Rule 6 regardless of pool size, so a
+  determined settler can run the rate ceiling at a token outlay. The decay
+  window ceiling is what actually bounds the loss, and it is 3% per window,
+  which because the window is fixed rather than sliding means up to 6% over an
+  arbitrary thirty days. Rule 6 only stops a deduction with no distribution at
+  all.
+- **`undistributed` has no delivery date.** Rewards that accrue while the pool
+  is below `MIN_STAKE_FOR_ACCRUAL`, plus division remainders, carry into the
+  next funding. Between periods the reward funder can attach them to a duration
+  of up to `MAX_REWARD_DURATION`. Nothing is destroyed, and the funder can
+  already decline to fund at all, so this is the same liveness dependency
+  stated below and not a new power.
+- **The Supabase service-role key can insert rounds that then anchor as
+  genuine.** The chain proves nothing was altered after anchoring; it says
+  nothing about what was true before it. `record-round` has rate limits, not
+  authentication, so a caller who can reach the endpoint can write rounds. This
+  key belongs in the wallet and key inventory alongside the anchorer, and it is
+  not currently in any role document.
+- **The faucet's global ceiling bounds the drain rate, not a funded Sybil.**
+  250 claims per interval and no contract callers means one address cannot
+  empty it in a block. Someone willing to fund many EOAs can still take a
+  day's allocation. It is a testnet contract holding stand-in tokens; the
+  exposure is the public testnet campaign, not money.
 - **Consumed principal is transferred to `0x…dEaD`, not burned through the
   token.** That removes the dependency on an external `burn()` (A-4) and adds a
   smaller one: the deployed HCOW must permit transfers to that address and
@@ -268,7 +301,170 @@ Stated here rather than discovered later.
 
 `scripts/checkflat.cjs` compiles each flattened source standalone and compares
 creation bytecode against the Hardhat artifact, stripping the trailing
-metadata hash. All contracts match.
+metadata hash. All six match, zero differ.
+
+Run `rm -rf artifacts cache` before any Slither run. Slither reads every
+build-info file Hardhat has ever written, so a stale one makes it report on
+code that no longer exists. A report produced without clearing them once ran to
+1,259 lines, half of it about deleted contracts.
+
+### 14. System-level audit, 25 August 2026
+
+The eleven rounds above were each conducted per contract. That is the reason
+this one exists: asked whether the review was looking at the whole system, the
+honest answer was no. It was not. The first thing a system-level pass found was
+that `HCOWToken` and `HCOWVesting`, which between them hold 100% of the supply
+and the entire unlock schedule, had never been reviewed at all and were not in
+the audit scope. Five independent passes were then run: `HCOWProfitShare`,
+`HCOWStaking`, `HCOWLedger` with `HCOWFaucet` and the off-chain pipeline,
+`HCOWToken` with `HCOWVesting`, and a cross-system pass over both repositories,
+the deployment procedure, the role matrix and every factual claim in the
+documents.
+
+Everything below was reproduced with a script before it was written down.
+
+**In `HCOWVesting`, the two highest-consequence findings in the whole review.**
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| E-1 | Critical | Missing the TGE date destroyed the entire balance. `seal()` refused to run at or after `tgeTime`, `release()` refused to run before the seal, `renounceOwnership` always reverted, and there is no sweep. Funding comes before sealing by construction, so the tokens are already inside. Measured: 200,000,000 HCOW, 100% of supply, locked with no recovery by anyone, forever. Of the orderings of add, fund, seal and the passing of TGE, only those in which a successful seal precedes TGE survived, and every ordering in which TGE arrives first is terminal. This was self-inflicted: the `NotSealed` gate that closed the pre-seal drain window created it. | `seal()` has no deadline any more. `addSchedule` is what closes at `tgeTime`, which is where the danger actually was: a schedule written moments before a seal could otherwise unlock in the same block. A missed date is now a delay. |
+| E-2 | High | A schedule with no cliff and no linear period released 100% at TGE whatever `tgeBps` said, while `totalTgeUnlock()` reported the `tgeBps` figure. The commitment `seal()` checks was therefore not the thing that happens. A dropped fifth argument produces it: the published table loaded with Public as `(60,000,000, 1500, 0, 0)` sealed cleanly against `27,000,000` and unlocked `78,000,000`. At `(200,000,000, 1, 0, 0)` the understatement is ten thousandfold. | `addSchedule` refuses a partial TGE unlock with neither period, and `totalTgeUnlock()` now runs the same vesting maths `release()` runs rather than summing basis points, so the committed figure and the released figure cannot diverge. |
+| E-3 | High | Transposing `cliffMonths` and `linearMonths`, the classic error for two adjacent same-typed arguments, left the beneficiary count, the scheduled total and the TGE unlock all exactly correct. Every check in the contract passed. Measured: Seed's `cliff 0 / linear 3` became `cliff 3 / linear 0` and dropped 15,000,000 in one block; Team's lockup silently became 36 months of nothing. The per-schedule readback in the runbook was the only defence, and a runbook is what gets skipped. | `seal()` takes a fourth argument, a running hash over every schedule field by field. It is the only value that moves when this happens. |
+| E-4 | Medium | `addSchedule` bounded the running total against the token's **live** `totalSupply()`, and the published allocation is exactly `INITIAL_SUPPLY`. HCOW is burnable, so a holder of one wei could permanently prevent the published table from being loaded. Measured: the eighth schedule loads and the ninth is refused, and since `tgeTime` is immutable the only repair is a full redeploy. | The bound is snapshotted in the constructor. |
+| E-5 | Low | `transferOwnership` was blocked after sealing and `renounceOwnership` always reverted, but `Ownable2Step.acceptOwnership` was not overridden, so a transfer started before the seal completed freely afterwards and changed `owner()` on the explorer. No fund risk; the claim was simply false. Also: a TGE timestamp arbitrarily far in the future was accepted, and `seal()` looped over an unbounded array. | `acceptOwnership` is refused after sealing and `seal()` clears any pending owner. TGE is capped at one year out and the beneficiary list at 200. |
+
+**In `HCOWProfitShare` and `HCOWStaking`.**
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| E-6 | High | The participant leg was divided across the eligible shares alone, so it went entirely to whoever arrived first however small they were. Measured: one wei bonded in epoch 0, a 10,000,000 HCOW cohort bonded in epoch 1, and the settlement paid the one wei **300,000 USDT** and the cohort nothing, while the cohort funded 200,000 HCOW of the burn. | The leg is scaled to the eligible fraction of the pool and the remainder is returned to the settler and named in `refundedUsdt`. Took three attempts: see F-1 and F-2 in section 15 and G-1 and G-2 in section 16. |
+| E-7 | Medium | The decay window ceiling **was** vetoable, directly contradicting C-2 above and the comment written beside it. A dominant holder requesting an unbond in front of a settlement shrank the live pool, the ceiling shrank with it, the settlement reverted with `DecayWindowExhausted(2996.25, 12624.84)`, and cancelling cost the holder **0.0**. Every ceiling with a base can be moved by moving the base: live invites the veto, snapshotted invites the parking, and counting pending unbonds loosens the rate bound for everyone else. | The ceiling is a rate. `decayWindowPpm` accumulates `deductPpm` against `MAX_DECAY_PER_WINDOW_PPM` and there is no base at all. The bound this gives is on the **bonded** pool, and because the window is fixed rather than sliding the honest worst case over an arbitrary thirty days is twice `MAX_DECAY_PER_WINDOW_PPM`, 6% and not 3%. See section 15. |
+| E-8 | Medium | The two funding floors in `fundRewards` conflicted, so during the final `MIN_REWARD_DURATION` of **every** period no top-up was accepted however large. Measured: 9,900,000 HCOW rejected with 60 seconds remaining. B-5 reintroduced verbatim by the C-1 fix. | The rate floor is taken against `minDuration` rather than against whatever is left of the old period. The first attempt waived the floor instead and was a defect: see F-3 in section 15. |
+
+**In `HCOWLedger`, `HCOWFaucet` and the off-chain pipeline.** These are not in
+the audit scope and they are where the two worst findings of the round were.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| E-9 | Critical | **One unauthenticated HTTP request killed the ledger permanently.** `record-round` validated `serverSeedHash` and `serverSeed` as strings and never checked that one hashed to the other. The anchorer *did* check, and threw. Epochs are strictly sequential, the table is append-only by trigger, and the endpoint is deployed `--no-verify-jwt`. Measured: the cursor froze at epoch 496577 while the clock ran on, and the gap grew by one every hour forever. No wallet, no key, no cost. | The commitment is checked at the door. The anchorer additionally gained an explicit operator quarantine path, off by default, so a row that somehow reaches the table can be excluded and published as excluded rather than stopping the sequence. |
+| E-10 | High | The faucet was emptied by one funding address in five transactions: a factory deploying a throwaway claimer per allowance took all 5,000,000 test HCOW for about 0.034 tBNB, and reported `claimerCount = 100` while doing it. The per-address cooldown is untouched by this, so the previous "always spend the cooldown" fix did nothing about it. | Contract callers are refused, and a global ceiling of 250 claims per interval means the faucet cannot drain faster than it can be refilled. The ceiling needed an owner reset and a `status()` field, which the first attempt lacked: see F-4 in section 15. |
+| E-11 | Medium | Up to 300 seconds of every hour, an accepted round landed in an epoch that had already been anchored, and was then unanchorable forever: no receipt, no verification, and a silent hole in a ledger whose whole claim is that it has none. Measured: 300 of 3,600 submission seconds, 8.3% of the hour. | `endedAt` is clamped to the current epoch at the door. |
+| E-12 | Medium | Three governance events on the money contract were never indexed: `SettlerChanged`, `RecipientsChanged` and `OwnershipTransferred` were declared against `HCOWStaking`, which emits none of them. `RecipientsChanged` was additionally declared non-indexed while the contract indexes both parameters, which is the identical topic0 with an incompatible layout, and `parseLog` throws rather than returning null on that. There was no try/catch, so the throw would have propagated out and stopped the indexer permanently. C-3 above claimed these were fixed. | Declarations corrected and the ledger added as a third source. `decodeArgs` catches. Most importantly `npm run test:eventsigs` now checks every declaration against the compiled ABIs in both directions, so this cannot drift again unnoticed. |
+| E-13 | Medium | The anchorer paged Supabase with `LIMIT`/`OFFSET` over `(ended_at, round_id)`, which is not unique: the database key is `(game_id, round_id)`. Postgres may order a tie differently between two pages, which silently skips a row or returns it twice. A skipped row is a hole; a repeated one makes `buildTree` throw and stalls the sequence exactly as E-9 did. | Paged on the primary key with a keyset cursor, and `game_id` breaks the sort tie deterministically. |
+| E-14 | Low | Two ordinary administrative calls killed the ledger: removing the last anchorer and then renouncing ownership left a contract that can never anchor again. Also, the `verify.html` lede still claimed the seed was "published before the round was played", the retraction having landed in the documents but not in the page; the page's local root comparison accepted receipts the contract rejects, because it checked neither the proof length against the record count nor that the epoch was in range; a string `proof` threw outside every `try` and the page silently did nothing; the stall alarm keyed on an exception class that the actual stall does not use; and the RPC failover pattern treated "rate limit exceeded" as a range refusal, suppressing failover for the exact condition the endpoint list exists for. | All six fixed. The page now calls `verifyEpochRecord` on chain as the authoritative answer and explains a local mismatch rather than ruling on it. |
+
+**In the documents.** Sixty factual claims in `SECURITY.md`, the two READMEs
+and the deployment notes were checked line by line against the code as it
+stands. Twelve were false, including the assertion counts, the detector count
+and list in section 2, the claim that every reentrancy-flagged function carries
+a guard (`HCOWFaucet` does not), the G-4 claim that a root may be anchored once
+"live or historical", C-3 above, and the vest repository's "compiles clean with
+zero warnings". All twelve are corrected. Separately, the vest repository as
+uploaded to GitHub was missing `compile.cjs`, `package.json` and
+`contracts/test/Attackers.sol`, so an auditor cloning it could not compile or
+run a single one of the assertions its README cites.
+
+**What could not be broken.** Merkle second-preimage and node-as-leaf
+substitution, across 12 epochs and 108 receipts, with root-as-leaf, internal
+nodes, foreign leaves, reversed, short and over-long proofs all rejected.
+Three-way canonicalisation agreement between the recorder, the anchorer and the
+verifier: 678 targeted cases plus 200,000 fuzzed unicode strings, zero
+divergences. Vesting conservation across 60 random schedules over 200 months:
+`totalScheduled == totalReleased ==` the sum of balances, residue zero wei.
+HCOW conservation in `HCOWProfitShare` at roughly 1,600 checkpoints, exact.
+`HCOWStaking` against an exact rational integration model over 7 seeds:
+zero divergence. No reentrancy anywhere. No SQL access-control gap. No DOM XSS
+in `verify.html`.
+
+### 15. Review of the section 14 fixes, same day
+
+Section 14's fixes were themselves put through three independent adversarial
+passes, on the same principle that produced sections 5, 8, 10 and 11: on this
+codebase roughly half of every round's findings have been introduced by the
+previous round's fix. That held again. Five of the twenty-odd changes in
+section 14 were defective, and two of them were worse than what they replaced.
+
+| ID | Severity | Defect introduced by a section 14 fix | Fix |
+| --- | --- | --- | --- |
+| F-1 | High | E-6 scaled the participant leg to the eligible fraction but left Rule 6 testing the **unscaled** figure, forty five lines earlier. A pool whose eligible part is a rounding error therefore computed a large leg, credited zero, and burned principal against it. Measured: one wei eligible against a 100,000,000 HCOW cohort, gate passed on 1.0 USDT, **zero credited, 2,000,000 HCOW destroyed**. That is the original Critical C-1 returning in new arithmetic, which is exactly what the rule it guards exists to stop. | The scaling is computed before the gate and the gate tests the credited figure. Regression tested. |
+| F-2 | Medium | E-6 returned the unpayable remainder to the settler with no event field naming it, so the published waterfall stopped reconciling in the log: measured across 26 settlements, **816,904 USDT** moved unlogged, in every one of the 26. | `EpochSettled` and the `Settlement` struct carry `refundedUsdt`, and the `epoch_settlements` view exposes it, so `distributableProfit = participants + refunded + gameCompany + team` reconciles from the log alone in every branch. The first attempt at this fix held the remainder in the contract instead; see G-1 and G-2 in section 16. |
+| F-3 | Medium | E-8 waived the rate floor whenever `remaining < MIN_REWARD_DURATION`, which is true for all but the first second of any period funded at the minimum duration. One wei on a year long duration then stretched a 9,900,000 HCOW budget out behind it, a **365 fold** slowdown. E-3 from section 8, returning. | The floor divides by `minDuration` rather than being waived. The 9,900,000 top-up E-8 was written for is still accepted; the stretch is refused. |
+| F-4 | Medium | E-10's global faucet ceiling had no reset, so 250 throwaway addresses closed the faucet for a day and refilling it did not reopen it. A cheap denial of service replacing a cheap drain. `status()` could not see the ceiling either, so the UI disabled nothing and let testers sign transactions that revert. | `resetWindow()`, owner only. `status()` returns the window state and folds it into `claimsLeft`. |
+| F-5 | High | E-9's anchorer quarantine filtered the receipts array by `roundId` alone. `roundId` does not identify a round; `(game_id, round_id)` does, which is the same fact E-13 turns on. One shared `roundId` dropped a **valid** round from another game, shifted every index after it, and handed players a proof belonging to a different record. The verification page then told them their receipt had been tampered with. | `prepare` returns the entries it kept, in the order it kept them, and the receipts are built from those. The quarantine list carries game and id. Regression tested; nothing in the suite reached `prepare` before, which is why it shipped. |
+
+Three further defects in the section 14 fixes, all Medium: the new IP rate limit
+keyed on the **first** `X-Forwarded-For` hop, which is client-supplied, so it
+limited nothing and let a caller write a victim's address into an append-only
+table; the narrowed RPC error pattern stopped matching four real BSC and Erigon
+range refusals, turning a shrink-and-retry into a dead run; and the `HCOWVesting`
+supply cap snapshot accepted zero at construction, which refuses every schedule
+and leaves a contract that can never be finished or renounced. All three fixed.
+
+Two claims written **in** section 14 were themselves wrong and are corrected
+above and in the source: the decay window's justification said a pending unbond
+is charged for every settlement it sits through, when `_chargeIndex` charges it
+for exactly one, forever; and the "3% per thirty days" figure ignores that the
+window is fixed rather than sliding. Measured against a greedy settler, the
+enforced bound is **4.92% over any thirty days** and **5.87% over thirty
+seven**. `MIN_EPOCH_INTERVAL` at seven days is what stops two full windows
+landing inside thirty.
+
+One design change came out of this round rather than a defect. `HCOWVesting.seal`
+is now permissionless from `tgeTime` onward. E-1 removed the seal deadline
+because missing it destroyed 100% of the supply; leaving the function owner-only
+forever left the same total loss arriving by a different road, an owner key that
+is lost, frozen or unwilling. After TGE the table is frozen, `addSchedule` is
+closed and all four commitments have to match already-public figures, so the
+only thing another caller can do is finish a job that was left undone.
+
+### 16. Review of the section 15 fixes, same day
+
+And again. Section 15's fixes were put through a further adversarial pass, and
+two of them were defective in a way that was worse than what they replaced.
+Three generations of fix, three generations of finding. The pattern is not
+noise, it is the load-bearing fact about this codebase, and it is the reason a
+third-party audit is not optional.
+
+| ID | Severity | Defect introduced by a section 15 fix | Fix |
+| --- | --- | --- | --- |
+| G-1 | High | F-1 made Rule 6 test the credited participant figure, and F-2 made that figure include money carried from an earlier epoch. Between them they killed **Rule 4**: an epoch bringing in no revenue at all could satisfy the gate on a carried balance and burn principal. Measured: `gross 0, direct 0, opex 0`, no USDT entering the contract, `deductPpm 20000` accepted, **2,000 HCOW destroyed** against a distributable profit of zero. Not contrived; it fired 24 times in a 1,600 operation randomised walk. | The carry is gone, so the gate reads only this epoch's own money and Rule 4 holds by construction. Regression tested directly. |
+| G-2 | High | F-2's carried balance was a pot with no link to the shares it was deferred for. Everybody unbonds, `totalShares` reaches zero, one wei bonds, and two settlements later that wei withdraws the entire pot. Measured: **500 USDT withdrawn for 1 wei of HCOW**. The window arose unprompted in a 1,200 operation run holding 5,142 USDT. E-6's own defect, rebuilt out of the fix for it. | The remainder is returned to the settler again, as E-6 did, but now named in `refundedUsdt` on the event, in the `Settlement` struct and in the `epoch_settlements` view. That is what F-2 was actually for; holding the money was not. `deferredUsdt` is deleted. |
+| G-3 | High | Not introduced by a fix, and not a contract defect: `test/invariant.staking.cjs` called `hre.ethers.provider`, which is `undefined` because this project loads no hardhat-ethers plugin. Every `fundRewards`, `claimHcow` and `claimCommission` threw inside the surrounding try and was booked as a revert. Over 1,760 operations: **fundRewards ok 0, claimHcow ok 0, claimCommission ok 0**, and the suite printed "all invariants held". The entire reward and commission surface had zero invariant coverage, including everything sections 14 and 15 changed. | One line. The run now executes 85 fundings, 165 reward claims and 77 commission claims, and the invariants do hold. |
+| G-4 | Medium | F-3's widened RPC pattern went too far the other way: a bare `limit exceeded` alternative matched quota messages, so a node that had run out of monthly capacity was treated as refusing a range and never failed over. Five of sixteen realistic messages misclassified. | The bare alternative removed; the specific range phrasings kept. |
+| G-5 | Low | E-9's failure counter was keyed on the epoch number alone. Epoch numbers come from the wall clock, so two ledgers driven from one process share them and one transient failure on each read as one epoch failing twice. It was also not cleared on two of the three success paths. | Keyed on contract and epoch, cleared on every success. |
+
+The `HCOWVesting` fixes from section 15 survived this pass: permissionless
+post-TGE sealing was attacked directly and no state was found in which a
+stranger sealing costs a beneficiary anything, because the table is frozen by
+then, `addSchedule` is closed, and all four commitments must match figures that
+are already public. The only power it removes is the owner's ability to
+withhold a table it can no longer change.
+
+The `fundRewards` rate floor from F-3 also survived: binary-searched at eight
+different values of `remaining`, a one wei funding cannot stretch a live budget
+by a single second, and genuine top-ups are accepted at 3,600, 600, 60 and 1
+seconds remaining.
+
+### Audit scope, and the figure to quote
+
+Six contracts across two repositories. Slither's `human-summary` on this tree
+reports **1,277 SLOC** for the four in `hcow-protocol`, plus **18** for the two
+test mocks. `HCOWToken` and `HCOWVesting` in `hcow-contracts` add **216** lines
+excluding comments and blanks, counted by hand because that repository has no
+Slither wiring. Roughly **1,500 lines** of Solidity in total, and the exact
+figure depends on the counting convention a firm uses, so ask for theirs rather
+than quoting ours.
+
+**The scope must include `hcow-contracts`.** Those 216 lines control 100% of
+the supply and the entire unlock schedule, `seal()` is irreversible, and until
+25 August 2026 nobody had reviewed them at all. They are also where the single
+Critical with the largest loss lived.
+
+Not in scope and not proposed for it, but load-bearing: `lib/anchor.js`,
+`lib/canonical.js`, `lib/merkle.js`, `lib/keccak.js`, both Supabase edge
+functions, both SQL files, `web/verify.html`, `web/hcow-record.js` and
+`scripts/deploy.cjs`. The two worst findings of the 25 August round were in
+that list, not in the contracts.
 
 ## What is still missing
 

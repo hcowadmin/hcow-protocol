@@ -32,6 +32,13 @@ create table if not exists public.rounds (
 
   inserted_at   timestamptz not null default now(),
 
+  -- The caller address, as seen by the edge function. Not part of any leaf
+  -- and never canonicalised: it exists only so the flood guard can be keyed
+  -- on something the caller does not choose. player_ref comes from the request
+  -- body and can be rotated freely, which makes a limit on it a limit on
+  -- honest clients only.
+  source_ip     text,
+
   -- a round id must be unique inside a game, forever
   constraint rounds_game_round_unique unique (game_id, round_id),
 
@@ -47,6 +54,12 @@ create table if not exists public.rounds (
 
 create index if not exists rounds_ended_at_idx on public.rounds (ended_at);
 create index if not exists rounds_game_idx     on public.rounds (game_id, ended_at);
+create index if not exists rounds_player_idx   on public.rounds (player_ref, ended_at);
+-- source_ip is added by this file on a fresh database. On a database created
+-- before it existed, run sql/003_source_ip.sql instead: re-running this file
+-- there is a no-op for the table (`if not exists`) and then fails on the index
+-- below, because the column is not there.
+create index if not exists rounds_ip_idx       on public.rounds (source_ip, ended_at);
 
 -- ---------------------------------------------------------------------
 -- append only

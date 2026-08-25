@@ -163,9 +163,9 @@ async function main() {
   // ---------------- anchoring rules ----------------
   await reverts('stranger cannot anchor', asStranger.anchorEpoch(G, tree.root, N), 'NotAnchorer');
   await reverts('epoch must be sequential', asAnchor.anchorEpoch(G + 5n, tree.root, N), 'WrongEpoch');
-  await reverts('root without records rejected', asAnchor.anchorEpoch(G, tree.root, 0), 'RecordsWithEmptyRoot');
+  await reverts('root without records rejected', asAnchor.anchorEpoch(G, tree.root, 0), 'RootWithoutRecords');
   await reverts('records without root rejected',
-    asAnchor.anchorEpoch(G, ethers.ZeroHash, 5), 'EmptyRootWithRecords');
+    asAnchor.anchorEpoch(G, ethers.ZeroHash, 5), 'RecordsWithoutRoot');
 
   await finish(G);
   const tx = await asAnchor.anchorEpoch(G, tree.root, N);
@@ -216,7 +216,7 @@ async function main() {
 
   // ---------------- historical backfill ----------------
   const hist = buildTree(leaves.slice(0, 300));
-  await reverts('historical needs a root', asAnchor.anchorHistorical(ethers.ZeroHash, 1, 1, 2), 'RecordsWithEmptyRoot');
+  await reverts('historical needs a root', asAnchor.anchorHistorical(ethers.ZeroHash, 1, 1, 2), 'RecordsWithoutRoot');
   await reverts('historical range must be ordered',
     asAnchor.anchorHistorical(hist.root, 300, 200, 100), 'BadRange');
 
@@ -242,6 +242,24 @@ async function main() {
   await c.setAnchorer(owner, true);
   await reverts('owner cannot rewrite either', c.anchorEpoch(G, ethers.ZeroHash, 0), 'WrongEpoch');
   eq('root unchanged after admin activity', (await c.getEpoch(G)).root, before);
+
+  // Renouncing with nobody left who can anchor is unrecoverable: epochs are
+  // strictly sequential and there is no cursor override, so the ledger would
+  // stop for good. Two ordinary admin calls in the wrong order.
+  {
+    const dead = await factory.deploy(owner, ethers.ZeroAddress);
+    await dead.waitForDeployment();
+    eq('a ledger deployed with no anchorer starts at zero', Number(await dead.anchorerCount()), 0);
+    await reverts('renouncing with no anchorer left is refused',
+      dead.renounceOwnership(), 'NoAnchorerLeft');
+    await dead.setAnchorer(owner, true);
+    eq('adding one counts it', Number(await dead.anchorerCount()), 1);
+    await dead.setAnchorer(owner, true);
+    eq('adding the same one twice does not double count', Number(await dead.anchorerCount()), 1);
+    await dead.setAnchorer(owner, false);
+    eq('removing it counts down', Number(await dead.anchorerCount()), 0);
+    await reverts('and renouncing is refused again', dead.renounceOwnership(), 'NoAnchorerLeft');
+  }
 
   await c.renounceOwnership();
   eq('ownership renounced', await c.owner(), ethers.ZeroAddress);

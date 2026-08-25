@@ -30,11 +30,27 @@ contract HCOWFaucet {
     /// @notice One claim per address per interval.
     uint64 public constant CLAIM_INTERVAL = 24 hours;
 
+    /// @notice Claims the faucet will serve inside one interval, across every
+    ///         address, unless the owner reopens it early with resetWindow().
+    ///
+    /// The per address cooldown bounds one address. It does not bound one
+    /// person, because addresses are free: a contract that deploys a throwaway
+    /// caller per allowance takes the entire faucet in a single transaction,
+    /// and the per address cooldown is untouched by it. This is the only thing
+    /// that makes the faucet drain slower than it can be refilled, which is
+    /// what a public testnet campaign actually needs.
+    uint256 public constant MAX_CLAIMS_PER_INTERVAL = 250;
+
     /// @notice Amounts handed out per claim. Owner adjustable as supply allows.
     uint256 public hcowAmount = 50_000e18;
     uint256 public usdtAmount = 1_000e18;
 
     mapping(address => uint64) public lastClaimAt;
+
+    /// @notice When the current global interval opened, and how many claims
+    ///         have been served inside it.
+    uint64 public windowAt;
+    uint256 public windowClaims;
 
     /// @notice Distinct addresses that have claimed at least once.
     uint256 public claimerCount;
@@ -43,6 +59,7 @@ contract HCOWFaucet {
     event Claimed(address indexed account, uint256 hcowAmount, uint256 usdtAmount);
     event AmountsChanged(uint256 hcowAmount, uint256 usdtAmount);
     event Withdrawn(address indexed token, address indexed to, uint256 amount);
+    event WindowReset(uint64 at);
     event OwnershipTransferred(address indexed from, address indexed to);
 
     error NotOwner();
@@ -51,6 +68,9 @@ contract HCOWFaucet {
     error FaucetEmpty(address token, uint256 requested, uint256 available);
     error SameToken();
     error ZeroAmounts();
+    error ContractCaller();
+    error FaucetRateLimited(uint64 readyAt);
+    error NothingToReset();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -80,6 +100,28 @@ contract HCOWFaucet {
      *      written by then.
      */
     function claim() external {
+        // A person claims from an address they control. A contract claiming is
+        // always a batcher, and batching is the whole of the drain: one funding
+        // transaction, one factory, and every allowance in the faucet gone in a
+        // single block with no cooldown anywhere reporting it. Neither check is
+        // sufficient alone: code.length is zero during a constructor, and
+        // tx.origin equality is what closes deploy and claim in one call.
+        //
+        // This also excludes smart contract wallets, Safe and ERC-4337 alike,
+        // and an EOA that has delegated code under EIP-7702. That is a real
+        // cost and it is accepted here because this is a testnet faucet handing
+        // out stand-in tokens: a tester who cannot claim can ask the team, and
+        // a faucet that is empty helps nobody at all.
+        if (msg.sender != tx.origin || msg.sender.code.length != 0) revert ContractCaller();
+
+        if (windowAt == 0 || block.timestamp >= windowAt + CLAIM_INTERVAL) {
+            windowAt = uint64(block.timestamp);
+            windowClaims = 0;
+        }
+        if (windowClaims >= MAX_CLAIMS_PER_INTERVAL) {
+            revert FaucetRateLimited(windowAt + CLAIM_INTERVAL);
+        }
+
         uint64 readyAt = lastClaimAt[msg.sender] + CLAIM_INTERVAL;
         if (lastClaimAt[msg.sender] != 0 && block.timestamp < readyAt) {
             revert CooldownActive(readyAt);
@@ -113,6 +155,7 @@ contract HCOWFaucet {
         // in a single block.
         lastClaimAt[msg.sender] = uint64(block.timestamp);
         totalClaims += 1;
+        windowClaims += 1;
 
         if (hcowOut > 0) hcow.safeTransfer(msg.sender, hcowOut);
         if (usdtOut > 0) usdt.safeTransfer(msg.sender, usdtOut);
@@ -145,7 +188,9 @@ contract HCOWFaucet {
             uint256 hcowRemaining,
             uint256 usdtRemaining,
             uint64 readyAt,
-            uint256 claimsLeft
+            uint256 claimsLeft,
+            uint256 windowClaimsLeft,
+            uint64 windowResetsAt
         )
     {
         hcowPerClaim = hcowAmount;
@@ -164,6 +209,18 @@ contract HCOWFaucet {
         uint256 byHcow = hcowRemaining / hcowAmount;
         uint256 byUsdt = usdtRemaining / usdtAmount;
         claimsLeft = byHcow < byUsdt ? byHcow : byUsdt;
+
+        // The global ceiling binds before the balances do once it is reached,
+        // and a UI that cannot see it disables nothing and lets the user sign
+        // a transaction that reverts, which is the exact failure this function
+        // exists to prevent.
+        bool fresh = windowAt == 0 || block.timestamp >= windowAt + CLAIM_INTERVAL;
+        uint256 used = fresh ? 0 : windowClaims;
+        windowClaimsLeft = used >= MAX_CLAIMS_PER_INTERVAL
+            ? 0
+            : MAX_CLAIMS_PER_INTERVAL - used;
+        windowResetsAt = fresh ? 0 : windowAt + CLAIM_INTERVAL;
+        if (windowClaimsLeft < claimsLeft) claimsLeft = windowClaimsLeft;
     }
 
     // ------------------------------------------------------------------
@@ -178,6 +235,22 @@ contract HCOWFaucet {
         hcowAmount = newHcowAmount;
         usdtAmount = newUsdtAmount;
         emit AmountsChanged(newHcowAmount, newUsdtAmount);
+    }
+
+    /**
+     * @notice Reopen the global claim ceiling before its interval is up.
+     *
+     * @dev Addresses are free, so the ceiling can be spent by throwaway EOAs
+     *      as easily as by testers. Without this, refilling the faucet does
+     *      not restore service and the campaign is dead until the interval
+     *      rolls, which hands a cheap denial of service to anyone who wants
+     *      one. Testnet contract, owner-only, nothing of value behind it.
+     */
+    function resetWindow() external onlyOwner {
+        if (windowClaims == 0) revert NothingToReset();
+        windowAt = uint64(block.timestamp);
+        windowClaims = 0;
+        emit WindowReset(uint64(block.timestamp));
     }
 
     /// @notice Recover anything sent here, including tokens sent by mistake.

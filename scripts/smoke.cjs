@@ -102,9 +102,15 @@ async function main() {
     console.log(`  skipping settlement: the next epoch opens at ${openAt}`);
   } else {
     // gross 1000, direct 100 -> net 900. opex 200 is under the 40% cap of 360.
-    // profit 700, participants 350, game company 175, team 175. No deduction:
-    // with nobody eligible the participant leg is returned and the contract
-    // refuses to consume principal against a refund.
+    // profit 700, participants 350, game company 175, team 175.
+    //
+    // The bond above was made in the epoch this settles, so it is not eligible
+    // yet: the participant leg is scaled to the eligible fraction of the pool,
+    // which is zero, and the whole 350 goes back to the settler as
+    // refundedUsdt. participantsUsdt for this epoch is therefore 0 by design,
+    // which is why the assertion below is on the 700 and not on the split. No
+    // deduction either: the contract refuses to consume principal in an epoch
+    // that credited nobody.
     const gross = E(1000), direct = E(100), opex = E(200);
     const epoch = await profit.nextEpoch();
     ok("a deduction with nobody eligible is refused",

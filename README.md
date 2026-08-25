@@ -131,9 +131,9 @@ npm run test:all
 
 | suite | result |
 |---|---|
-| `HCOWLedger` | 75 passed, 0 failed |
-| `HCOWProfitShare` | 123 passed, 0 failed |
-| `HCOWStaking` | 81 passed, 0 failed |
+| `HCOWLedger` | 81 passed, 0 failed |
+| `HCOWProfitShare` | 139 passed, 0 failed |
+| `HCOWStaking` | 85 passed, 0 failed |
 | `HCOWFaucet` | 38 passed, 0 failed |
 | keccak256 against a reference | 318 of 318 match |
 | browser page against the libraries | every vector and proof matches |
@@ -159,10 +159,15 @@ company / 25 team.
 
 **What the chain enforces.** The split is computed in the contract and never
 passed in. Operating costs above 40% of net revenue are rejected. Rule 4 of
-the distribution policy, no distribution means no deduction, is enforced
-here rather than in the UI, as the spec requires. The USDT is pulled in
-during settlement, so a published figure that was never funded cannot be
-settled. Settled epochs have no edit path.
+the distribution policy, no distribution means no deduction, is enforced here
+rather than in the UI, as the spec requires, and the test is on what actually
+reached participants rather than on what was computed: an epoch that credits
+nobody cannot consume anybody's principal. The participant leg is scaled to
+the eligible share of the pool and whatever it could not take is returned to
+the settler in the same transaction and named in the settlement, so
+`distributableProfit = participants + refunded + gameCompany + team` in every
+branch. The USDT is pulled in during settlement, so a published figure that
+was never funded cannot be settled. Settled epochs have no edit path.
 
 **What it cannot enforce.** Gross revenue and the cost lines come from off
 chain. Apple and Google settle by bank transfer and no contract can audit
@@ -211,22 +216,28 @@ There are two routes. They produce the same bytecode.
 
 ### Route A, browser only
 
-No tooling to install. `flat/` holds one self contained file per contract
-with every import inlined, ready to paste into Remix. `scripts/checkflat.cjs`
+No tooling to install. `flat/` holds five self contained files with every
+import inlined, one per contract plus `TestTokens.flat.sol` carrying both
+mocks, ready to paste into Remix. `scripts/checkflat.cjs`
 compiles each of those files standalone and compares the creation bytecode
 against the artifact Hardhat built from the original imported sources, so a
 flattened file that had drifted would fail the check rather than reach a
 chain. All six currently match.
 
-Deploy order, because two of the three take the token addresses as
-constructor arguments:
+Deploy order, because most of them take the token addresses as constructor
+arguments. **Step 1 is testnet only.** On mainnet the token comes from the
+`hcow-contracts` repository and there is no mock of anything; see the mainnet
+section below before doing any of this against chain 56.
 
 ```
 1  TestTokens.flat.sol      MockHCOW, then MockUSDT      no arguments
+                            TESTNET ONLY. Never on mainnet.
 2  HCOWLedger.flat.sol      HCOWLedger(owner, anchorer)
 3  HCOWProfitShare.flat.sol HCOWProfitShare(hcow, usdt, owner, settler,
                                            gameCompany, team)
 4  HCOWStaking.flat.sol     HCOWStaking(hcow, owner, funder)
+5  HCOWFaucet.flat.sol      HCOWFaucet(hcow, usdt, owner)
+                            TESTNET ONLY. It gives away whatever is in it.
 ```
 
 Compiler 0.8.34, optimizer on, 200 runs, EVM version paris. Anything else
@@ -248,16 +259,24 @@ npm run smoke:testnet
 ```
 
 `deploy.cjs` writes `deployments/bscTestnet.json` with every address and
-every role, which is the file the dApp adapter and the anchoring worker read.
+every role. `smoke.cjs` reads it. The dApp and the anchoring worker do not:
+both take their addresses from configuration, so that file is the record of
+what was deployed, not a runtime dependency.
 Outside chain 97 it refuses to deploy placeholder tokens and demands real
 `HCOW_ADDRESS` and `USDT_ADDRESS`.
 
 `smoke.cjs` then sends real transactions against what was just deployed:
 it anchors an epoch and verifies a proof and a tampered proof on chain, bonds
-HCOW, settles an epoch and checks the 700 / 350 / 175 / 175 waterfall landed,
-claims the USDT, then registers a representative, stakes, funds rewards and
-checks the 5% commission split before claiming. Sixteen assertions. Compiling
-is not proof that a contract works; this is.
+HCOW, settles an epoch and checks the distributable profit figure landed, then
+registers a representative, stakes, funds rewards and checks the 5% commission
+split before claiming. Seventeen assertions. Compiling is not proof that a
+contract works; this is.
+
+It does not check the 350 / 175 / 175 split, and it cannot: the bond it makes
+is in the same epoch it then settles, so nobody is eligible, the participant
+leg is returned to the settler and `participantsUsdt` for that epoch is zero by
+design. The split is covered by `test/profitshare.test.cjs`. It also does not
+claim USDT, for the same reason.
 
 Both scripts talk to the node through a plain `JsonRpcProvider` and a
 `NonceManager` rather than a Hardhat ethers plugin, so `from` is explicit on
@@ -287,6 +306,67 @@ the contracts depends on the chain id.
 
 The deploy script prints a warning whenever owner equals the deploy key,
 because that is exactly the configuration that must never reach mainnet.
+
+### Deploying to BSC mainnet
+
+There are six contracts across two repositories and nobody had written down the
+order. This is it.
+
+`hcow-contracts` holds the token and the vesting contract. `hcow-protocol`,
+this repository, holds the other four. The token must exist before the two
+economic contracts, because both take its address as an immutable constructor
+argument, and a wrong one there is not a mistake that can be corrected.
+
+```
+hcow-contracts   1  HCOWToken(treasury)
+                 2  verify on BscScan, confirm bytecode, before any value moves
+                 3  HCOWVesting(token, tgeTime, owner)
+                 4  addSchedule x 9        <- see that repo's README, step 6
+                 5  transfer totalScheduled into the vesting contract
+                 6  seal(count, scheduled, tgeUnlock, scheduleHash)
+                       do 5 and 6 in one signing session
+
+hcow-protocol    7  HCOWLedger(owner, anchorer)
+                 8  HCOWProfitShare(hcow, usdt, owner, settler,
+                                    gameCompany, team)
+                 9  HCOWStaking(hcow, owner, funder)
+                    no faucet, no mock tokens, ever
+
+off chain       10  sql/001, sql/002, sql/003; deploy both edge functions;
+                    schedule the anchorer; publish verify.html
+```
+
+Steps 7 to 9 do not depend on 4 to 6, only on 1. They can go up first if that
+is more convenient.
+
+Run `scripts/deploy.cjs` for steps 7 to 9 rather than pasting constructor
+arguments into Remix by hand. Every guard that stops a role being the deploy
+key, being zero, or being both settler and payout recipient lives in that
+script, and pasting into a browser form runs none of them. It also asks both
+token addresses for their name, symbol, decimals and supply before committing
+them, and refuses anything that is not an eighteen decimal ERC20, because
+`MIN_PARTICIPANT_USDT` is written as `1e18` and against a six decimal USDT the
+deduction gate is silently unreachable for the life of the contract.
+
+If it must be Remix, deploy the identical constructor tuples to testnet first,
+read every role back off the deployed contract, and have a second person check
+them against this list before touching chain 56.
+
+### Roles at a glance
+
+| Role | Contracts | What a compromise costs | Custody |
+|---|---|---|---|
+| treasury | Token, Vesting | the entire supply until it is inside the vesting contract and sealed | multisig, mandatory |
+| owner | Ledger, ProfitShare, Staking | can set the settler and both payout recipients, so it can recover half of every settlement while burning bonded principal at the ceiling. Cannot take bonded HCOW. `HCOWProfitShare` and `HCOWStaking` have no `renounceOwnership`, so a lost key freezes those roles forever | multisig |
+| settler | ProfitShare | cannot take bonded HCOW. Can burn up to 3% of the bonded pool per decay window; the window is fixed rather than sliding and `MIN_EPOCH_INTERVAL` is seven days, so the measured worst case is 4.92% over any thirty days and 5.87% over thirty-seven, at a partly refunded cost | hardware wallet, holds live USDT |
+| anchorer | Ledger | junk roots in elapsed periods. Loud, and revocable by the owner. Cannot touch history or future periods | hot wallet, gas only |
+| gameCompany / team | ProfitShare | its own 25% leg | multisig |
+| rewardFunder | Staking | cannot extract. Can decline to fund, which ends the reward stream at `periodFinish` | hardware wallet, holds HCOW |
+| deployer | all | on a hand-typed Remix deployment, whatever it types | hardware wallet, tuples checked by a second person |
+| Supabase `service_role` | off chain | **can insert rounds that then anchor as genuine.** The chain proves nothing was altered after anchoring, not that it was true before | treat as a key, rotate, never leaves the dashboard |
+
+The last row is the one that gets left off wallet inventories. It is not a
+wallet and it is as security critical as the anchorer.
 
 ---
 

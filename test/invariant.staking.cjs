@@ -125,7 +125,7 @@ async function runSeed(seed, opCount) {
         // already promised, so a live period needs a duration that reaches at
         // least as far as the one it replaces.
         const finish = Number(await st.periodFinish());
-        const nowT = Number((await hre.ethers.provider.getBlock('latest')).timestamp);
+        const nowT = Number((await provider.getBlock("latest")).timestamp);
         const minDur = finish > nowT ? finish - nowT : 0;
         const dur = Math.min(365 * 86400, Math.max(86400, minDur + int(0, 30) * 86400));
         await (await st.connect(funder).fundRewards(E(int(1, 20_000)), dur)).wait();

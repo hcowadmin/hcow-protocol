@@ -8,6 +8,7 @@
 // Secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (set by the platform)
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { keccak256, toUtf8Bytes } from 'npm:ethers@6';
 
 const ALLOWED_GAMES = new Set([
   'tint','blocko','chroma','moobble','mergeheroes','neondrift','daico',
@@ -25,6 +26,8 @@ const LIMITS = {
   stringLen: 128,
   outcomeLen: 64,
   clockSkewSec: 300,
+  perPlayerPerHour: 120,
+  perIpPerHour: 600,
 };
 
 const ORIGINS = [
@@ -91,11 +94,36 @@ Deno.serve(async (req) => {
   const claimed = kind === 'seeded' ? body.timestamp : body.endedAt;
   let endedAt = int(claimed, now + LIMITS.clockSkewSec) ?? now;
   if (Math.abs(endedAt - now) > LIMITS.clockSkewSec) endedAt = now;
+  // The anchorer closes an epoch the moment it ends, so a round backdated into
+  // the previous epoch by a slow client clock lands in one that is already
+  // anchored. The table is append only and epochs never reopen, so that row is
+  // unanchorable forever: no receipt, no verification, and a silent hole in a
+  // ledger whose whole claim is that it has none. The accepted skew may move
+  // the timestamp within the current epoch, never out of it.
+  const epochStart = Math.floor(now / 3600) * 3600;
+  if (endedAt < epochStart) endedAt = epochStart;
 
   const row: Record<string, unknown> = {
     kind, game_id: gameId, round_id: roundId, player_ref: playerRef,
     outcome, ended_at: endedAt,
   };
+
+  // The commitment is checked here, at the only door in, and never later.
+  // A round whose revealed seed does not hash to its own commitment cannot be
+  // turned into a leaf, and the anchorer refuses to anchor an epoch containing
+  // one. Since the table is append only and epochs are strictly sequential,
+  // letting one through would stop the ledger permanently: a single
+  // unauthenticated POST, no wallet and no key, and the audit trail is dead.
+  if (kind === 'seeded') {
+    const h = str(body.serverSeedHash, 66);
+    const sd = str(body.serverSeed, LIMITS.stringLen);
+    if (!h || !sd) return bad('invalid seeded fields', origin);
+    let digest: string;
+    try { digest = keccak256(toUtf8Bytes(sd)); } catch { return bad('invalid serverSeed', origin); }
+    if (digest.toLowerCase() !== h.toLowerCase()) {
+      return bad('serverSeed does not match serverSeedHash', origin);
+    }
+  }
 
   if (kind === 'skill') {
     const mode = str(body.mode, 32);
@@ -121,12 +149,34 @@ Deno.serve(async (req) => {
     { auth: { persistSession: false } },
   );
 
-  // Cheap flood guard: no more than 120 rounds per player per hour.
+  // Two flood guards. The per player one is keyed on a value the caller
+  // supplies, so rotating it walks around the limit; it stays because it is
+  // what stops one buggy client filling the hour. The second is keyed on the
+  // caller address, which the caller cannot choose, and it is the one that
+  // actually bounds a flood. Neither is authentication: see SECURITY.md.
   const { count } = await db.from('rounds')
     .select('id', { count: 'exact', head: true })
     .eq('player_ref', playerRef)
     .gte('ended_at', now - 3600);
-  if ((count ?? 0) >= 120) return bad('rate limited', origin, 429);
+  if ((count ?? 0) >= LIMITS.perPlayerPerHour) return bad('rate limited', origin, 429);
+
+  // The LAST hop, not the first. X-Forwarded-For is appended to, not replaced,
+  // so element zero is whatever the client put there: keying on it is keying on
+  // a value the caller chooses, which is the exact weakness the per player
+  // limit has. It also lets a caller write a victim's address into an
+  // append-only table and rate limit that victim. The last element is the one
+  // the edge tier added. Length capped because this is stored, forever.
+  const hops = (req.headers.get('x-forwarded-for') ?? '')
+    .split(',').map((h) => h.trim()).filter(Boolean);
+  const ip = (hops[hops.length - 1] ?? '').slice(0, 45);
+  if (ip) {
+    const { count: ipCount } = await db.from('rounds')
+      .select('id', { count: 'exact', head: true })
+      .eq('source_ip', ip)
+      .gte('ended_at', now - 3600);
+    if ((ipCount ?? 0) >= LIMITS.perIpPerHour) return bad('rate limited', origin, 429);
+    row.source_ip = ip;
+  }
 
   const { error } = await db.from('rounds').insert(row);
   if (error) {

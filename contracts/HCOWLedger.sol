@@ -54,7 +54,10 @@ contract HCOWLedger {
     ///         be read as a leaf preimage. This makes the separation
     ///         structural rather than a statement about how hard it would be
     ///         to steer two keccak outputs into a valid record layout.
-    bytes1 private constant NODE_PREFIX = 0x01;
+    /// Public for the same reason the two leaf domains are: an independent
+    /// verifier must be able to read every part of the hashing rule off the
+    /// chain rather than take it from a document that could be edited.
+    bytes1 public constant NODE_PREFIX = 0x01;
 
     /// @notice Length of one period, in seconds. An epoch may only be anchored
     ///         once the period it covers has finished.
@@ -70,6 +73,9 @@ contract HCOWLedger {
 
     address public owner;
     mapping(address => bool) public isAnchorer;
+    /// @notice How many addresses may anchor. Renouncing ownership is refused
+    ///         while this is zero, because that combination is unrecoverable.
+    uint256 public anchorerCount;
 
     /// @notice Next live epoch expected. Also the count of anchored epochs.
     uint64 public nextEpoch;
@@ -113,12 +119,15 @@ contract HCOWLedger {
     error NotOwner();
     error NotAnchorer();
     error WrongEpoch(uint64 expected, uint64 given);
-    error EmptyRootWithRecords();
-    error RecordsWithEmptyRoot();
+    /// A record count with no root, or a root with no record count. Each names
+    /// what was supplied, not what was missing.
+    error RecordsWithoutRoot();
+    error RootWithoutRecords();
     error BadRange();
     error EpochNotFinished(uint64 endsAt);
     error RootAlreadyAnchored(bytes32 root);
     error ZeroAddress();
+    error NoAnchorerLeft();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -138,6 +147,7 @@ contract HCOWLedger {
         emit OwnershipTransferred(address(0), initialOwner);
         if (initialAnchorer != address(0)) {
             isAnchorer[initialAnchorer] = true;
+            anchorerCount = 1;
             emit AnchorerSet(initialAnchorer, true);
         }
     }
@@ -154,8 +164,8 @@ contract HCOWLedger {
      */
     function anchorEpoch(uint64 epoch, bytes32 root, uint64 recordCount) external onlyAnchorer {
         if (epoch != nextEpoch) revert WrongEpoch(nextEpoch, epoch);
-        if (root == bytes32(0) && recordCount != 0) revert EmptyRootWithRecords();
-        if (root != bytes32(0) && recordCount == 0) revert RecordsWithEmptyRoot();
+        if (root == bytes32(0) && recordCount != 0) revert RecordsWithoutRoot();
+        if (root != bytes32(0) && recordCount == 0) revert RootWithoutRecords();
 
         // An epoch may only be anchored once its period has ended. Without
         // this a stolen anchorer key could burn a year of future periods for
@@ -194,7 +204,8 @@ contract HCOWLedger {
         uint64 coversFrom,
         uint64 coversTo
     ) external onlyAnchorer returns (uint64 batchId) {
-        if (root == bytes32(0) || recordCount == 0) revert RecordsWithEmptyRoot();
+        if (root == bytes32(0)) revert RecordsWithoutRoot();
+        if (recordCount == 0) revert RootWithoutRecords();
         if (coversFrom == 0 || coversTo < coversFrom) revert BadRange();
         // A backfill covers the past by definition.
         if (coversTo > block.timestamp) revert BadRange();
@@ -321,6 +332,16 @@ contract HCOWLedger {
 
     function setAnchorer(address account, bool allowed) external onlyOwner {
         if (account == address(0)) revert ZeroAddress();
+        bool was = isAnchorer[account];
+        if (was == allowed) return;
+        if (allowed) {
+            anchorerCount += 1;
+        } else {
+            // Removing the last anchorer while an owner is still here is
+            // recoverable, so it is allowed. Doing it and then renouncing is
+            // not, which is what the guard below refuses.
+            anchorerCount -= 1;
+        }
         isAnchorer[account] = allowed;
         emit AnchorerSet(account, allowed);
     }
@@ -333,7 +354,16 @@ contract HCOWLedger {
 
     /// @notice Give up administration permanently. Existing anchorers keep
     /// writing, and the permission set can never change again.
+    ///
+    /// @dev Refused while there is no anchorer left. Epochs are strictly
+    ///      sequential and there is no cursor override, so an ownerless
+    ///      contract with an empty anchorer set can never anchor again and the
+    ///      ledger is dead: two ordinary administrative calls in the wrong
+    ///      order and the audit trail stops for good. Renouncing is meant to
+    ///      be the act that proves nothing can be tampered with, not the one
+    ///      that ends the record.
     function renounceOwnership() external onlyOwner {
+        if (anchorerCount == 0) revert NoAnchorerLeft();
         emit OwnershipTransferred(owner, address(0));
         owner = address(0);
     }

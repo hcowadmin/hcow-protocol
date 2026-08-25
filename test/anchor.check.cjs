@@ -84,6 +84,55 @@ const toSkill = (r) => ({ gameId:r.gameId, roundId:r.roundId, playerRef:r.player
     }
   }
 
+  // ---- prepare(): quarantine must not shift the receipts ----
+  // roundId does not identify a round; (game_id, round_id) does. Filtering the
+  // receipts by roundId alone dropped a valid round in another game, shifted
+  // every index after it, and handed players a proof belonging to somebody
+  // else's record. The page then told them their receipt had been tampered
+  // with. Nothing else in this suite reaches prepare().
+  {
+    const { prepare } = require('../lib/anchor');
+    const { keccakUtf8 } = require('../lib/keccak');
+    const seeded = (gameId, roundId, seed) => ({
+      kind: 'seeded',
+      record: {
+        gameId, roundId, playerRef: 'p1',
+        serverSeedHash: keccakUtf8(seed), serverSeed: seed,
+        clientSeed: 'c', nonce: 1, outcome: 'win', timestamp: 1700000000,
+      },
+    });
+    const broken = seeded('chroma', 'r-shared', 's1');
+    broken.record.serverSeedHash = keccakUtf8('not-the-seed');
+    const entries = [
+      seeded('moon', 'a1', 'sa'),
+      broken,                              // fails its own commitment
+      seeded('chroma', 'r-shared', 'sb'),  // same roundId, different game, VALID
+      seeded('moon', 'a2', 'sc'),
+    ];
+
+    let threw = false;
+    try { prepare(entries); } catch (_) { threw = true; }
+    if (!threw) { fails++; console.log('prepare did not refuse a broken commitment by default'); }
+
+    const { leaves, quarantined, kept } = prepare(entries, { skipInvalid: true });
+    if (leaves.length !== 3 || kept.length !== 3) {
+      fails++; console.log('prepare kept the wrong number of entries', leaves.length, kept.length);
+    }
+    if (quarantined.length !== 1 || quarantined[0].gameId !== 'chroma') {
+      fails++; console.log('quarantine list does not identify the round by game and id');
+    }
+    const t2 = buildTree(leaves);
+    for (let i = 0; i < kept.length; i++) {
+      if (leafHash(kept[i].record, kept[i].kind) !== leaves[i]) {
+        fails++; console.log('kept[' + i + '] does not produce leaves[' + i + ']');
+      }
+    }
+    // the valid round that shares a roundId with the quarantined one must be here
+    if (!kept.some((e) => e.record.gameId === 'chroma' && e.record.roundId === 'r-shared')) {
+      fails++; console.log('a valid round was dropped because another game reused its roundId');
+    }
+  }
+
   // an epoch whose period has not ended yet must be refused
   try {
     await (await c.anchorEpoch(e0 + 3, ethers.ZeroHash, 0)).wait();

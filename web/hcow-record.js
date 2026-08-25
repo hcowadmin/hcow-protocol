@@ -114,7 +114,7 @@
         endedAt: Math.floor(Date.now() / 1000),
       });
     },
-    /** A round whose randomness was committed in advance. */
+    /** A round that carries a seed commitment alongside the revealed seed. */
     seeded: function (o) {
       submit('seeded', {
         serverSeedHash: String(o && o.serverSeedHash || ''),

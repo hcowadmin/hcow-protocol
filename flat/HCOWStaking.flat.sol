@@ -2644,16 +2644,27 @@ contract HCOWStaking is ReentrancyGuard {
         // budget out behind it, and nobody but the funder can undo it. Nothing
         // would be destroyed, but delivery would be deferrable forever by a
         // role that is not the owner.
-        if (block.timestamp < periodFinish) {
-            // Neither the rate nor the end date may move backwards. Blocking
-            // only the rate leaves the mirror image open: a single wei on the
-            // shortest duration pulls the end date in and compresses the whole
-            // remaining budget into it, which destroys exactly the time
-            // weighting this design exists to create. A funding may add tokens
-            // or add time. It may never redistribute what is already promised.
-            uint256 minRate = leftover / (uint256(periodFinish) - block.timestamp);
-            if (newRate < minRate) revert BadDuration(duration);
-        }
+        // Neither the rate nor the end date may move backwards. Blocking only
+        // the rate leaves the mirror image open: a single wei on the shortest
+        // duration pulls the end date in and compresses the whole remaining
+        // budget into it, which destroys exactly the time weighting this design
+        // exists to create. A funding may add tokens or add time. It may never
+        // redistribute what is already promised.
+        //
+        // The floor is taken against the duration the new stream is actually
+        // allowed to run for, which is minDuration, not against whatever is
+        // left of the old period. Measured against `remaining` the two floors
+        // conflict: inside the last MIN_REWARD_DURATION of a period the
+        // duration floor forces at least a day while a rate floor set by a
+        // nearly finished period is arbitrarily high, so between them they
+        // refused every top up in that window however large. Waiving the floor
+        // there instead was worse: one second into a one day period the waiver
+        // is live for the rest of it, and a single wei on a year long duration
+        // then stretched a 9,900,000 HCOW budget out behind it, a 365 fold
+        // slowdown. Dividing by minDuration accepts the top up and refuses the
+        // stretch, because the stretch is what makes newRate fall below it.
+        uint256 minRate = leftover / (remaining >= MIN_REWARD_DURATION ? remaining : minDuration);
+        if (newRate < minRate) revert BadDuration(duration);
         if (newRate == 0) revert BadDuration(duration);
         rewardRate = newRate;
         // The remainder of the division would otherwise be lost for good.

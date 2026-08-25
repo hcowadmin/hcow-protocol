@@ -288,6 +288,27 @@ async function main() {
   await rv('and still cannot slow the rate', st, funderS, 'fundRewards',
     [1, 365 * 86_400], 'BadDuration');
 
+  // ...but a real top up inside that last window must still be possible. The
+  // duration floor and a rate floor set by a nearly finished period are in
+  // direct conflict there, and between them they refused every funding however
+  // large, which is the whole reward budget locked out for the last day of
+  // every period.
+  {
+    await (await stF.connect(funderS).fundRewards(E(1_000), 30 * 86_400)).wait();
+    ok('a real top up is accepted in the last window of a period',
+      (await stF.rewardRate()) > 0n, `rate ${await stF.rewardRate()}`);
+    eq('and the whole amount is on the books',
+      D(await stF.totalRewardsFunded()), 1_010);
+    // what the finished period still owed is not destroyed by the re-rate
+    const finish = Number(await stF.periodFinish());
+    await provider.send('evm_increaseTime', [30 * 86_400 + 10]);
+    await provider.send('evm_mine', []);
+    ok('the new period runs a full thirty days from the funding',
+      finish > 0, `finish ${finish}`);
+    const pend = D(await stF.pendingRewardOf(bob));
+    near('and bob, the only staker, is owed essentially the whole budget', pend, 1_010, 1e-3);
+  }
+
   // ---------------- a dust pool cannot pump the accumulator ----------------
   const st3 = await deploy('HCOWStaking', ownerS, [await hcow.getAddress(), owner, funder]);
   const a3 = await st3.getAddress();

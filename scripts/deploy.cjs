@@ -100,10 +100,68 @@ async function main() {
   hcow = ethers.getAddress(hcow);
   usdt = ethers.getAddress(usdt);
 
+  // Both token addresses are immutable in HCOWProfitShare and HCOWStaking.
+  // A wrong one is not a mistake that can be corrected: it is two permanently
+  // wrong contracts and a redeploy. Ask the addresses what they are before
+  // committing them, rather than checking that they look like addresses.
+  //
+  // Decimals in particular are load bearing and silent when wrong.
+  // MIN_PARTICIPANT_USDT is 1e18, "one USDT" on BSC where USDT has eighteen
+  // decimals. Against a six decimal USDT the same constant is a trillion
+  // USDT, Rule 6 can never be satisfied, and the deduction mechanism is
+  // disabled for the life of the contract with no error anywhere.
+  const ERC20_META = [
+    'function name() view returns (string)',
+    'function symbol() view returns (string)',
+    'function decimals() view returns (uint8)',
+    'function totalSupply() view returns (uint256)',
+  ];
+  const describe = async (label, addr, expect) => {
+    if ((await provider.getCode(addr)) === '0x') {
+      throw new Error(`${label} ${addr} has no code on chain ${net.chainId}`);
+    }
+    const t = new ethers.Contract(addr, ERC20_META, provider);
+    let name, symbol, decimals, supply;
+    try {
+      [name, symbol, decimals, supply] = await Promise.all([
+        t.name(), t.symbol(), t.decimals(), t.totalSupply(),
+      ]);
+    } catch (e) {
+      throw new Error(`${label} ${addr} does not answer as an ERC20: ${e.message}`);
+    }
+    console.log(`${label.padEnd(16)} ${addr}  ${symbol} "${name}" ${decimals} decimals, ` +
+                `supply ${ethers.formatUnits(supply, decimals)}`);
+    if (Number(decimals) !== 18) {
+      throw new Error(
+        `${label} has ${decimals} decimals. Both economic contracts assume 18: ` +
+        'MIN_PARTICIPANT_USDT and MIN_STAKE_FOR_ACCRUAL are written as 1e18. ' +
+        'Deploying against this token silently disables the deduction gate.'
+      );
+    }
+    if (mainnet && expect && symbol.toUpperCase() !== expect) {
+      throw new Error(`${label} reports symbol ${symbol}, expected ${expect}`);
+    }
+    return { symbol, decimals: Number(decimals), supply: supply.toString() };
+  };
+
+  console.log('');
+  const hcowMeta = await describe('HCOW token', hcow, mainnet ? 'HCOW' : null);
+  const usdtMeta = await describe('USDT token', usdt, null);
+  if (hcow.toLowerCase() === usdt.toLowerCase()) {
+    throw new Error('HCOW_ADDRESS and USDT_ADDRESS are the same address');
+  }
+  console.log('');
+
   // ---- contracts -------------------------------------------------------
   const ledger = await put('HCOWLedger', [owner, anchorer]);
   const profitShare = await put('HCOWProfitShare', [hcow, usdt, owner, settler, gameCompany, team]);
   const staking = await put('HCOWStaking', [hcow, owner, funder]);
+  // Testnet only, and deliberately so. The faucet gives away whatever is put
+  // into it, which is meaningless for stand in tokens and unacceptable for
+  // real ones. It was previously deployed by hand and recorded nowhere.
+  const faucet = net.chainId === TESTNET
+    ? await put('HCOWFaucet', [hcow, usdt, owner])
+    : null;
 
   // ---- record ----------------------------------------------------------
   const out = {
@@ -111,7 +169,11 @@ async function main() {
     chainId: Number(net.chainId),
     deployedBy: me,
     roles: { owner, anchorer, settler, gameCompany, team, funder },
-    addresses: { HCOW: hcow, USDT: usdt, HCOWLedger: ledger, HCOWProfitShare: profitShare, HCOWStaking: staking },
+    tokens: { HCOW: hcowMeta, USDT: usdtMeta },
+    addresses: Object.assign(
+      { HCOW: hcow, USDT: usdt, HCOWLedger: ledger, HCOWProfitShare: profitShare, HCOWStaking: staking },
+      faucet ? { HCOWFaucet: faucet } : {},
+    ),
   };
 
   const dir = path.join(__dirname, '..', 'deployments');

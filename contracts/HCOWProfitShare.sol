@@ -22,9 +22,13 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *     and the contract computes the amount from its own pool figure. With
  *     MIN_EPOCH_INTERVAL between settlements the worst case is 2% per week,
  *     and a position that requests an unbond is charged for exactly one
- *     settlement, so reacting costs at most 2% of principal. Over any thirty
- *     days MAX_DECAY_PER_WINDOW_PPM binds instead. Those are bounds the code
- *     enforces, not promises.
+ *     settlement, so reacting costs at most 2% of principal. Over a decay
+ *     window MAX_DECAY_PER_WINDOW_PPM binds instead. That window is fixed
+ *     rather than sliding, so two can be packed back to back and the true
+ *     worst case over an arbitrary thirty days is more than it: measured,
+ *     4.92% over thirty days and 5.87% over thirty seven, against 3% per
+ *     window. Those are bounds the code enforces, not promises, and the
+ *     figures to quote are the measured ones.
  *   - Rule 6, a deduction requires a real distribution. The participant leg of
  *     the epoch must be non-zero. An epoch that pays participants nothing
  *     cannot consume their principal, however it is arithmetically dressed up.
@@ -187,6 +191,7 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     uint256 public accUsdtPerShare;
 
+
     /**
      * @notice Shares bonded during the epoch now being settled.
      *
@@ -209,25 +214,38 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint64 public lastSettledAt;
 
     /**
-     * @notice When the current decay window opened, and how much HCOW has been
-     *         consumed inside it.
+     * @notice When the current decay window opened, and how much deduction
+     *         rate has been spent inside it, in parts per million.
      *
-     * Metered in tokens rather than as a movement in poolIndex, because a rate
-     * says nothing about how much was actually destroyed: with most of the
-     * pool sitting in pending unbonds, two settlements at the cap burn a
-     * rounding error and would still exhaust a ceiling expressed as a rate.
+     * Metered as a rate, with no reference to the size of the pool at all.
      *
-     * The ceiling is computed from the live bonded pool at every settlement,
-     * never from a figure snapshotted when the window opened. A snapshot stops
-     * being true the moment it is written: capital can be parked in the pool
-     * to inflate it and withdrawn a block later, and a pool that grows after
-     * the snapshot is held to an allowance sized for a pool that no longer
-     * exists. Reading it live also makes the ceiling and the deduction scale
-     * together, so shrinking the pool in front of a settlement cannot
-     * manufacture a veto.
+     * Any ceiling computed against a pool figure can be moved by moving the
+     * pool. Against a live figure a dominant holder shrinks it by requesting
+     * an unbond, vetoes the settlement outright at no cost, and cancels.
+     * Against a figure snapshotted when the window opened, capital parked for
+     * one block inflates it and leaves. Against a figure that counts pending
+     * unbonds, parking loosens the rate bound for everyone else. A rate has no
+     * base to attack.
+     *
+     * What it bounds, precisely, is the bonded pool. A position that stays
+     * bonded decays at this rate for every settlement it sits through, and
+     * because deductPpm sums linearly while poolIndex compounds, actual
+     * destruction is always below the meter. A pending unbond is a different
+     * case and a weaker one: _chargeIndex charges it for exactly one
+     * settlement however long it waits, so requesting an unbond is a
+     * one-time-priced, permanent opt-out of all further deduction. That is
+     * deliberate, it is what stops a settlement from being able to reach a
+     * position that has already asked to leave, and it means the meter
+     * overstates rather than understates what a campaign destroys.
+     *
+     * The window is fixed, not sliding, so two adjacent windows can be packed
+     * back to back. MIN_EPOCH_INTERVAL is seven days, which stops two full
+     * windows landing inside thirty. Measured against a greedy settler: 4.92
+     * percent of the bonded pool over any thirty days, 5.87 percent over
+     * thirty seven. Quote those, not the per window figure.
      */
     uint64 public decayWindowAt;
-    uint256 public decayWindowBurned;
+    uint256 public decayWindowPpm;
 
     /// @notice poolIndex immediately after each settled epoch. A pending
     ///         unbond is priced against the first of these that follows it.
@@ -275,6 +293,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint128 operatingCostsUsdt;
         uint128 distributableProfitUsdt;
         uint128 participantsUsdt;
+        uint128 refundedUsdt;
         uint128 hcowDeducted;
         uint128 snapshotBondedHcow;
         uint64  settledAt;
@@ -311,6 +330,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 operatingCostsUsdt,
         uint256 distributableProfitUsdt,
         uint256 participantsUsdt,
+        uint256 refundedUsdt,
         uint256 hcowDeducted,
         uint256 snapshotBondedHcow
     );
@@ -333,7 +353,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     error DeductionWithoutDistribution();
     error DeductionRateAboveCap(uint32 requested, uint32 cap);
     error EpochTooSoon(uint64 readyAt);
-    error DecayWindowExhausted(uint256 windowCap, uint256 wouldBe);
+    error DecayWindowExhausted(uint256 windowCapPpm, uint256 wouldBePpm);
     error ProfitNotFunded(uint256 expected, uint256 arrived);
     error SameToken();
     error SettlerIsRecipient();
@@ -610,27 +630,50 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         // Rule 1. The cap is not advisory. Anything above it must be absorbed
         // by the studio and team shares before it reaches this function.
-        uint256 cap = (netRevenue * OPEX_CAP_BPS) / 10_000;
-        if (operatingCostsUsdt > cap) revert OpexAboveCap(operatingCostsUsdt, cap);
+        {
+            uint256 cap = (netRevenue * OPEX_CAP_BPS) / 10_000;
+            if (operatingCostsUsdt > cap) revert OpexAboveCap(operatingCostsUsdt, cap);
+        }
 
         uint256 profit = netRevenue - operatingCostsUsdt;
-        uint256 participants = (profit * PARTICIPANT_BPS) / 10_000;
         uint256 eligibleShares = totalShares - totalNewShares;
 
+        // The participant leg, and the part of it the eligible pool may take.
+        //
+        // Dividing the whole leg across the eligible shares alone hands it to
+        // whoever arrived first however small they are: one wei bonded an epoch
+        // early otherwise takes the entire distribution from a pool a hundred
+        // million times its size. Scaling to the eligible fraction fixes that.
+        //
+        // The rest goes back to the settler. Holding it in the contract for a
+        // later epoch was tried and is worse: it becomes a pot with no link to
+        // the shares it was deferred for, and one wei bonded after everybody
+        // else has left collects the lot. Returning it also keeps the published
+        // waterfall exact, profit = participants + refunded + gameCompany +
+        // team, in every branch and readable from the settlement log alone.
+        uint256 leg = (profit * PARTICIPANT_BPS) / 10_000;
+        uint256 participants = (eligibleShares == 0 || totalShares == 0)
+            ? 0
+            : Math.mulDiv(leg, eligibleShares, totalShares);
+
         // Rule 5. The rate is capped, and two deductions cannot be stacked
-        // inside the cooldown. Together these bound the worst case at 2% a day.
+        // inside the cooldown. Together these bound the worst case at 2% a week.
         if (deductPpm > MAX_DEDUCT_PPM) {
             revert DeductionRateAboveCap(deductPpm, MAX_DEDUCT_PPM);
         }
         if (deductPpm != 0) {
             // Rule 4 and Rule 6. Principal is only consumed by an epoch that
             // actually pays participants, and the test is on what reaches
-            // them, not on what was computed. One wei of profit rounds the
-            // participant leg to zero, and with nobody eligible the leg is
-            // returned to the settler; burning principal against either is the
-            // same defect wearing different arithmetic.
-            // Nobody eligible means the participant leg is returned below, so
-            // there is nothing to charge and nothing to charge it against. The
+            // them, not on what was computed. `participants` here is already
+            // the credited figure, not the computed leg: testing the computed
+            // one let a settlement where the eligible pool is a rounding error
+            // burn the whole pool's worth of principal while crediting zero.
+            // One wei of profit rounds the leg to zero, and with nobody
+            // eligible the leg carries or is returned; burning principal
+            // against any of those is the same defect wearing different
+            // arithmetic.
+            // Nobody eligible means the whole leg is returned below, so there
+            // is nothing to charge and nothing to charge it against. The
             // deduction is dropped rather than the settlement refused: a single
             // dominant holder could otherwise veto every settlement by
             // front running it with an unbond request.
@@ -659,22 +702,27 @@ contract HCOWProfitShare is ReentrancyGuard {
             if (arrived != profit) revert ProfitNotFunded(profit, arrived);
             uint256 toGameCompany = (profit * GAME_COMPANY_BPS) / 10_000;
             // Remainder to the team so rounding never strands dust here.
-            uint256 toTeam = profit - participants - toGameCompany;
+            //
+            // Against THIS epoch's participant leg, not against what was
+            // credited and not against `leg`. `participants` is the credited
+            // figure and the difference stays in the contract for the
+            // participant class; paying that difference to the team instead
+            // would hand it the deferred money. `leg` additionally carries a
+            // previous epoch's remainder, which is already inside the contract
+            // and was never part of this epoch's profit.
+            uint256 toTeam = profit - ((profit * PARTICIPANT_BPS) / 10_000) - toGameCompany;
             if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);
             if (toTeam > 0) usdt.safeTransfer(team, toTeam);
         }
 
         if (participants > 0) {
-            if (eligibleShares == 0) {
-                // Nobody is bonded. Send the participant share back rather
-                // than stranding it in a pool with no claimants.
-                usdt.safeTransfer(msg.sender, participants);
-                participants = 0;
-            } else {
-                accUsdtPerShare += Math.mulDiv(participants, ACC_PRECISION, eligibleShares);
-                totalUsdtDistributed += participants;
-            }
+            accUsdtPerShare += Math.mulDiv(participants, ACC_PRECISION, eligibleShares);
+            totalUsdtDistributed += participants;
         }
+        // Whatever the eligible pool could not take. Zero whenever every share
+        // is eligible, which is the steady state.
+        uint256 refunded = leg - participants;
+        if (refunded > 0) usdt.safeTransfer(msg.sender, refunded);
 
         if (hcowToDeduct > 0) {
             // totalShares is non-zero: hcowToDeduct is zero when it is not.
@@ -691,13 +739,13 @@ contract HCOWProfitShare is ReentrancyGuard {
             // is what bounds a campaign.
             if (decayWindowAt == 0 || block.timestamp >= decayWindowAt + DECAY_WINDOW) {
                 decayWindowAt = uint64(block.timestamp);
-                decayWindowBurned = 0;
+                decayWindowPpm = 0;
             }
-            uint256 windowCap =
-                Math.mulDiv(totalBondedHcow, MAX_DECAY_PER_WINDOW_PPM, PPM_DENOM);
-            uint256 wouldBe = decayWindowBurned + hcowToDeduct;
-            if (wouldBe > windowCap) revert DecayWindowExhausted(windowCap, wouldBe);
-            decayWindowBurned = wouldBe;
+            uint256 wouldBe = decayWindowPpm + deductPpm;
+            if (wouldBe > MAX_DECAY_PER_WINDOW_PPM) {
+                revert DecayWindowExhausted(MAX_DECAY_PER_WINDOW_PPM, wouldBe);
+            }
+            decayWindowPpm = wouldBe;
             poolIndex = nextIndex;
             totalBondedHcow -= hcowToDeduct;
             totalHcowDeducted += hcowToDeduct;
@@ -718,6 +766,7 @@ contract HCOWProfitShare is ReentrancyGuard {
             operatingCostsUsdt: operatingCostsUsdt.toUint128(),
             distributableProfitUsdt: profit.toUint128(),
             participantsUsdt: participants.toUint128(),
+            refundedUsdt: refunded.toUint128(),
             hcowDeducted: hcowToDeduct.toUint128(),
             snapshotBondedHcow: snapshot.toUint128(),
             settledAt: uint64(block.timestamp)
@@ -727,7 +776,7 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         emit EpochSettled(
             epoch, grossReceivedUsdt, directCostsUsdt, netRevenue,
-            operatingCostsUsdt, profit, participants, hcowToDeduct, snapshot
+            operatingCostsUsdt, profit, participants, refunded, hcowToDeduct, snapshot
         );
     }
 
