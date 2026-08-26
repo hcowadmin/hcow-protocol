@@ -293,7 +293,8 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint128 operatingCostsUsdt;
         uint128 distributableProfitUsdt;
         uint128 participantsUsdt;
-        uint128 refundedUsdt;
+        uint128 gameCompanyUsdt;
+        uint128 teamUsdt;
         uint128 hcowDeducted;
         uint128 snapshotBondedHcow;
         uint64  settledAt;
@@ -317,10 +318,16 @@ contract HCOWProfitShare is ReentrancyGuard {
     event UsdtClaimed(address indexed account, uint256 amount);
 
     /**
-     * @dev The two 25% legs are not repeated here. They are exactly a quarter
-     *      of distributableProfitUsdt each, and the actual movement shows up as
-     *      ERC20 Transfer events to gameCompany and team in the same
-     *      transaction, which is the stronger record anyway.
+     * @dev The two fixed legs are stated rather than left to be reconstructed.
+     *      They are NOT a quarter of distributableProfitUsdt each: floor
+     *      division puts up to two wei of dust on the team, and whatever the
+     *      eligible pool could not take is split between the two on top of the
+     *      quarter. An indexer applying the 25% rule to an odd profit figure
+     *      gets a number that does not add up, which is exactly the
+     *      reconciliation this event exists to make possible.
+     *
+     *      distributableProfitUsdt = participantsUsdt + gameCompanyUsdt +
+     *      teamUsdt, exactly, in every branch.
      */
     event EpochSettled(
         uint64 indexed epoch,
@@ -330,7 +337,8 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 operatingCostsUsdt,
         uint256 distributableProfitUsdt,
         uint256 participantsUsdt,
-        uint256 refundedUsdt,
+        uint256 gameCompanyUsdt,
+        uint256 teamUsdt,
         uint256 hcowDeducted,
         uint256 snapshotBondedHcow
     );
@@ -645,16 +653,37 @@ contract HCOWProfitShare is ReentrancyGuard {
         // early otherwise takes the entire distribution from a pool a hundred
         // million times its size. Scaling to the eligible fraction fixes that.
         //
-        // The rest goes back to the settler. Holding it in the contract for a
-        // later epoch was tried and is worse: it becomes a pot with no link to
+        // The rest goes to the two fixed recipients, not back to the settler
+        // and not into a holding balance. Both alternatives were tried and both
+        // were defects. Held for a later epoch it becomes a pot with no link to
         // the shares it was deferred for, and one wei bonded after everybody
-        // else has left collects the lot. Returning it also keeps the published
-        // waterfall exact, profit = participants + refunded + gameCompany +
-        // team, in every branch and readable from the settlement log alone.
-        uint256 leg = (profit * PARTICIPANT_BPS) / 10_000;
-        uint256 participants = (eligibleShares == 0 || totalShares == 0)
-            ? 0
-            : Math.mulDiv(leg, eligibleShares, totalShares);
+        // else has left collects the lot. Returned to the settler it is self
+        // dealing, because the settler is the party that both authors the
+        // revenue figure and moves the divisor: bonding into the pool in the
+        // settlement block, from any address, shrinks the eligible fraction
+        // without limit and hands the difference straight back. Measured at 999
+        // times the pool, a settler recovered 49,950 of a 50,000 USDT
+        // participant leg and unbonded a week later at no cost.
+        //
+        // Sent to gameCompany and team the incentive is gone rather than
+        // bounded: diluting the pool costs the settler exactly as much either
+        // way and gains it nothing, and neither recipient may be the settler.
+        uint256 participants;
+        uint256 toGameCompany;
+        uint256 toTeam;
+        {
+            uint256 leg = (profit * PARTICIPANT_BPS) / 10_000;
+            participants = (eligibleShares == 0 || totalShares == 0)
+                ? 0
+                : Math.mulDiv(leg, eligibleShares, totalShares);
+            // The fixed quarter, plus half of whatever the eligible pool could
+            // not take. The team gets the rest of the profit, so rounding dust
+            // never strands here and the three legs add up to `profit` exactly
+            // in every branch, which is what makes the published waterfall
+            // reconstructible from the log alone.
+            toGameCompany = (profit * GAME_COMPANY_BPS) / 10_000 + (leg - participants) / 2;
+            toTeam = profit - participants - toGameCompany;
+        }
 
         // Rule 5. The rate is capped, and two deductions cannot be stacked
         // inside the cooldown. Together these bound the worst case at 2% a week.
@@ -668,14 +697,13 @@ contract HCOWProfitShare is ReentrancyGuard {
             // the credited figure, not the computed leg: testing the computed
             // one let a settlement where the eligible pool is a rounding error
             // burn the whole pool's worth of principal while crediting zero.
-            // One wei of profit rounds the leg to zero, and with nobody
-            // eligible the leg carries or is returned; burning principal
-            // against any of those is the same defect wearing different
-            // arithmetic.
-            // Nobody eligible means the whole leg is returned below, so there
-            // is nothing to charge and nothing to charge it against. The
-            // deduction is dropped rather than the settlement refused: a single
-            // dominant holder could otherwise veto every settlement by
+            // One wei of profit rounds the leg to zero; burning principal
+            // against that is the same defect wearing different arithmetic.
+            //
+            // With nobody eligible the whole leg goes to the two recipients, so
+            // there is nothing to charge and nothing to charge it against, and
+            // the deduction is dropped rather than the settlement refused: a
+            // single dominant holder could otherwise veto every settlement by
             // front running it with an unbond request.
             if (eligibleShares != 0 && participants < MIN_PARTICIPANT_USDT) {
                 revert DeductionWithoutDistribution();
@@ -700,17 +728,6 @@ contract HCOWProfitShare is ReentrancyGuard {
             usdt.safeTransferFrom(msg.sender, address(this), profit);
             uint256 arrived = usdt.balanceOf(address(this)) - beforeUsdt;
             if (arrived != profit) revert ProfitNotFunded(profit, arrived);
-            uint256 toGameCompany = (profit * GAME_COMPANY_BPS) / 10_000;
-            // Remainder to the team so rounding never strands dust here.
-            //
-            // Against THIS epoch's participant leg, not against what was
-            // credited and not against `leg`. `participants` is the credited
-            // figure and the difference stays in the contract for the
-            // participant class; paying that difference to the team instead
-            // would hand it the deferred money. `leg` additionally carries a
-            // previous epoch's remainder, which is already inside the contract
-            // and was never part of this epoch's profit.
-            uint256 toTeam = profit - ((profit * PARTICIPANT_BPS) / 10_000) - toGameCompany;
             if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);
             if (toTeam > 0) usdt.safeTransfer(team, toTeam);
         }
@@ -719,10 +736,6 @@ contract HCOWProfitShare is ReentrancyGuard {
             accUsdtPerShare += Math.mulDiv(participants, ACC_PRECISION, eligibleShares);
             totalUsdtDistributed += participants;
         }
-        // Whatever the eligible pool could not take. Zero whenever every share
-        // is eligible, which is the steady state.
-        uint256 refunded = leg - participants;
-        if (refunded > 0) usdt.safeTransfer(msg.sender, refunded);
 
         if (hcowToDeduct > 0) {
             // totalShares is non-zero: hcowToDeduct is zero when it is not.
@@ -766,7 +779,8 @@ contract HCOWProfitShare is ReentrancyGuard {
             operatingCostsUsdt: operatingCostsUsdt.toUint128(),
             distributableProfitUsdt: profit.toUint128(),
             participantsUsdt: participants.toUint128(),
-            refundedUsdt: refunded.toUint128(),
+            gameCompanyUsdt: toGameCompany.toUint128(),
+            teamUsdt: toTeam.toUint128(),
             hcowDeducted: hcowToDeduct.toUint128(),
             snapshotBondedHcow: snapshot.toUint128(),
             settledAt: uint64(block.timestamp)
@@ -776,7 +790,8 @@ contract HCOWProfitShare is ReentrancyGuard {
 
         emit EpochSettled(
             epoch, grossReceivedUsdt, directCostsUsdt, netRevenue,
-            operatingCostsUsdt, profit, participants, refunded, hcowToDeduct, snapshot
+            operatingCostsUsdt, profit, participants, toGameCompany, toTeam,
+            hcowToDeduct, snapshot
         );
     }
 
@@ -987,7 +1002,18 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     function _bookmark(Account storage a) private {
         uint256 s = uint256(a.shares);
-        a.rewardDebt = Math.mulDiv(s - uint256(a.newShares), accUsdtPerShare, ACC_PRECISION);
+        // Rounded up, deliberately. The credit at _settle is
+        // floor(s * accNow) - rewardDebt, so a rewardDebt that was itself
+        // floored lets every share count change credit up to one wei more than
+        // the pool actually received. The contract retains exactly what it
+        // distributed, so there is no cushion: measured, the gap opened at
+        // epoch 7 of a 40 epoch run and the last holder's claim reverted with
+        // ERC20InsufficientBalance, stranding 5.137 USDT until somebody
+        // donated a wei. Rounding the debt up costs a claimant at most one wei
+        // and makes the shortfall unreachable.
+        a.rewardDebt = Math.mulDiv(
+            s - uint256(a.newShares), accUsdtPerShare, ACC_PRECISION, Math.Rounding.Ceil
+        );
         a.deductDebt = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION);
     }
 }

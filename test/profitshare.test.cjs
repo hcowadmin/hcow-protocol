@@ -229,14 +229,17 @@ async function main() {
     D(await ps.claimableOf(carol)), 0);
   eq('and her half of the leg is not handed to the incumbents either',
     D(await ps.claimableOf(alice)) + D(await ps.claimableOf(bob)) - 20250, 3000);
-  eq('her half is returned to the settler, not handed to the incumbents',
-    D((await ps.getSettlement(2)).refundedUsdt), 3000);
+  {
+    const st = await ps.getSettlement(2);
+    eq('her half goes to the two fixed recipients, not to the incumbents and not to the settler',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 6000 + 3000);
+  }
   eq('alice earned her quarter of the eligible half', D(await ps.claimableOf(alice)), 750);
   {
     const st = await ps.getSettlement(2);
     eq('and the waterfall reconciles exactly in the log',
       D(st.distributableProfitUsdt),
-      D(st.participantsUsdt) + D(st.refundedUsdt) + D(st.distributableProfitUsdt) / 2);
+      D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt));
   }
   eq('bob earned his three quarters', D(await ps.claimableOf(bob)), 20250 + 2250);
 
@@ -264,8 +267,11 @@ async function main() {
   // epoch 3 is the first one carol was present for the whole of
   near('a new bonder earns from the next epoch on',
     D(await ps.claimableOf(carol)), 3000 * (3920 / 6860), 1e-6);
-  eq('and with everyone eligible nothing is returned',
-    D((await ps.getSettlement(3)).refundedUsdt), 0);
+  {
+    const st = await ps.getSettlement(3);
+    eq('and with everyone eligible the two legs are the plain quarters',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), D(st.distributableProfitUsdt) / 2);
+  }
 
   step('time travel');
   await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
@@ -306,10 +312,25 @@ async function main() {
   const settlerBefore = await usdt.balanceOf(settler);
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
   await (await ps2.connect(settlerS).settleEpoch(0, E(1_000), 0, E(400), 0)).wait();
-  // profit 600: 150 gameCo, 150 team, 300 returned because nobody is bonded
-  eq('participant share returned when nobody is bonded',
-    D(settlerBefore - (await usdt.balanceOf(settler))), 300);
+  // profit 600. Nobody is bonded, so there is no participant to pay and the
+  // whole 600 goes to the two fixed recipients: 300 + 300.
+  //
+  // It is deliberately NOT returned to the settler. The settler is the party
+  // that authors the revenue figure and can also move the divisor by bonding
+  // into the pool from any address in the settlement block, so a refund path
+  // is a discount it can set for itself: measured, 49,950 of a 50,000 USDT
+  // leg recovered at 999 times the pool, unbonded a week later at no cost.
+  eq('the settler is never paid back, whatever the pool looks like',
+    D(settlerBefore - (await usdt.balanceOf(settler))), 600);
   eq('empty pool records zero participants', D((await ps2.getSettlement(0)).participantsUsdt), 0);
+  {
+    const st = await ps2.getSettlement(0);
+    eq('and the two fixed legs absorb the whole profit',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 600);
+    eq('the three legs are exactly the distributable profit',
+      D(st.distributableProfitUsdt),
+      D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt));
+  }
 
   step('funding required'); // ----------------
   const ps3 = await deploy('HCOWProfitShare', deployerS, [
@@ -426,8 +447,14 @@ async function main() {
   eq('the holder takes her share of the pool, not the whole leg',
     D(await ps6.claimableOf(alice)), 300);
   eq('the arrival takes none of it', D(await ps6.claimableOf(bob)), 0);
-  eq('the rest is returned to the settler and named in the settlement',
-    D((await ps6.getSettlement(1)).refundedUsdt), 2700);
+  {
+    const st = await ps6.getSettlement(1);
+    eq('the rest goes to the two fixed recipients, not to the settler',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 3000 + 2700);
+    eq('and the three legs are exactly the distributable profit',
+      D(st.distributableProfitUsdt),
+      D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt));
+  }
   eq('but the arrival is principal immediately', D(await ps6.bondedOf(bob)), 9000);
   eq('and it is earning from the next epoch',
     D(await ps6.eligibleSharesOf(bob)), D(await ps6.bondedOf(bob)));
@@ -437,8 +464,11 @@ async function main() {
   await (await ps6.connect(settlerS).settleEpoch(2, E(10_000), 0, E(4_000), 0)).wait();
   eq('the next epoch splits by weight', D(await ps6.claimableOf(bob)), 2700);
   eq('and the holder takes the rest', D(await ps6.claimableOf(alice)), 300 + 300);
-  eq('with everyone eligible nothing is returned',
-    D((await ps6.getSettlement(2)).refundedUsdt), 0);
+  {
+    const st = await ps6.getSettlement(2);
+    eq('with everyone eligible the two legs are the plain quarters',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), D(st.distributableProfitUsdt) / 2);
+  }
 
   // an untouched account is still credited for every epoch after it joined
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
@@ -586,6 +616,45 @@ async function main() {
   await (await ps8.connect(settlerS).settleEpoch(4, E(10_000), 0, E(4_000), 20_000)).wait();
   eq('a new window starts the allowance again', Number(await ps8.decayWindowPpm()), 20_000);
 
+  // ---- the settler cannot buy itself a discount by moving the divisor ----
+  // The eligible fraction is eligibleShares/totalShares and totalShares moves
+  // with any bond, from any address, in the settlement block. If the part the
+  // eligible pool cannot take went back to the settler, that is a discount the
+  // settler sets for itself at no HCOW cost, cycling on exactly the cadence it
+  // already controls. Measured before the fix: 999x the pool recovered 49,950
+  // of a 50,000 USDT leg.
+  {
+    const psD = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr,
+    ]);
+    const aD = await psD.getAddress();
+    await (await usdt.connect(settlerS).approve(aD, ethers.MaxUint256)).wait();
+    await (await hcow.transfer(carol, E(10_000))).wait();
+    await (await hcow.connect(carolS).approve(aD, ethers.MaxUint256)).wait();
+    // the settler's accomplice is a different address; blocking the settler
+    // address itself would not close anything
+    await (await hcow.transfer(bob, E(9_990_000))).wait();
+    await (await hcow.connect(bobS).approve(aD, ethers.MaxUint256)).wait();
+
+    await (await psD.connect(carolS).bond(E(10_000))).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psD.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    const before = await usdt.balanceOf(settler);
+    await (await psD.connect(bobS).bond(E(9_990_000))).wait();   // 999x the pool
+    await (await psD.connect(settlerS).settleEpoch(1, E(200_000), 0, 0, 0)).wait();
+    const spent = D(before - (await usdt.balanceOf(settler)));
+    // profit 200,000, so the settler funds the full 200,000 whatever it does.
+    // The 100,000 participant leg is scaled to 10,000 / 10,000,000 of itself.
+    eq('diluting the pool does not reduce what the settler pays', spent, 200_000);
+    const st = await psD.getSettlement(1);
+    near('the cohort is still quarantined out of the leg', D(st.participantsUsdt), 100, 1e-6);
+    eq('and what it could not take went to the two fixed recipients',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 200_000 - D(st.participantsUsdt));
+  }
+
   step('solvency'); // ----------------
   const owedUsdt = (await ps.claimableOf(bob)) + (await ps.claimableOf(carol))
     + (await ps.claimableOf(alice));
@@ -623,8 +692,14 @@ async function main() {
     // and with no deduction the settlement still goes through and the leg is
     // returned rather than being concentrated on the one wei holder
     await (await ps9.connect(settlerS).settleEpoch(1, E(4), 0, 0, 0)).wait();
-    near('the whole leg is returned to the settler',
-      D((await ps9.getSettlement(1)).refundedUsdt), 2, 1e-6);
+    {
+      const st = await ps9.getSettlement(1);
+      near('the two fixed recipients absorb the whole profit',
+        D(st.gameCompanyUsdt) + D(st.teamUsdt), 4, 1e-6);
+      near('and nothing was returned to the settler',
+        D(st.distributableProfitUsdt) - D(st.participantsUsdt)
+          - D(st.gameCompanyUsdt) - D(st.teamUsdt), 0, 1e-12);
+    }
     eq('and none of it went to the one wei holder', D(await ps9.claimableOf(alice)), 0);
   }
 
@@ -650,8 +725,9 @@ async function main() {
       [1, 0, 0, 0, 20_000], 'DeductionWithoutDistribution');
     await (await psR.connect(settlerS).settleEpoch(1, 0, 0, 0, 0)).wait();
     eq('and the pool is untouched by it', D(await psR.bondedOf(alice)), bondedBefore);
-    eq('nothing was returned either, there was nothing to return',
-      D((await psR.getSettlement(1)).refundedUsdt), 0);
+    eq('and a zero profit epoch pays nobody anything',
+      D((await psR.getSettlement(1)).gameCompanyUsdt)
+        + D((await psR.getSettlement(1)).teamUsdt), 0);
   }
 
   // ---------------- report ----------------

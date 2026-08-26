@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-343 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+350 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. `test/eventsigs.check.cjs` additionally checks every event the indexer
 declares against the compiled ABIs, in both directions, because a hand written
@@ -33,7 +33,7 @@ Slither 0.11.6 over the full source.
 npm run analyze
 ```
 
-Nine detector categories fire, 72 results. Every instance was reviewed by hand
+Nine detector categories fire, 71 results. Every instance was reviewed by hand
 and classified:
 
 | Detector | Assessment |
@@ -45,7 +45,7 @@ and classified:
 | `pragma`, `cyclomatic-complexity` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in sections 4 to 16**, which is the honest measure of what it is worth.
+in sections 4 to 17**, which is the honest measure of what it is worth.
 
 ### 3. Invariant (property) tests
 
@@ -337,7 +337,7 @@ Everything below was reproduced with a script before it was written down.
 
 | ID | Severity | Defect | Fix |
 | --- | --- | --- | --- |
-| E-6 | High | The participant leg was divided across the eligible shares alone, so it went entirely to whoever arrived first however small they were. Measured: one wei bonded in epoch 0, a 10,000,000 HCOW cohort bonded in epoch 1, and the settlement paid the one wei **300,000 USDT** and the cohort nothing, while the cohort funded 200,000 HCOW of the burn. | The leg is scaled to the eligible fraction of the pool and the remainder is returned to the settler and named in `refundedUsdt`. Took three attempts: see F-1 and F-2 in section 15 and G-1 and G-2 in section 16. |
+| E-6 | High | The participant leg was divided across the eligible shares alone, so it went entirely to whoever arrived first however small they were. Measured: one wei bonded in epoch 0, a 10,000,000 HCOW cohort bonded in epoch 1, and the settlement paid the one wei **300,000 USDT** and the cohort nothing, while the cohort funded 200,000 HCOW of the burn. | The leg is scaled to the eligible fraction of the pool and whatever the eligible pool cannot take goes to gameCompany and team, named in `gameCompanyUsdt` and `teamUsdt`. Took four attempts: F-1 and F-2 in section 15, G-1 and G-2 in section 16, H-1 in section 17. |
 | E-7 | Medium | The decay window ceiling **was** vetoable, directly contradicting C-2 above and the comment written beside it. A dominant holder requesting an unbond in front of a settlement shrank the live pool, the ceiling shrank with it, the settlement reverted with `DecayWindowExhausted(2996.25, 12624.84)`, and cancelling cost the holder **0.0**. Every ceiling with a base can be moved by moving the base: live invites the veto, snapshotted invites the parking, and counting pending unbonds loosens the rate bound for everyone else. | The ceiling is a rate. `decayWindowPpm` accumulates `deductPpm` against `MAX_DECAY_PER_WINDOW_PPM` and there is no base at all. The bound this gives is on the **bonded** pool, and because the window is fixed rather than sliding the honest worst case over an arbitrary thirty days is twice `MAX_DECAY_PER_WINDOW_PPM`, 6% and not 3%. See section 15. |
 | E-8 | Medium | The two funding floors in `fundRewards` conflicted, so during the final `MIN_REWARD_DURATION` of **every** period no top-up was accepted however large. Measured: 9,900,000 HCOW rejected with 60 seconds remaining. B-5 reintroduced verbatim by the C-1 fix. | The rate floor is taken against `minDuration` rather than against whatever is left of the old period. The first attempt waived the floor instead and was a defect: see F-3 in section 15. |
 
@@ -387,7 +387,7 @@ section 14 were defective, and two of them were worse than what they replaced.
 | ID | Severity | Defect introduced by a section 14 fix | Fix |
 | --- | --- | --- | --- |
 | F-1 | High | E-6 scaled the participant leg to the eligible fraction but left Rule 6 testing the **unscaled** figure, forty five lines earlier. A pool whose eligible part is a rounding error therefore computed a large leg, credited zero, and burned principal against it. Measured: one wei eligible against a 100,000,000 HCOW cohort, gate passed on 1.0 USDT, **zero credited, 2,000,000 HCOW destroyed**. That is the original Critical C-1 returning in new arithmetic, which is exactly what the rule it guards exists to stop. | The scaling is computed before the gate and the gate tests the credited figure. Regression tested. |
-| F-2 | Medium | E-6 returned the unpayable remainder to the settler with no event field naming it, so the published waterfall stopped reconciling in the log: measured across 26 settlements, **816,904 USDT** moved unlogged, in every one of the 26. | `EpochSettled` and the `Settlement` struct carry `refundedUsdt`, and the `epoch_settlements` view exposes it, so `distributableProfit = participants + refunded + gameCompany + team` reconciles from the log alone in every branch. The first attempt at this fix held the remainder in the contract instead; see G-1 and G-2 in section 16. |
+| F-2 | Medium | E-6 returned the unpayable remainder to the settler with no event field naming it, so the published waterfall stopped reconciling in the log: measured across 26 settlements, **816,904 USDT** moved unlogged, in every one of the 26. | `EpochSettled` and the `Settlement` struct carry `gameCompanyUsdt` and `teamUsdt` as actually paid, and the `epoch_settlements` view exposes both, so `distributableProfit = participants + gameCompany + team` reconciles from the log alone in every branch. Two further attempts were needed: see G-1, G-2 in section 16 and H-1 in section 17. |
 | F-3 | Medium | E-8 waived the rate floor whenever `remaining < MIN_REWARD_DURATION`, which is true for all but the first second of any period funded at the minimum duration. One wei on a year long duration then stretched a 9,900,000 HCOW budget out behind it, a **365 fold** slowdown. E-3 from section 8, returning. | The floor divides by `minDuration` rather than being waived. The 9,900,000 top-up E-8 was written for is still accepted; the stretch is refused. |
 | F-4 | Medium | E-10's global faucet ceiling had no reset, so 250 throwaway addresses closed the faucet for a day and refilling it did not reopen it. A cheap denial of service replacing a cheap drain. `status()` could not see the ceiling either, so the UI disabled nothing and let testers sign transactions that revert. | `resetWindow()`, owner only. `status()` returns the window state and folds it into `claimsLeft`. |
 | F-5 | High | E-9's anchorer quarantine filtered the receipts array by `roundId` alone. `roundId` does not identify a round; `(game_id, round_id)` does, which is the same fact E-13 turns on. One shared `roundId` dropped a **valid** round from another game, shifted every index after it, and handed players a proof belonging to a different record. The verification page then told them their receipt had been tampered with. | `prepare` returns the entries it kept, in the order it kept them, and the receipts are built from those. The quarantine list carries game and id. Regression tested; nothing in the suite reached `prepare` before, which is why it shipped. |
@@ -428,7 +428,7 @@ third-party audit is not optional.
 | ID | Severity | Defect introduced by a section 15 fix | Fix |
 | --- | --- | --- | --- |
 | G-1 | High | F-1 made Rule 6 test the credited participant figure, and F-2 made that figure include money carried from an earlier epoch. Between them they killed **Rule 4**: an epoch bringing in no revenue at all could satisfy the gate on a carried balance and burn principal. Measured: `gross 0, direct 0, opex 0`, no USDT entering the contract, `deductPpm 20000` accepted, **2,000 HCOW destroyed** against a distributable profit of zero. Not contrived; it fired 24 times in a 1,600 operation randomised walk. | The carry is gone, so the gate reads only this epoch's own money and Rule 4 holds by construction. Regression tested directly. |
-| G-2 | High | F-2's carried balance was a pot with no link to the shares it was deferred for. Everybody unbonds, `totalShares` reaches zero, one wei bonds, and two settlements later that wei withdraws the entire pot. Measured: **500 USDT withdrawn for 1 wei of HCOW**. The window arose unprompted in a 1,200 operation run holding 5,142 USDT. E-6's own defect, rebuilt out of the fix for it. | The remainder is returned to the settler again, as E-6 did, but now named in `refundedUsdt` on the event, in the `Settlement` struct and in the `epoch_settlements` view. That is what F-2 was actually for; holding the money was not. `deferredUsdt` is deleted. |
+| G-2 | High | F-2's carried balance was a pot with no link to the shares it was deferred for. Everybody unbonds, `totalShares` reaches zero, one wei bonds, and two settlements later that wei withdraws the entire pot. Measured: **500 USDT withdrawn for 1 wei of HCOW**. The window arose unprompted in a 1,200 operation run holding 5,142 USDT. E-6's own defect, rebuilt out of the fix for it. | The remainder no longer goes anywhere the settler or an arriving bonder can reach: it is split between gameCompany and team. `deferredUsdt` is deleted. Returning it to the settler, which is what this fix did first, turned out to be its own High: see H-1 in section 17. |
 | G-3 | High | Not introduced by a fix, and not a contract defect: `test/invariant.staking.cjs` called `hre.ethers.provider`, which is `undefined` because this project loads no hardhat-ethers plugin. Every `fundRewards`, `claimHcow` and `claimCommission` threw inside the surrounding try and was booked as a revert. Over 1,760 operations: **fundRewards ok 0, claimHcow ok 0, claimCommission ok 0**, and the suite printed "all invariants held". The entire reward and commission surface had zero invariant coverage, including everything sections 14 and 15 changed. | One line. The run now executes 85 fundings, 165 reward claims and 77 commission claims, and the invariants do hold. |
 | G-4 | Medium | F-3's widened RPC pattern went too far the other way: a bare `limit exceeded` alternative matched quota messages, so a node that had run out of monthly capacity was treated as refusing a range and never failed over. Five of sixteen realistic messages misclassified. | The bare alternative removed; the specific range phrasings kept. |
 | G-5 | Low | E-9's failure counter was keyed on the epoch number alone. Epoch numbers come from the wall clock, so two ledgers driven from one process share them and one transient failure on each read as one epoch failing twice. It was also not cleared on two of the three success paths. | Keyed on contract and epoch, cleared on every success. |
@@ -465,6 +465,36 @@ Not in scope and not proposed for it, but load-bearing: `lib/anchor.js`,
 functions, both SQL files, `web/verify.html`, `web/hcow-record.js` and
 `scripts/deploy.cjs`. The two worst findings of the 25 August round were in
 that list, not in the contracts.
+
+### 17. Focused re-audit of the settlement rewrite, same day
+
+The distribution logic in `settleEpoch` had by this point been rewritten three
+times in one day, each version fixing the last version's defect. A fourth pass
+was run against that function alone, on the assumption that the third version
+was also broken. It was, and the finding had been present since the first
+rewrite without any of the three earlier passes seeing it.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| H-1 | High | The unpayable part of the participant leg was returned to `msg.sender`, and `msg.sender` is the settler: the one party that both authors the revenue figure and can move the divisor. `participants = mulDiv(leg, eligibleShares, totalShares)` reads `totalShares` live, and any bond in the settlement block, from any address, inflates it without limit. Measured: bonding 999 times the pool cut the settler's outlay from 100% to **50.05%**, recovering **49,950 of a 50,000 USDT** participant leg, then unbonding a week later at zero HCOW cost. `UNBOND_COOLDOWN` and `MIN_EPOCH_INTERVAL` are both seven days, so the capital cycles on exactly the cadence the settler already controls. Four measured epochs: settler HCOW delta **0**, USDT spent **200,200 instead of 400,000**, cohort left with **200 instead of 200,000**, a 99.9% loss. | The remainder goes to gameCompany and team instead, neither of which may be the settler. Diluting the pool now costs the settler the same and gains it nothing, so the incentive is removed rather than bounded. Regression tested with the accomplice on a separate address, because blocking the settler's own address closes nothing. |
+| H-2 | Medium | The same money was also what arrivals paid for. A bond made just before a settlement absorbs the deduction at the full rate, earns nothing that epoch, and its share of the leg was the settler's discount. Measured: a 1,000,000 HCOW arrival lost 20,000 HCOW, was credited 0 USDT, and cut the settler's outlay from 1,000 to 750. | Closed by H-1's fix. The arrival still absorbs the deduction, which is the disclosed quarantine trade-off, but nothing about it now enriches the settler. |
+| H-3 | Medium | `_bookmark` floored `rewardDebt`, so `floor(s·accNow) − floor(s·accThen)` could credit up to one wei more than the pool received on every share-count change. The contract retains exactly what it distributes, so there is no cushion. | `Math.Rounding.Ceil` on the debt. It cannot over-credit by construction: the credit is now bounded above by the true entitlement. Honest note: **this one was not independently reproduced here.** The auditor measured a gap opening at epoch 7 of a 40 epoch run and a claim reverting with `ERC20InsufficientBalance`; two attempts to rebuild that scenario produced no gap on either the fixed or the unfixed build. The fix is kept because the unrounded form is provably capable of over-crediting and the rounded form provably is not. |
+| H-4 | Low | The event NatSpec said the two 25% legs "are exactly a quarter of `distributableProfitUsdt` each". False whenever `profit % 4 != 0`, and false in general once the unclaimed remainder is added to them. Fired on 161 of 239 randomised settlements. | Both legs are now stated in the event and the struct as actually paid, and the comment says what the real rule is. |
+
+**What the pass could not break**, at the scale it tried: Rule 4 across a 306
+cell grid of profit values and share shapes, zero cells burning principal
+against a sub-1-USDT credit; Rule 6 at a worst case of 2.00 USDT buying 200,000
+HCOW of burn, twenty times better than the version before it and 7.7e12 times
+better than the original; the waterfall identity across four branches and 391
+randomised settlements; conservation of HCOW, USDT and shares over 3,200
+operations on 20 seeds with the settler acting as a participant; and the
+eligibility machinery, with no retroactive or double credit found.
+
+**On the test estate.** The invariant harness never had the settler bond, which
+is why H-1 survived three passes, and its pools were large enough that H-3's
+one-wei drift was absorbed. Both are now addressed: the settler participates,
+and bond sizes are sometimes small enough that the truncation cushion cannot
+hide drift.
 
 ## What is still missing
 

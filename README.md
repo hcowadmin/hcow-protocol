@@ -163,10 +163,13 @@ the distribution policy, no distribution means no deduction, is enforced here
 rather than in the UI, as the spec requires, and the test is on what actually
 reached participants rather than on what was computed: an epoch that credits
 nobody cannot consume anybody's principal. The participant leg is scaled to
-the eligible share of the pool and whatever it could not take is returned to
-the settler in the same transaction and named in the settlement, so
-`distributableProfit = participants + refunded + gameCompany + team` in every
-branch. The USDT is pulled in during settlement, so a published figure that
+the eligible share of the pool, and whatever the eligible pool could not take
+goes to the two fixed recipients rather than back to the settler: the settler
+is the one party that both authors the revenue figure and can move the divisor,
+by bonding into the pool from any address in the settlement block, so a refund
+path is a discount it sets for itself. Both fixed legs are stated in the
+settlement as actually paid, so
+`distributableProfit = participants + gameCompany + team` in every branch. The USDT is pulled in during settlement, so a published figure that
 was never funded cannot be settled. Settled epochs have no edit path.
 
 **What it cannot enforce.** Gross revenue and the cost lines come from off

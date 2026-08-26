@@ -89,7 +89,7 @@ const PROFIT_SHARE_EVENTS = [
   "event UnbondCancelled(address indexed account, uint256 hcowAmount, uint256 sharesMinted, uint256 forfeited)",
   "event Unbonded(address indexed account, uint256 hcowAmount, uint256 forfeited)",
   "event UsdtClaimed(address indexed account, uint256 amount)",
-  "event EpochSettled(uint64 indexed epoch, uint256 grossReceivedUsdt, uint256 directCostsUsdt, uint256 netRevenueUsdt, uint256 operatingCostsUsdt, uint256 distributableProfitUsdt, uint256 participantsUsdt, uint256 refundedUsdt, uint256 hcowDeducted, uint256 snapshotBondedHcow)",
+  "event EpochSettled(uint64 indexed epoch, uint256 grossReceivedUsdt, uint256 directCostsUsdt, uint256 netRevenueUsdt, uint256 operatingCostsUsdt, uint256 distributableProfitUsdt, uint256 participantsUsdt, uint256 gameCompanyUsdt, uint256 teamUsdt, uint256 hcowDeducted, uint256 snapshotBondedHcow)",
   // Governance. These belong to HCOWProfitShare and were previously declared
   // against HCOWStaking, which emits none of them: the interface used for the
   // ProfitShare address did not know the topics, parseLog returned null and

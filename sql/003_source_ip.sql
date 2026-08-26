@@ -12,6 +12,6 @@ alter table public.rounds add column if not exists source_ip text;
 create index if not exists rounds_player_idx on public.rounds (player_ref, ended_at);
 create index if not exists rounds_ip_idx     on public.rounds (source_ip, ended_at);
 
--- EpochSettled gained a `refundedUsdt` field. Re-run 002 to pick it up in the
+-- EpochSettled gained `gameCompanyUsdt` and `teamUsdt` fields. Re-run 002 to pick it up in the
 -- epoch_settlements view; the view is `create or replace` and holds no data,
 -- so re-running it is safe at any time.

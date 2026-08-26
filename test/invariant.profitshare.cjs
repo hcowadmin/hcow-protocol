@@ -65,6 +65,12 @@ async function runSeed(seed, opCount) {
   const team = await provider.getSigner(3);
   const actors = [];
   for (let i = 4; i < Math.min(10, all.length); i++) actors.push(await provider.getSigner(i));
+  // The settler participates too. Nothing forbids it, it is the party that both
+  // authors the revenue figure and can move the eligible fraction by bonding in
+  // the settlement block, and a harness in which it never bonds cannot see what
+  // that is worth. Scanned in the invariant loop as well, or its position would
+  // be missing from every solvency sum.
+  actors.push(settler);
 
   const hcow = await deploy('MockHCOW', deployer);
   const usdt = await deploy('MockUSDT', deployer);
@@ -85,6 +91,8 @@ async function runSeed(seed, opCount) {
   }
   await (await usdt.connect(deployer).mint(await settler.getAddress(), E(50_000_000))).wait();
   await (await usdt.connect(settler).approve(psAddr, ethers.MaxUint256)).wait();
+  await (await hcow.connect(deployer).transfer(await settler.getAddress(), E(1_000_000))).wait();
+  await (await hcow.connect(settler).approve(psAddr, ethers.MaxUint256)).wait();
 
   // Running expectations the contract must never contradict.
   let lastAccUsdt = 0n;
@@ -110,7 +118,12 @@ async function runSeed(seed, opCount) {
 
     try {
       if (action === 'bond') {
-        await (await ps.connect(actor).bond(E(int(1, 50_000)))).wait();
+        // Sometimes tiny. Rounding drift between the credit and what the
+        // contract retains is invisible at large pool sizes, because the
+        // truncation cushion outruns it: the one wei per share-count change
+        // that stranded a real claim only shows up against a small pool.
+        const amt = int(1, 4) === 1 ? BigInt(int(1, 5_000)) : E(int(1, 50_000));
+        await (await ps.connect(actor).bond(amt)).wait();
       } else if (action === 'requestUnbond') {
         const owned = await ps.bondedOf(await actor.getAddress());
         if (owned > 0n) {
