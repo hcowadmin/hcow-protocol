@@ -1,0 +1,35 @@
+# Foundry sits alongside the Hardhat project rather than replacing it.
+#
+# Hardhat still owns compilation, deployment, the unit suites and the flattened
+# output that BscScan verification uses. Foundry is here for one thing the
+# hand-written suites structurally cannot do: let a machine search the state
+# space instead of replaying the sequences the author thought of. Every defect
+# in this repository's history was found by someone constructing a scenario,
+# and a scenario the author does not think of is not tested by a suite the
+# author wrote.
+[profile.default]
+src = "contracts"
+test = "foundry"
+out = "foundry-out"
+cache_path = "foundry-cache"
+libs = ["node_modules", "foundry/lib"]
+# svm-rs cannot reach binaries.soliditylang.org from here, and the pinned
+# compiler has to match what Hardhat and BscScan use anyway.
+solc = "/usr/local/bin/solc"
+evm_version = "paris"
+optimizer = true
+optimizer_runs = 200
+remappings = ["@openzeppelin/=node_modules/@openzeppelin/", "forge-std/=foundry/lib/forge-std/src/"]
+
+[profile.default.invariant]
+runs = 256
+depth = 128
+fail_on_revert = false
+call_override = false
+shrink_run_limit = 5000
+
+[profile.deep.invariant]
+runs = 2000
+depth = 400
+fail_on_revert = false
+shrink_run_limit = 20000

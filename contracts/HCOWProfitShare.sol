@@ -103,6 +103,22 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint256 public constant MIN_PARTICIPANT_USDT = 1e18;
 
     /**
+     * @notice Floor on the pool the eligible fraction is measured against.
+     *
+     * The fraction is eligibleShares / (the pool the epoch began with). Below
+     * this floor that denominator stops being a meaningful description of a
+     * participant base: one wei bonded before anybody else, with a ten million
+     * HCOW cohort arriving during the epoch, would otherwise take the entire
+     * distribution, because the cohort is quarantined and the wei is all that
+     * is left of the epoch-start pool. Measured at 300,000 USDT to one wei.
+     *
+     * With the floor, a pool that small takes essentially nothing and the rest
+     * goes to the two fixed recipients. A pool above the floor is unaffected.
+     * It is a launch-window rule and it is deliberately blunt.
+     */
+    uint256 public constant MIN_POOL_SHARES = 1_000e18;
+
+    /**
      * @notice Minimum wait between two settlements.
      *
      * Arrivals are quarantined for the epoch they land in, and an epoch that
@@ -190,6 +206,26 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint256 public totalPendingUnbond;
 
     uint256 public accUsdtPerShare;
+
+    /**
+     * @notice totalShares as it stood at the end of the previous settlement.
+     *
+     * This is the denominator of the eligible fraction, and it is a snapshot
+     * rather than the live figure for one reason: the live figure moves, and
+     * the settler can move it. `bond` is permissionless, so anyone including
+     * the settler, from any address, can inflate totalShares inside the
+     * settlement block itself. Measured against the live figure, bonding 999
+     * times the pool cut an honest holder's share of the participant leg from
+     * 100,000 USDT to 100, and the difference went to the two fixed
+     * recipients. The settler does not receive it, but the settler is not
+     * independent of them, and a contract that is marketed as enforcing a
+     * 50/25/25 split has to actually enforce it.
+     *
+     * Taken as of the previous settlement, the denominator is a fact about the
+     * pool the epoch began with. Nothing that happens during the epoch, or in
+     * the settlement block, can change it.
+     */
+    uint256 public sharesAtLastSettlement;
 
 
     /**
@@ -471,8 +507,23 @@ contract HCOWProfitShare is ReentrancyGuard {
         if (owned == 0) revert NothingBonded();
         if (hcowAmount > owned) revert InsufficientBonded(hcowAmount, owned);
 
-        // Burn shares proportional to the HCOW being pulled out.
-        uint256 sharesToBurn = (hcowAmount * uint256(a.shares)) / owned;
+        // Burn shares proportional to the HCOW being pulled out, rounded UP.
+        //
+        // The pool's price is totalBondedHcow / totalShares. This function
+        // removes exactly `hcowAmount` from the numerator, so it must remove at
+        // least the proportional share count from the denominator or the price
+        // falls and the difference is taken from everyone who stayed. Floored,
+        // it fell: measured, one wei requested and immediately cancelled moved
+        // one wei of bonded HCOW from another holder to the caller, repeatably.
+        // A wei per transaction is not worth the gas to steal, but a pool price
+        // that drifts down on every exit is the shape that cost Balancer 128
+        // million dollars in November 2025, and there is no reason to ship it.
+        //
+        // Rounding up costs the caller at most one share, which is worth less
+        // than one wei of HCOW, and it is the direction that favours the pool.
+        // It cannot exceed the caller's balance: at hcowAmount == owned it is
+        // exactly a.shares, and below that it is strictly less.
+        uint256 sharesToBurn = Math.mulDiv(hcowAmount, uint256(a.shares), owned, Math.Rounding.Ceil);
         if (sharesToBurn == 0) revert ZeroAmount();
 
         // Take it out of this epoch's arrivals first. They are the shares
@@ -673,9 +724,42 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 toTeam;
         {
             uint256 leg = (profit * PARTICIPANT_BPS) / 10_000;
-            participants = (eligibleShares == 0 || totalShares == 0)
+            // The whole leg goes to the eligible pool. Nothing that happens
+            // during the epoch, or in the settlement block, changes that.
+            //
+            // Three divisors were tried before this one and each was worse.
+            // The live share count let anyone shrink the eligible fraction by
+            // bonding in the settlement block: measured, an honest holder's
+            // 100,000 USDT leg became 100. Freezing the denominator to the
+            // epoch-start pool moved the same attack to the numerator, because
+            // requestUnbond followed by cancelUnbond in one block removes a
+            // position from eligibleShares and puts it back as new shares at
+            // zero cost: measured, 150 USDT of a 300,000 USDT leg reached
+            // participants. And any divisor larger than eligibleShares hands
+            // the difference to the two fixed recipients whenever somebody
+            // simply leaves mid epoch, which is an ordinary user action: a
+            // holder exiting a 50/50 pool moved the split from 50/25/25 to
+            // 25/37.5/37.5.
+            //
+            // Dividing by eligibleShares itself removes the lever entirely.
+            // Shrinking the eligible pool no longer concentrates the leg on a
+            // smaller base for free; it just means whoever is left takes what
+            // the leavers gave up, and getting out of the eligible pool costs
+            // the position.
+            //
+            // The floor is what stops the degenerate end of that. One wei
+            // eligible against a ten million HCOW arrival would otherwise take
+            // 300,000 USDT. It applies only while the pool the epoch began with
+            // was itself below the floor, so it is a launch window rule and
+            // cannot be triggered against a real pool: the epoch-start figure
+            // is a snapshot and nothing in the block can move it.
+            uint256 denom = eligibleShares;
+            if (sharesAtLastSettlement < MIN_POOL_SHARES && denom < MIN_POOL_SHARES) {
+                denom = MIN_POOL_SHARES;
+            }
+            participants = (eligibleShares == 0 || denom == 0)
                 ? 0
-                : Math.mulDiv(leg, eligibleShares, totalShares);
+                : Math.mulDiv(leg, eligibleShares, denom);
             // The fixed quarter, plus half of whatever the eligible pool could
             // not take. The team gets the rest of the profit, so rounding dust
             // never strands here and the three legs add up to `profit` exactly
@@ -771,6 +855,9 @@ contract HCOWProfitShare is ReentrancyGuard {
         accAtEpoch[epoch] = accUsdtPerShare;
         poolIndexAtEpoch[epoch] = poolIndex;
         totalNewShares = 0;
+        // The pool the next epoch begins with. Written after the deduction so
+        // it reflects the share count, which the deduction does not change.
+        sharesAtLastSettlement = totalShares;
         lastSettledAt = uint64(block.timestamp);
 
         _settlements[epoch] = Settlement({
@@ -1014,6 +1101,11 @@ contract HCOWProfitShare is ReentrancyGuard {
         a.rewardDebt = Math.mulDiv(
             s - uint256(a.newShares), accUsdtPerShare, ACC_PRECISION, Math.Rounding.Ceil
         );
-        a.deductDebt = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION);
+        // Rounded up for the same reason as rewardDebt above. This one is a
+        // published figure rather than a payout, so a drift here cannot strand
+        // anyone's money, but it can make the sum of every account's lifetime
+        // deduction exceed the burn that actually happened, and a reconciliation
+        // that does not reconcile is its own kind of defect.
+        a.deductDebt = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION, Math.Rounding.Ceil);
     }
 }

@@ -20,10 +20,14 @@
     "test:profitshare": "hardhat run test/profitshare.test.cjs",
     "test:staking": "hardhat run test/staking.test.cjs",
     "test:faucet": "hardhat run test/faucet.test.cjs",
-    "test:all": "hardhat compile && hardhat run test/ledger.test.cjs && hardhat run test/profitshare.test.cjs && hardhat run test/staking.test.cjs && hardhat run test/faucet.test.cjs && node test/eventsigs.check.cjs && node test/keccak.check.cjs && node test/web.check.cjs && hardhat run test/anchor.check.cjs && hardhat run test/invariant.profitshare.cjs && hardhat run test/invariant.staking.cjs",
+    "test:all": "hardhat compile && hardhat run test/ledger.test.cjs && hardhat run test/profitshare.test.cjs && hardhat run test/staking.test.cjs && hardhat run test/faucet.test.cjs && node test/eventsigs.check.cjs && node test/keccak.check.cjs && node test/web.check.cjs && hardhat run test/anchor.check.cjs && hardhat run test/merkle.differential.cjs && hardhat run test/invariant.profitshare.cjs && hardhat run test/invariant.staking.cjs && forge test",
     "test:invariant": "hardhat run test/invariant.profitshare.cjs && hardhat run test/invariant.staking.cjs",
-    "analyze": "slither . --ignore-compile --exclude-dependencies",
-    "test:eventsigs": "node test/eventsigs.check.cjs"
+    "analyze": "slither . --compile-force-framework hardhat --ignore-compile --exclude-dependencies",
+    "test:eventsigs": "node test/eventsigs.check.cjs",
+    "test:merkle": "hardhat run test/merkle.differential.cjs",
+    "test:adversary": "hardhat run test/adversary.settler.cjs",
+    "test:fuzz": "forge test",
+    "test:fuzz:deep": "FOUNDRY_PROFILE=deep forge test"
   },
   "keywords": [],
   "author": "",

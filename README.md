@@ -129,15 +129,24 @@ npx hardhat compile
 npm run test:all
 ```
 
+`test:all` ends with `forge test`. A fresh clone needs the Foundry standard
+library once, because it is not committed:
+
+```bash
+git clone --depth 1 https://github.com/foundry-rs/forge-std foundry/lib/forge-std
+```
+
 | suite | result |
 |---|---|
 | `HCOWLedger` | 81 passed, 0 failed |
-| `HCOWProfitShare` | 139 passed, 0 failed |
+| `HCOWProfitShare` | 153 passed, 0 failed |
 | `HCOWStaking` | 85 passed, 0 failed |
 | `HCOWFaucet` | 38 passed, 0 failed |
 | keccak256 against a reference | 318 of 318 match |
 | browser page against the libraries | every vector and proof matches |
 | end to end anchoring | 47 receipts verified, tampering rejected |
+| merkle builder against the on-chain verifier | 153 checks across 26 tree sizes |
+| machine-searched invariants (`npm run test:fuzz`) | 25 properties + 6 tests, 32,768 calls each |
 
 ### One thing to know before writing more tests
 
@@ -148,6 +157,16 @@ as "no pending unbond" because of it, which looked like a contract bug and
 was not. Every revert assertion in these suites therefore issues a raw
 `eth_call` with an explicit sender. For contracts that move money the sender
 must never be ambiguous, not even in a test.
+
+And the larger one. These suites replay sequences their author thought of, so a
+sequence nobody thought of is not tested. `foundry/` exists for that: 25
+properties a machine searches for counterexamples to, over 32,768 generated
+call sequences each.
+
+Before trusting any property, delete the guard it claims to protect and check
+that it fails. Six of the seven economic guards in `HCOWProfitShare` could be
+deleted without this suite noticing, until the properties that name them were
+written. `SECURITY.md` section 2b has the current table.
 
 ---
 
@@ -363,8 +382,8 @@ them against this list before touching chain 56.
 | owner | Ledger, ProfitShare, Staking | can set the settler and both payout recipients, so it can recover half of every settlement while burning bonded principal at the ceiling. Cannot take bonded HCOW. `HCOWProfitShare` and `HCOWStaking` have no `renounceOwnership`, so a lost key freezes those roles forever | multisig |
 | settler | ProfitShare | cannot take bonded HCOW. Can burn up to 3% of the bonded pool per decay window; the window is fixed rather than sliding and `MIN_EPOCH_INTERVAL` is seven days, so the measured worst case is 4.92% over any thirty days and 5.87% over thirty-seven, at a partly refunded cost | hardware wallet, holds live USDT |
 | anchorer | Ledger | junk roots in elapsed periods. Loud, and revocable by the owner. Cannot touch history or future periods | hot wallet, gas only |
-| gameCompany / team | ProfitShare | its own 25% leg | multisig |
-| rewardFunder | Staking | cannot extract. Can decline to fund, which ends the reward stream at `periodFinish` | hardware wallet, holds HCOW |
+| gameCompany / team | ProfitShare | its own 25% leg. Cannot take any part of the participant leg: an exit or an arrival mid-epoch leaves the leg with the eligible pool | multisig |
+| rewardFunder | Staking | cannot extract, and cannot slow a live stream: a funding may add tokens or add time, never redistribute what is promised. Can decline to fund, which ends the reward stream at `periodFinish` | hardware wallet, holds HCOW |
 | deployer | all | on a hand-typed Remix deployment, whatever it types | hardware wallet, tuples checked by a second person |
 | Supabase `service_role` | off chain | **can insert rounds that then anchor as genuine.** The chain proves nothing was altered after anchoring, not that it was true before | treat as a key, rotate, never leaves the dashboard |
 

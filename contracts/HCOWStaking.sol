@@ -523,20 +523,27 @@ contract HCOWStaking is ReentrancyGuard {
         // exists to create. A funding may add tokens or add time. It may never
         // redistribute what is already promised.
         //
-        // The floor is taken against the duration the new stream is actually
-        // allowed to run for, which is minDuration, not against whatever is
-        // left of the old period. Measured against `remaining` the two floors
-        // conflict: inside the last MIN_REWARD_DURATION of a period the
-        // duration floor forces at least a day while a rate floor set by a
-        // nearly finished period is arbitrarily high, so between them they
-        // refused every top up in that window however large. Waiving the floor
-        // there instead was worse: one second into a one day period the waiver
-        // is live for the rest of it, and a single wei on a year long duration
-        // then stretched a 9,900,000 HCOW budget out behind it, a 365 fold
-        // slowdown. Dividing by minDuration accepts the top up and refuses the
-        // stretch, because the stretch is what makes newRate fall below it.
-        uint256 minRate = leftover / (remaining >= MIN_REWARD_DURATION ? remaining : minDuration);
-        if (newRate < minRate) revert BadDuration(duration);
+        // The rate floor is the rate itself: leftover / remaining IS rewardRate,
+        // by construction. A funding may add tokens or add time. It may never
+        // redistribute what is already promised, and lowering the rate of a
+        // live period is exactly that.
+        //
+        // Two weaker forms were tried and both were defects. Waiving the floor
+        // inside the last MIN_REWARD_DURATION let one wei on a year long
+        // duration stretch a 9,900,000 HCOW budget out behind it, a 365 fold
+        // slowdown. Dividing by minDuration instead let one wei halve the rate
+        // of a live period, repeatably: measured 1e18 -> 5e17 -> 2.5e17 over
+        // five cycles, each deferring another half day.
+        //
+        // The cost of the strict form is a real one and it is accepted: inside
+        // the tail of a fast period, a top up that is not large enough to
+        // sustain the current rate over a full day is refused. The funder waits
+        // for the period to lapse. That is a delay, not a loss, and the
+        // alternative is a promise the contract does not keep.
+        if (block.timestamp < periodFinish) {
+            uint256 minRate = leftover / remaining;
+            if (newRate < minRate) revert BadDuration(duration);
+        }
         if (newRate == 0) revert BadDuration(duration);
         rewardRate = newRate;
         // The remainder of the division would otherwise be lost for good.

@@ -217,31 +217,35 @@ async function main() {
   eq('carol has no retroactive claim', D(await ps.claimableOf(carol)), 0);
   eq('bob keeps his unclaimed balance', D(await ps.claimableOf(bob)), 20250);
 
-  // second distribution splits by current weight: pool 7840, carol holds half
-  // (epoch 2 deducts nothing, so the cooldown from epoch 1 is irrelevant here)
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
   await (await ps.connect(settlerS).settleEpoch(2, E(20_000), 0, E(8_000), 0)).wait();
-  // profit 12,000 -> participants 6,000. Carol bonded during epoch 2, so
-  // epoch 2 is not hers: she holds half the pool and half the leg is returned
-  // to the settler, who funds it again in the epoch she becomes eligible for.
-  // The other half goes to the two who were already earning, 980:2940.
+  // profit 12,000 -> participant leg 6,000. Carol bonded during epoch 2, so
+  // epoch 2 is not hers at all.
+  //
+  // The leg is measured against the pool the epoch BEGAN with, which was alice
+  // 980 plus bob 2940. Carol's arrival does not shrink it: she was not part of
+  // the participant base the revenue accrued against, and the epoch's leg
+  // belongs entirely to those who were. Measuring it against the live share
+  // count instead handed carol's notional half to the two fixed recipients,
+  // and since bond() is permissionless that was a lever anyone could pull on
+  // any epoch from any address, the settler included.
   eq('a new bonder earns nothing in the epoch it arrived in',
     D(await ps.claimableOf(carol)), 0);
-  eq('and her half of the leg is not handed to the incumbents either',
-    D(await ps.claimableOf(alice)) + D(await ps.claimableOf(bob)) - 20250, 3000);
+  eq('and her arrival does not shrink the leg for those already here',
+    D(await ps.claimableOf(alice)) + D(await ps.claimableOf(bob)) - 20250, 6000);
   {
     const st = await ps.getSettlement(2);
-    eq('her half goes to the two fixed recipients, not to the incumbents and not to the settler',
-      D(st.gameCompanyUsdt) + D(st.teamUsdt), 6000 + 3000);
+    eq('the two fixed recipients take their own half and nothing more',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 6000);
   }
-  eq('alice earned her quarter of the eligible half', D(await ps.claimableOf(alice)), 750);
+  eq('alice earned her quarter of the leg', D(await ps.claimableOf(alice)), 1500);
   {
     const st = await ps.getSettlement(2);
     eq('and the waterfall reconciles exactly in the log',
       D(st.distributableProfitUsdt),
       D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt));
   }
-  eq('bob earned his three quarters', D(await ps.claimableOf(bob)), 20250 + 2250);
+  eq('bob earned his three quarters', D(await ps.claimableOf(bob)), 20250 + 4500);
 
   step('unbonding'); // ---------------- unbonding ----------------
   await rv('cannot cancel without a pending unbond', ps, aliceS, 'cancelUnbond', [], 'NoPendingUnbond');
@@ -263,14 +267,23 @@ async function main() {
   await (await ps.connect(settlerS).settleEpoch(3, E(10_000), 0, E(4_000), 20_000)).wait();
   eq('pool absorbed the deduction', D(await ps.totalBondedHcow()), D(poolBefore) * 0.98);
   eq('pending unbond untouched by deduction', D(await ps.totalPendingUnbond()), 980);
-  eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 750);
-  // epoch 3 is the first one carol was present for the whole of
+  eq('exiting alice earned nothing new', D(await ps.claimableOf(alice)), 1500);
+  // Epoch 3 is the first one carol was present for the whole of. Alice
+  // requested her unbond during it, so she is no longer eligible. What she
+  // gave up goes to the holders who stayed, not to the two fixed recipients:
+  // the leg is divided among the eligible pool, whatever size that pool is.
+  //
+  // Sending it to the recipients instead was measured moving an ordinary
+  // 50/25/25 settlement to 25/37.5/37.5, triggered by a user simply leaving.
   near('a new bonder earns from the next epoch on',
     D(await ps.claimableOf(carol)), 3000 * (3920 / 6860), 1e-6);
   {
     const st = await ps.getSettlement(3);
-    eq('and with everyone eligible the two legs are the plain quarters',
+    eq('and an exit does not enrich the two fixed recipients',
       D(st.gameCompanyUsdt) + D(st.teamUsdt), D(st.distributableProfitUsdt) / 2);
+    eq('the three legs still sum exactly',
+      D(st.distributableProfitUsdt),
+      D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt));
   }
 
   step('time travel');
@@ -439,18 +452,20 @@ async function main() {
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
   await (await ps6.connect(settlerS).settleEpoch(1, E(10_000), 0, E(4_000), 0)).wait();
 
-  // Alice is one tenth of the pool, so she takes one tenth of the leg and the
-  // other nine tenths go back to the settler. Paying her the whole leg because
-  // she is the only eligible holder is the defect this replaced: one wei bonded
-  // an epoch early would otherwise take the entire distribution away from a
-  // pool a hundred million times its size.
-  eq('the holder takes her share of the pool, not the whole leg',
-    D(await ps6.claimableOf(alice)), 300);
+  // Alice was the entire participant base for epoch 1. Bob's 9,000 arrived
+  // during it and is quarantined, so it neither earns nor dilutes: the whole
+  // leg is hers. That is the quarantine rule doing what it says.
+  //
+  // The absurd version of this, one wei taking the distribution from a ten
+  // million HCOW cohort, is stopped by MIN_POOL_SHARES rather than by diluting
+  // every honest holder. See the launch window test further down.
+  eq('the holder takes the whole leg, because she was the whole participant base',
+    D(await ps6.claimableOf(alice)), 3000);
   eq('the arrival takes none of it', D(await ps6.claimableOf(bob)), 0);
   {
     const st = await ps6.getSettlement(1);
-    eq('the rest goes to the two fixed recipients, not to the settler',
-      D(st.gameCompanyUsdt) + D(st.teamUsdt), 3000 + 2700);
+    eq('the two fixed recipients take their own half and nothing more',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 3000);
     eq('and the three legs are exactly the distributable profit',
       D(st.distributableProfitUsdt),
       D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt));
@@ -463,7 +478,7 @@ async function main() {
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
   await (await ps6.connect(settlerS).settleEpoch(2, E(10_000), 0, E(4_000), 0)).wait();
   eq('the next epoch splits by weight', D(await ps6.claimableOf(bob)), 2700);
-  eq('and the holder takes the rest', D(await ps6.claimableOf(alice)), 300 + 300);
+  eq('and the holder takes the rest', D(await ps6.claimableOf(alice)), 3000 + 300);
   {
     const st = await ps6.getSettlement(2);
     eq('with everyone eligible the two legs are the plain quarters',
@@ -650,9 +665,13 @@ async function main() {
     // The 100,000 participant leg is scaled to 10,000 / 10,000,000 of itself.
     eq('diluting the pool does not reduce what the settler pays', spent, 200_000);
     const st = await psD.getSettlement(1);
-    near('the cohort is still quarantined out of the leg', D(st.participantsUsdt), 100, 1e-6);
-    eq('and what it could not take went to the two fixed recipients',
-      D(st.gameCompanyUsdt) + D(st.teamUsdt), 200_000 - D(st.participantsUsdt));
+    // The leg is measured against the pool epoch 1 began with, which the
+    // in-block bond is not part of, so the honest holder keeps all of it.
+    // Against the live share count this was 100 instead of 100,000.
+    eq('and the honest holder keeps the whole leg', D(st.participantsUsdt), 100_000);
+    eq('the accomplice takes nothing', D(await psD.claimableOf(bob)), 0);
+    eq('and the three legs still sum exactly', D(st.distributableProfitUsdt),
+      D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt));
   }
 
   step('solvency'); // ----------------
@@ -728,6 +747,50 @@ async function main() {
     eq('and a zero profit epoch pays nobody anything',
       D((await psR.getSettlement(1)).gameCompanyUsdt)
         + D((await psR.getSettlement(1)).teamUsdt), 0);
+  }
+
+  // ---- the launch window: a dust holder cannot take a real distribution ----
+  // One wei bonded before anybody else, then a 10,000,000 HCOW cohort arriving
+  // during the epoch. The cohort is quarantined, so without a floor on the
+  // pool the leg is measured against, the wei is the entire participant base
+  // and takes all of it. Measured before MIN_POOL_SHARES existed: 300,000 USDT
+  // to one wei.
+  {
+    const psL = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr,
+    ]);
+    const aL = await psL.getAddress();
+    await (await usdt.mint(settler, E(2_000_000))).wait();
+    await (await usdt.connect(settlerS).approve(aL, ethers.MaxUint256)).wait();
+    await (await hcow.transfer(carol, E(10_000_000))).wait();
+    await (await hcow.connect(carolS).approve(aL, ethers.MaxUint256)).wait();
+    await (await hcow.connect(aliceS).approve(aL, ethers.MaxUint256)).wait();
+
+    eq('the pool floor is 1,000 HCOW', D(await psL.MIN_POOL_SHARES()), 1_000);
+    await (await psL.connect(aliceS).bond(1n)).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psL.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+    await (await psL.connect(carolS).bond(E(10_000_000))).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psL.connect(settlerS).settleEpoch(1, E(600_000), 0, 0, 0)).wait();
+
+    const st = await psL.getSettlement(1);
+    // 300 wei rather than exactly zero: one wei against the 1,000 HCOW floor.
+    // Against the 300,000 USDT it would otherwise have taken, that is a
+    // reduction of eighteen orders of magnitude.
+    ok('a one wei participant base is credited dust, not a distribution',
+      (await psL.claimableOf(alice)) < E(1),
+      `credited ${(await psL.claimableOf(alice)).toString()} wei`);
+    near('and essentially the whole profit goes to the two fixed recipients',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 600_000, 1e-9);
+    eq('the arriving cohort is still quarantined', D(await psL.claimableOf(carol)), 0);
+
+    // once the pool is real, the floor stops binding
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psL.connect(settlerS).settleEpoch(2, E(600_000), 0, 0, 0)).wait();
+    near('and a real pool takes the whole leg the next epoch',
+      D(await psL.claimableOf(carol)), 300_000, 1e-6);
   }
 
   // ---------------- report ----------------

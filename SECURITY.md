@@ -13,7 +13,7 @@ control until one exists. Do not treat anything below as a substitute.
 
 ### 1. Unit tests
 
-350 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+357 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. `test/eventsigs.check.cjs` additionally checks every event the indexer
 declares against the compiled ABIs, in both directions, because a hand written
@@ -33,7 +33,7 @@ Slither 0.11.6 over the full source.
 npm run analyze
 ```
 
-Nine detector categories fire, 71 results. Every instance was reviewed by hand
+Nine detector categories fire, 69 results. Every instance was reviewed by hand
 and classified:
 
 | Detector | Assessment |
@@ -45,7 +45,75 @@ and classified:
 | `pragma`, `cyclomatic-complexity` | Informational. |
 
 Static analysis finds known bug patterns. **It found none of the defects listed
-in sections 4 to 17**, which is the honest measure of what it is worth.
+in sections 4 to 18**, which is the honest measure of what it is worth.
+
+### 2b. Machine-driven search, and whether the properties bite
+
+Everything in sections 1 and 3 replays sequences their author thought of. That
+is the structural limit of this whole estate, and it is why the same function
+was rewritten four times in one day: each rewrite fixed the scenario someone had
+just constructed, and the next scenario nobody had constructed yet broke it.
+
+Foundry invariant testing was added on 26 August 2026 to let a machine search
+instead. **38 invariant properties** across both repositories, 25 here and 13 in
+`hcow-contracts`, plus 12 plain tests. Each property is explored over **256
+generated sequences of 128 calls, 32,768 calls in total**, with the generators
+biased toward the values a person does not type: one wei, one less than the
+whole position, exactly the cliff, exactly the final second.
+
+```
+npm run test:fuzz          # 256 runs x 128 calls per property
+npm run test:fuzz:deep     # 2000 x 400
+```
+
+More important than the properties is whether they bite. Every economic guard in
+each contract was deleted in turn and the suite re-run. The first result was the
+most useful thing this project has measured:
+
+> Of seven economic guards in `HCOWProfitShare`, **six could be deleted and the
+> invariant suite noticed nothing.** The Rule 6 gate, both deduction ceilings,
+> the eligibility quarantine, the `poolIndex` decay, and the cancel clamp.
+> Those are the protections the whitepaper promises.
+
+The properties covered *accounting* — conservation, solvency, share sums — and
+no *policy* at all. Accounting is the easy half. Six policy properties were
+added; all six mutations are now caught, each by the property that names it.
+
+Current mutation coverage, run by deleting the named line and re-running:
+
+| Guard deleted | Caught by |
+| --- | --- |
+| `sharesToBurn` rounded down again | pool price fell outside a settlement |
+| eligible-fraction divisor back to live `totalShares` | participant leg is sandwichable |
+| `MIN_POOL_SHARES` floor | one wei took a real distribution (`SandwichTest`) |
+| divisor back to the epoch-start snapshot | a flip in the settlement block moved the leg |
+| staking rate floor weakened | one wei slowed the stream (`RateFloorTest`) |
+| Rule 6 gate | principal burned without a distribution |
+| per-settlement rate cap | a settlement above `MAX_DEDUCT_PPM` was accepted |
+| decay window ceiling | the window ceiling was exceeded |
+| `poolIndex` decay | a burn that did not move `poolIndex` |
+| burn not removed from the pool | HCOW backing, and the quarantine property |
+| staking rate floor removed | a funding lowered the rate of a live period |
+| staking duration floor | a funding moved `periodFinish` backwards |
+| `addSchedule` after TGE | a schedule was added at or after TGE |
+| degenerate schedule guard | a schedule releases something other than its stated bps |
+| vesting supply bound | scheduled more than exists |
+| beneficiary cap | the cap call did not revert |
+| `release` before seal | tokens left an unsealed contract |
+| `release` pays the caller | released tokens did not reach beneficiaries |
+
+Not caught by the fuzzer, and stated rather than hidden: the `scheduleHash`
+commitment. The generator supplies the contract's own value as the expected one,
+which is a tautology. It is covered instead by a plain test that executes the
+formula the README gives an operator, including the two ways of getting it
+wrong.
+
+Two rows in an earlier version of this table were wrong, which is worse than
+having no table: one named a property that does not fire, and one named a
+property that was failing on the unmutated contract. Both are corrected above
+and both mutations are now caught by the named test. Re-run the table before
+trusting it; a mutation table that has drifted is a claim of coverage that does
+not exist.
 
 ### 3. Invariant (property) tests
 
@@ -445,27 +513,6 @@ different values of `remaining`, a one wei funding cannot stretch a live budget
 by a single second, and genuine top-ups are accepted at 3,600, 600, 60 and 1
 seconds remaining.
 
-### Audit scope, and the figure to quote
-
-Six contracts across two repositories. Slither's `human-summary` on this tree
-reports **1,277 SLOC** for the four in `hcow-protocol`, plus **18** for the two
-test mocks. `HCOWToken` and `HCOWVesting` in `hcow-contracts` add **216** lines
-excluding comments and blanks, counted by hand because that repository has no
-Slither wiring. Roughly **1,500 lines** of Solidity in total, and the exact
-figure depends on the counting convention a firm uses, so ask for theirs rather
-than quoting ours.
-
-**The scope must include `hcow-contracts`.** Those 216 lines control 100% of
-the supply and the entire unlock schedule, `seal()` is irreversible, and until
-25 August 2026 nobody had reviewed them at all. They are also where the single
-Critical with the largest loss lived.
-
-Not in scope and not proposed for it, but load-bearing: `lib/anchor.js`,
-`lib/canonical.js`, `lib/merkle.js`, `lib/keccak.js`, both Supabase edge
-functions, both SQL files, `web/verify.html`, `web/hcow-record.js` and
-`scripts/deploy.cjs`. The two worst findings of the 25 August round were in
-that list, not in the contracts.
-
 ### 17. Focused re-audit of the settlement rewrite, same day
 
 The distribution logic in `settleEpoch` had by this point been rewritten three
@@ -496,10 +543,110 @@ one-wei drift was absorbed. Both are now addressed: the settler participates,
 and bond sizes are sometimes small enough that the truncation cushion cannot
 hide drift.
 
+### 18. External-reference pass, 26 August 2026
+
+The seventeen rounds above were generated by looking at this code. This one
+started outside it: published audit findings, incident post-mortems from 2025
+and 2026, and the defect catalogues for the shapes these contracts actually are
+— MasterChef/Synthetix reward accumulators, share-priced pools, linear vesting,
+Merkle anchoring, and a privileged off-chain revenue reporter. The question was
+what has bitten contracts of this shape, not what looks wrong in this one.
+
+| ID | Severity | Defect | Fix |
+| --- | --- | --- | --- |
+| J-1 | High | `requestUnbond` floored `sharesToBurn` while removing the exact HCOW, so the pool price `totalBondedHcow/totalShares` fell on every exit and the difference came out of the holders who stayed. This is the shape Trail of Bits published after the November 2025 Balancer loss of 128 million dollars: an accounting function rounding in the direction that favours the caller, worth a wei at a time. Measured: one wei requested and immediately cancelled moved one wei of bonded HCOW from another holder to the caller, repeatably, for the price of gas. | `Math.Rounding.Ceil`. Costs the caller at most one share, which is worth less than a wei, and is the direction that favours the pool. A machine-searched invariant now asserts the price never falls outside a settlement, and catches the old code in three seconds. |
+| J-2 | High | The participant leg was measured against the **live** share count, and `bond` is permissionless. Anyone, from any address, could inflate `totalShares` inside the settlement block and shrink the eligible fraction without limit. The settler is the party that both authors the revenue figure and can pull that lever. Measured: bonding 999 times the pool cut an honest holder's share from **100,000 USDT to 100**, and the difference went to `gameCompany` and `team`. | Fixed in three attempts, not one. Freezing the divisor to the epoch-start pool (the first attempt) only moved the lever from the denominator to the numerator: see K-1 in section 19. The divisor is now `eligibleShares` itself, so shrinking the eligible pool cannot concentrate the leg on a smaller base at all. |
+| J-3 | Medium | The snapshot in J-2 reintroduced the defect E-6 was written for: with a tiny surviving eligible pool and a large quarantined arrival, the tiny pool takes the whole leg. One wei against a 10,000,000 HCOW cohort took **300,000 USDT**. The two are the same defect seen from opposite ends. | `MIN_POOL_SHARES = 1,000e18` floors the divisor while the pool the epoch began with was itself below that. One wei now takes **300 wei** instead of 3e23 wei, twenty one orders of magnitude less, and a real pool is unaffected. It is a launch-window rule and it is deliberately blunt. |
+| J-4 | Medium | `_bookmark` floored `deductDebt` on the same line where `rewardDebt` had already been corrected to round up, so the sum of every account's published lifetime deduction could exceed the burn that actually happened. Not a payout, so it cannot strand money; a reconciliation that does not reconcile is its own defect. | Rounded up, and an invariant asserts the sum against the two burn counters. |
+| J-5 | Info | The `lib/` directory was briefly added to `.gitignore` while wiring Foundry in, which would have removed the entire off-chain anchoring library from the uploaded repository. Caught before any upload. | `forge-std` moved to `foundry/lib/`. |
+
+**Checked and found not applicable**, which is worth recording because these are
+the first things an auditor asks: the ERC-4626 donation/inflation attack, which
+Resupply lost 9.8 million dollars to in June 2025, does not apply because
+`HCOWProfitShare` tracks `totalBondedHcow` as an internal counter and never
+prices shares off `balanceOf`; the VTVL vesting catalogue (Code4rena, 2022)
+returned overflow, interval rounding, and revocation findings that this contract
+has no equivalent of; and the OpenZeppelin Merkle leaf-confusion class is closed
+by the node prefix, the two leaf domains, and the proof-length check together.
+
+**Quantified rather than argued.** Every large loss in the privileged-reporter
+class during 2025 and 2026 — Stream Finance 93 million, KelpDAO 292 million,
+Ostium 18 million, Resolv 25 million — was the key rather than the code. So the
+bound is now a measured number, in `test/adversary.settler.cjs`:
+
+| A stolen settler key can | Bound |
+| --- | --- |
+| destroy principal, over 365 days | **28.31%**, across 22 deducting settlements |
+| burn HCOW per USDT it spends | 100,000 HCOW |
+| recover USDT it funded | **0.** It pays 100% and gets nothing back |
+| move bonded HCOW to itself | **0.** Only to the burn address |
+| touch USDT already owed to claimants | **0** |
+| dilute an honest holder's leg | **0%** since K-1, beyond four wei of rounding. It was 99.9%, by two separate levers |
+| under-report gross revenue | **unbounded** |
+
+The last row is the residual and it is bounded by process, not by the contract.
+The settler must be a hardware wallet at minimum, and `settler`, `gameCompany`
+and `team` must be separately controlled, not merely different addresses. The
+contract can only enforce the second half of that.
+
+### 19. Independent review of the section 18 fixes, 26 August 2026
+
+Sixth round, sixth generation of findings. Two of the round-18 fixes were
+defective and one of them was worse than what it replaced.
+
+| ID | Severity | Defect introduced by a section 18 fix | Fix |
+| --- | --- | --- | --- |
+| K-1 | High | J-2 froze the **denominator** to the epoch-start pool and did nothing to the numerator. `eligibleShares` is still computed live, and `requestUnbond` followed by `cancelUnbond` in the same block removes a position from it and puts it back as new shares at zero cost, because `_chargeIndex` charges nothing when no settlement has passed. Measured over three epochs with a 999:1 pool: **150 USDT of a 300,000 USDT leg** reached participants, the rest went to `gameCompany` and `team`, and the whale's balance was unchanged. Numerically identical to the attack J-2 claims to have closed. The property written for J-2 missed it because its generator only ever called `bond`. | The divisor is `eligibleShares` itself. Shrinking the eligible pool no longer concentrates the leg on a smaller base; whoever is left simply takes what the leavers gave up, and leaving costs the position. The generator now flips as well as bonds, and a dedicated `SandwichTest` covers both vectors plus the launch-window floor. |
+| K-2 | High | The same change made an **ordinary exit** hand the leaver's share to the two fixed recipients. Measured on a 50/50 pool where one holder unbonds mid-epoch: the split moved from 50/25/25 to **25/37.5/37.5**, triggered by a user simply leaving. Every document says the split is computed in the contract and never passed in; it was not being computed. | Same fix. The leg goes to the eligible pool in full, so an exit gives that holder's share to the holders who stayed. Asserted in `SandwichTest`. |
+| K-3 | Medium | F-3's rate floor divided by `minDuration` rather than by `remaining`, so inside the last day of a live period **one wei could halve the reward rate**, repeatably: measured 1e18 to 5e17 to 2.5e17 over five cycles, and 86,400-fold at one second before the end. Worse, this made the repository's own `invariant_fundingNeverSlowsTheStream` **fail on the unmutated contract**, so `npm run test:all` did not exit 0 and nobody had noticed. | The floor is `leftover / remaining`, which is the current rate exactly. The cost is real and accepted: a top-up in the tail of a fast period that is not large enough to sustain the current rate over a full day is refused, and the funder waits for the period to lapse. That is a delay, not a loss, and the alternative is a promise the contract does not keep. `RateFloorTest` asserts both halves. |
+| K-4 | Info | `foundry/lib/forge-std` is gitignored, so a fresh clone cannot run `forge test`, which is part of `npm run test:all`. | Documented in both READMEs with the one command that fetches it. |
+
+**Documentation.** An external pass checked 73 claims across sections 2, 2b and
+18 and both READMEs, and found 12 wrong: two rows of the mutation table (one
+naming a property that does not fire, one naming a property that was failing
+anyway), the property count, "call sequences" where the number is calls, an
+orders-of-magnitude figure, a stale SLOC total, and several role-table
+descriptions that had not caught up with the code. All twelve are corrected.
+The mutation table is the one that mattered: a coverage claim that is wrong is
+worse than no claim at all.
+
+### Audit scope, and the figure to quote
+
+Six contracts across two repositories. Slither's `human-summary` on this tree
+reports **1,295 SLOC** for the four in `hcow-protocol`, plus **18** for the two
+test mocks. `HCOWToken` and `HCOWVesting` in `hcow-contracts` add **216** lines
+excluding comments and blanks. That repository now has its own Slither run as
+well: 16 results across 7 detectors, no High and no Medium, and the three that
+look like findings are all in the test doubles or are the bounded
+`addSchedule` loop whose worst-case gas is measured at 458,729 for a full
+two-hundred-schedule seal. Roughly **1,500 lines** of Solidity in total, and
+the exact figure depends on the counting convention a firm uses, so ask for
+theirs rather than quoting ours.
+
+**The scope must include `hcow-contracts`.** Those 216 lines control 100% of
+the supply and the entire unlock schedule, `seal()` is irreversible, and until
+25 August 2026 nobody had reviewed them at all. They are also where the single
+Critical with the largest loss lived.
+
+Not in scope and not proposed for it, but load-bearing: `lib/anchor.js`,
+`lib/canonical.js`, `lib/merkle.js`, `lib/keccak.js`, both Supabase edge
+functions, both SQL files, `web/verify.html`, `web/hcow-record.js` and
+`scripts/deploy.cjs`. The two worst findings of the 25 August round were in
+that list, not in the contracts.
+
 ## What is still missing
 
-- A third-party audit. In procurement.
-- A public bug bounty.
+- A third-party audit. In procurement. Nothing above substitutes for it: the
+  published industry figure for what automated tooling catches is 8 to 20% of
+  exploitable bugs, and the two hardest things in this system — whether the
+  anchored record set is complete, and whether the settler reports honestly —
+  are outside what any tool can see.
+- A public bug bounty. Deliberately not yet: before launch it opens a channel
+  for the fake proof-of-concept repositories that were used against researchers
+  through 2026, and there is no live attack surface for it to protect.
+- Machine-searched properties for `HCOWFaucet`. Testnet only, so it is last.
+- A review of the dApp. It builds every transaction a user signs, it is in
+  neither repository, and nobody has looked at it.
 - Mainnet deployment. Everything above concerns BSC Testnet.
 
 ## Reporting a vulnerability
