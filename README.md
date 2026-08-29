@@ -132,12 +132,22 @@ npx hardhat compile
 npm run test:all
 ```
 
-`test:all` ends with `forge test`. A fresh clone needs the Foundry standard
-library once, because it is not committed:
+A fresh clone needs two one-time downloads before `test:all` will run end to
+end. Neither is committed, and both fail loudly rather than being skipped,
+because a check that quietly does not run is worse than one that fails.
 
 ```bash
+# the Foundry standard library, for the `forge test` step
 git clone --depth 1 https://github.com/foundry-rs/forge-std foundry/lib/forge-std
+
+# the browser binary, for the test/web.check.cjs step
+npx playwright install chromium
 ```
+
+`npm ci` installs the playwright package but not the browser it drives, so
+without the second command `test:all` stops at `test:web`. That step is what
+proves `web/verify.html` computes byte-identical leaves and roots to `lib/`,
+and that the page refuses a lying RPC endpoint, so it is not optional.
 
 Measured 29 August 2026.
 

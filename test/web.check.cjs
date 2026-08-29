@@ -11,7 +11,22 @@ const rec = (o={}) => { const s=o.serverSeed||'seed-abc-123'; return {
   clientSeed:'c-99', nonce:1, outcome:'solved:3moves', timestamp:1755000000, ...o }; };
 
 (async () => {
-  const b = await chromium.launch({ args:['--no-sandbox'] });
+  // A missing browser binary is a setup problem, not a defect, and it should
+  // read as one. `npm ci` installs the playwright package but not the browser
+  // it drives, so on a fresh clone this step used to die with a stack trace
+  // three steps into `npm run test:all`. It still FAILS - a check that quietly
+  // skips itself is the shape of defect this repository keeps finding - but it
+  // now says which command fixes it.
+  let b;
+  try {
+    b = await chromium.launch({ args:['--no-sandbox'] });
+  } catch (e) {
+    console.log('FAIL  the browser this check drives is not installed');
+    console.log('      run:  npx playwright install chromium');
+    console.log('      (npm ci installs the playwright package, not the browser)');
+    console.log('      original error: ' + String(e.message || e).split('\n')[0]);
+    process.exit(1);
+  }
   const pg = await b.newPage();
   const errs = []; pg.on('pageerror', e => errs.push(String(e)));
   await pg.goto('file:///home/claude/ledger/web/verify.html');
