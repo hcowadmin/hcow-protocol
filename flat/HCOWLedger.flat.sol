@@ -89,10 +89,23 @@ contract HCOWLedger {
         "gameId,roundId,playerRef,mode,level,score,durationMs,outcome,endedAt";
 
     /// @notice Prefix on every internal node hash. Leaf preimages begin with a
-    ///         domain tag and are not 65 bytes, so no node preimage can ever
-    ///         be read as a leaf preimage. This makes the separation
-    ///         structural rather than a statement about how hard it would be
-    ///         to steer two keccak outputs into a valid record layout.
+    ///         domain tag, so no node preimage can ever be read as a leaf
+    ///         preimage. The separation is by the FIRST BYTE and it is
+    ///         unconditional: a node preimage begins 0x01, the count fold
+    ///         begins 0x02, and every leaf preimage begins with the 'H' of
+    ///         "HCOWv1|" or "HCOWs1|", which is 0x48. Nothing about the
+    ///         lengths is load bearing.
+    ///
+    ///         An earlier version of this comment argued the separation from
+    ///         length as well, claiming a leaf preimage is never 65 bytes.
+    ///         That claim is FALSE and is removed. A node preimage is 1 + 32
+    ///         + 32 = 65 bytes; a leaf preimage is 7 bytes of domain plus the
+    ///         nine escaped fields joined with eight tabs and a newline, so it
+    ///         is 65 bytes whenever the nine values total 49 bytes, which is
+    ///         an ordinary record. The length argument was wrong and the first
+    ///         byte argument is the one that holds, so nothing here depends on
+    ///         the mistake, but a false statement in verified source is worth
+    ///         removing on its own account.
     /// Public for the same reason the two leaf domains are: an independent
     /// verifier must be able to read every part of the hashing rule off the
     /// chain rather than take it from a document that could be edited.

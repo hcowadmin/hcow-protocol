@@ -726,7 +726,14 @@ async function main() {
 
     // exact timestamps, because the whole claim is about where boundaries fall
     const at = async (t) => { await provider.send('evm_setNextBlockTimestamp', [t]); };
-    const now = async () => (await provider.getBlock('latest')).timestamp;
+    // Asked of the node directly, not through ethers. BrowserProvider caches
+    // `latest` for its polling interval, and this block sets ABSOLUTE next
+    // block timestamps: a cached block reads as older than the chain really
+    // is, the computed target lands in the past, and hardhat rejects it for
+    // going backwards. Standalone the cache happened to be fresh and the
+    // block passed; inside `npm run test:all` it did not.
+    const now = async () => Number(
+      (await hre.network.provider.send('eth_getBlockByNumber', ['latest', false])).timestamp);
 
     await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
     await (await psP.connect(settlerS).settleEpoch(0, E(100), 0, 0, 0)).wait();  // lifts quarantine
@@ -783,7 +790,14 @@ async function main() {
     await (await psQ.connect(ivanS).bond(E(1_000_000))).wait();
 
     const at = async (t) => { await provider.send('evm_setNextBlockTimestamp', [t]); };
-    const now = async () => (await provider.getBlock('latest')).timestamp;
+    // Asked of the node directly, not through ethers. BrowserProvider caches
+    // `latest` for its polling interval, and this block sets ABSOLUTE next
+    // block timestamps: a cached block reads as older than the chain really
+    // is, the computed target lands in the past, and hardhat rejects it for
+    // going backwards. Standalone the cache happened to be fresh and the
+    // block passed; inside `npm run test:all` it did not.
+    const now = async () => Number(
+      (await hre.network.provider.send('eth_getBlockByNumber', ['latest', false])).timestamp);
 
     await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
     await (await psQ.connect(settlerS).settleEpoch(0, E(100), 0, 0, 0)).wait();

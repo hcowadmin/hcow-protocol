@@ -4,11 +4,11 @@
 
 INFO:Detectors:
 Detector: encode-packed-collision
-HCOWLedger._join(string[9]) (contracts/HCOWLedger.sol#599-603) calls abi.encodePacked() with multiple dynamic arguments:
+HCOWLedger._join(string[9]) (contracts/HCOWLedger.sol#612-616) calls abi.encodePacked() with multiple dynamic arguments:
 	- out = abi.encodePacked(out,_esc(fields[i]),
-) (contracts/HCOWLedger.sol#601)
-HCOWLedger._join(string[9]) (contracts/HCOWLedger.sol#599-603) calls abi.encodePacked() with multiple dynamic arguments:
-	- out = abi.encodePacked(out,_esc(fields[i]),	) (contracts/HCOWLedger.sol#601)
+) (contracts/HCOWLedger.sol#614)
+HCOWLedger._join(string[9]) (contracts/HCOWLedger.sol#612-616) calls abi.encodePacked() with multiple dynamic arguments:
+	- out = abi.encodePacked(out,_esc(fields[i]),	) (contracts/HCOWLedger.sol#614)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#abi-encodePacked-collision
 INFO:Detectors:
 Detector: reentrancy-balance
@@ -72,12 +72,12 @@ HCOWFaucet.claimableAt(address) (contracts/HCOWFaucet.sol#190-195) uses a danger
 	- last == 0 (contracts/HCOWFaucet.sol#192)
 HCOWFaucet.status(address) (contracts/HCOWFaucet.sol#201-261) uses a dangerous strict equality:
 	- fresh = windowAt == 0 || block.timestamp >= windowAt + CLAIM_INTERVAL (contracts/HCOWFaucet.sol#253)
-HCOWLedger._verify(bytes32[],bytes32,bytes32,uint64) (contracts/HCOWLedger.sol#456-490) uses a dangerous strict equality:
-	- root == bytes32(0) || root == EMPTY_PERIOD || recordCount == 0 (contracts/HCOWLedger.sol#462)
-HCOWLedger._verify(bytes32[],bytes32,bytes32,uint64) (contracts/HCOWLedger.sol#456-490) uses a dangerous strict equality:
-	- keccak256(bytes)(abi.encodePacked(COUNT_PREFIX,h,recordCount)) == root (contracts/HCOWLedger.sol#489)
-HCOWLedger.isEmptyPeriod(uint64) (contracts/HCOWLedger.sol#658-662) uses a dangerous strict equality:
-	- epoch >= genesisEpoch && epoch < nextEpoch && _epochs[epoch].root == EMPTY_PERIOD (contracts/HCOWLedger.sol#659-661)
+HCOWLedger._verify(bytes32[],bytes32,bytes32,uint64) (contracts/HCOWLedger.sol#469-503) uses a dangerous strict equality:
+	- root == bytes32(0) || root == EMPTY_PERIOD || recordCount == 0 (contracts/HCOWLedger.sol#475)
+HCOWLedger._verify(bytes32[],bytes32,bytes32,uint64) (contracts/HCOWLedger.sol#469-503) uses a dangerous strict equality:
+	- keccak256(bytes)(abi.encodePacked(COUNT_PREFIX,h,recordCount)) == root (contracts/HCOWLedger.sol#502)
+HCOWLedger.isEmptyPeriod(uint64) (contracts/HCOWLedger.sol#671-675) uses a dangerous strict equality:
+	- epoch >= genesisEpoch && epoch < nextEpoch && _epochs[epoch].root == EMPTY_PERIOD (contracts/HCOWLedger.sol#672-674)
 HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#611-636) uses a dangerous strict equality:
 	- received == 0 (contracts/HCOWProfitShare.sol#621)
 HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#611-636) uses a dangerous strict equality:
@@ -244,9 +244,9 @@ Reentrancy in HCOWStaking.stake(uint256,bytes32) (contracts/HCOWStaking.sol#320-
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
 INFO:Detectors:
 Detector: uninitialized-local
-HCOWLedger._esc(string).extra (contracts/HCOWLedger.sol#623) is a local variable never initialized
+HCOWLedger._esc(string).j (contracts/HCOWLedger.sol#642) is a local variable never initialized
 HCOWStaking.fundRewards(uint256,uint64).received (contracts/HCOWStaking.sol#520) is a local variable never initialized
-HCOWLedger._esc(string).j (contracts/HCOWLedger.sol#629) is a local variable never initialized
+HCOWLedger._esc(string).extra (contracts/HCOWLedger.sol#636) is a local variable never initialized
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#uninitialized-local-variables
 INFO:Detectors:
 Detector: reentrancy-benign
@@ -289,11 +289,11 @@ Reentrancy in HCOWFaucet.claim() (contracts/HCOWFaucet.sol#107-183):
 	- usdt.safeTransfer(msg.sender,usdtOut) (contracts/HCOWFaucet.sol#180)
 	Event emitted after the call(s):
 	- Claimed(msg.sender,hcowOut,usdtOut) (contracts/HCOWFaucet.sol#182)
-Reentrancy in HCOWFaucet.withdraw(address,address,uint256) (contracts/HCOWFaucet.sol#294-298):
+Reentrancy in HCOWFaucet.withdraw(address,address,uint256) (contracts/HCOWFaucet.sol#302-306):
 	External calls:
-	- IERC20(token).safeTransfer(to,amount) (contracts/HCOWFaucet.sol#296)
+	- IERC20(token).safeTransfer(to,amount) (contracts/HCOWFaucet.sol#304)
 	Event emitted after the call(s):
-	- Withdrawn(token,to,amount) (contracts/HCOWFaucet.sol#297)
+	- Withdrawn(token,to,amount) (contracts/HCOWFaucet.sol#305)
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-4
 INFO:Detectors:
 Detector: timestamp
@@ -311,26 +311,26 @@ HCOWFaucet.status(address) (contracts/HCOWFaucet.sol#201-261) uses timestamp for
 	- last != 0 && block.timestamp < last + CLAIM_INTERVAL (contracts/HCOWFaucet.sol#223)
 	- readyAt != 0 (contracts/HCOWFaucet.sol#240)
 	- fresh = windowAt == 0 || block.timestamp >= windowAt + CLAIM_INTERVAL (contracts/HCOWFaucet.sol#253)
-HCOWLedger.anchorEpoch(uint64,bytes32,uint64) (contracts/HCOWLedger.sol#295-334) uses timestamp for comparisons
+HCOWLedger.anchorEpoch(uint64,bytes32,uint64) (contracts/HCOWLedger.sol#308-347) uses timestamp for comparisons
 	Dangerous comparisons:
-	- epoch != nextEpoch (contracts/HCOWLedger.sol#296)
-	- block.timestamp < endsAt (contracts/HCOWLedger.sol#311)
-HCOWLedger.verifyEpochRecord(uint64,bytes32,bytes32[]) (contracts/HCOWLedger.sol#421-428) uses timestamp for comparisons
+	- epoch != nextEpoch (contracts/HCOWLedger.sol#309)
+	- block.timestamp < endsAt (contracts/HCOWLedger.sol#324)
+HCOWLedger.verifyEpochRecord(uint64,bytes32,bytes32[]) (contracts/HCOWLedger.sol#434-441) uses timestamp for comparisons
 	Dangerous comparisons:
-	- epoch >= nextEpoch || epoch < genesisEpoch (contracts/HCOWLedger.sol#426)
-HCOWLedger._verify(bytes32[],bytes32,bytes32,uint64) (contracts/HCOWLedger.sol#456-490) uses timestamp for comparisons
+	- epoch >= nextEpoch || epoch < genesisEpoch (contracts/HCOWLedger.sol#439)
+HCOWLedger._verify(bytes32[],bytes32,bytes32,uint64) (contracts/HCOWLedger.sol#469-503) uses timestamp for comparisons
 	Dangerous comparisons:
-	- root == bytes32(0) || root == EMPTY_PERIOD || recordCount == 0 (contracts/HCOWLedger.sol#462)
-	- keccak256(bytes)(abi.encodePacked(COUNT_PREFIX,h,recordCount)) == root (contracts/HCOWLedger.sol#489)
-HCOWLedger._proofDepth(uint64) (contracts/HCOWLedger.sol#502-507) uses timestamp for comparisons
+	- root == bytes32(0) || root == EMPTY_PERIOD || recordCount == 0 (contracts/HCOWLedger.sol#475)
+	- keccak256(bytes)(abi.encodePacked(COUNT_PREFIX,h,recordCount)) == root (contracts/HCOWLedger.sol#502)
+HCOWLedger._proofDepth(uint64) (contracts/HCOWLedger.sol#515-520) uses timestamp for comparisons
 	Dangerous comparisons:
-	- n > 1 (contracts/HCOWLedger.sol#503)
-HCOWLedger.isEmptyPeriod(uint64) (contracts/HCOWLedger.sol#658-662) uses timestamp for comparisons
+	- n > 1 (contracts/HCOWLedger.sol#516)
+HCOWLedger.isEmptyPeriod(uint64) (contracts/HCOWLedger.sol#671-675) uses timestamp for comparisons
 	Dangerous comparisons:
-	- epoch >= genesisEpoch && epoch < nextEpoch && _epochs[epoch].root == EMPTY_PERIOD (contracts/HCOWLedger.sol#659-661)
-HCOWLedger.isEpochAnchored(uint64) (contracts/HCOWLedger.sol#664-669) uses timestamp for comparisons
+	- epoch >= genesisEpoch && epoch < nextEpoch && _epochs[epoch].root == EMPTY_PERIOD (contracts/HCOWLedger.sol#672-674)
+HCOWLedger.isEpochAnchored(uint64) (contracts/HCOWLedger.sol#677-682) uses timestamp for comparisons
 	Dangerous comparisons:
-	- epoch >= genesisEpoch && epoch < nextEpoch (contracts/HCOWLedger.sol#668)
+	- epoch >= genesisEpoch && epoch < nextEpoch (contracts/HCOWLedger.sol#681)
 HCOWProfitShare.bond(uint256) (contracts/HCOWProfitShare.sol#611-636) uses timestamp for comparisons
 	Dangerous comparisons:
 	- minted == 0 (contracts/HCOWProfitShare.sol#626)

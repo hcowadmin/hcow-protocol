@@ -754,7 +754,15 @@ contract HCOWFaucet {
         emit WindowReset(uint64(block.timestamp));
     }
 
-    /// @notice Recover anything sent here, including tokens sent by mistake.
+    /// @notice Recover any TOKEN sent here, including tokens sent by mistake.
+    ///
+    /// @dev Tokens only. There is no path to recover native currency: this
+    ///      contract has no receive or payable fallback, so BNB cannot arrive
+    ///      through an ordinary transfer, but it can still be forced in by a
+    ///      selfdestruct or by being the coinbase recipient, and anything that
+    ///      arrives that way stays here. Nothing in the contract reads its own
+    ///      balance, so it has no effect on behaviour. An earlier version of
+    ///      this line said "anything sent here", which was not true.
     function withdraw(address token, address to, uint256 amount) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         IERC20(token).safeTransfer(to, amount);
