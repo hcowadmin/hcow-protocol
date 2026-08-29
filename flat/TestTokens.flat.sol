@@ -631,7 +631,7 @@ abstract contract ERC20 is Context, IERC20, IERC20Metadata, IERC20Errors {
 // File contracts/test/Mocks.sol
 
 // Original license: SPDX_License_Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.34;
 
 /// Test double for HCOWToken: fixed supply, burnable.
 contract MockHCOW is ERC20 {

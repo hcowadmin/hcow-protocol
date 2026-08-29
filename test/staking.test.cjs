@@ -9,7 +9,14 @@ const results = [];
 
 const ok = (name, cond, detail) => {
   if (cond) { pass++; results.push(['ok', name, '']); }
-  else { fail++; results.push(['XX', name, detail || '']); }
+  else {
+    fail++;
+    results.push(['XX', name, detail || '']);
+    // Printed as it happens. This suite has sequential dependencies, so it dies
+    // on the first unexpected revert, and when it does the report never prints
+    // and every failure before it is invisible.
+    console.log(`  XX  ${name}  ${detail || ''}`);
+  }
 };
 const eq = (name, a, b) => ok(name, String(a) === String(b), `got ${a}, want ${b}`);
 const near = (name, a, b, tol = 1e-9) =>
@@ -322,18 +329,145 @@ async function main() {
   eq('a one wei pool accrues nothing', D(await st3.pendingRewardOf(alice)), 0);
   ok('and the seconds are carried, not lost', (await st3.undistributed()) > 0n);
 
-  // Carried funds are released by the next funding. That still needs an
-  // amount, but one wei is enough: a zero amount path was tried and removed,
-  // because it read undistributed before the accumulator had advanced and so
-  // failed in exactly the state it existed for.
-  await rv('a funding still needs an amount', st3, funderS, 'fundRewards',
-    [0, 86_400], 'ZeroAmount');
+  // Carried funds now have a delivery path of their own. Without one, seconds
+  // that elapsed while too little was staked could only ever leave in the
+  // arithmetic of the NEXT ordinary funding, so rewards already committed
+  // depended on the funder choosing to fund again.
+  //
+  // The guard runs AFTER _updateGlobal. `undistributed` is written by
+  // _updateGlobal, so testing it first refuses the call in exactly the state
+  // the path exists for: that is how the first attempt at this was wrong and
+  // was removed, and the reordering is the whole fix.
   await (await st3.connect(aliceS).stake(E(1_000), A)).wait();
   await (await st3.connect(funderS).fundRewards(1, 86_400)).wait();
   await provider.send('evm_increaseTime', [86_401]);
   await provider.send('evm_mine', []);
   ok('carried funds come back out with the next funding',
     (await st3.pendingRewardOf(alice)) > 0n);
+
+  // ---------------- the carry has a delivery path of its own ----------------
+  //
+  // Without one, seconds that elapsed while too little was staked could only
+  // ever leave in the arithmetic of the NEXT ordinary funding, so rewards that
+  // were already committed depended on the funder choosing to fund again.
+  //
+  // The guard runs AFTER _updateGlobal. `undistributed` is written by
+  // _updateGlobal, so testing it before the accumulator has advanced refuses
+  // the call in exactly the state the path exists for: that is how the first
+  // attempt at a zero token funding was wrong and was removed, and putting the
+  // test after the update is the whole fix.
+  {
+    const stC = await deploy('HCOWStaking', ownerS, [await hcow.getAddress(), owner, funder]);
+    const aC = await stC.getAddress();
+    await (await hcow.connect(funderS).approve(aC, ethers.MaxUint256)).wait();
+    await (await hcow.connect(aliceS).approve(aC, ethers.MaxUint256)).wait();
+    await (await stC.registerRepresentative(A, 'A', repAPayout, 0, false)).wait();
+
+    await rv('a zero token funding with nothing carried is refused',
+      stC, funderS, 'fundRewards', [0, 86_400], 'ZeroAmount');
+
+    await (await stC.connect(aliceS).stake(1, A)).wait();
+    // Exactly divisible by the duration, deliberately: the funding leaves no
+    // rounding remainder, so `undistributed` is genuinely ZERO in storage when
+    // the period ends and only becomes non-zero once _updateGlobal runs. Funded
+    // with a figure that leaves a remainder, the guard would pass on that dust
+    // whichever side of the update it sat, and the ordering this test exists
+    // for would not be exercised at all.
+    await (await stC.connect(funderS).fundRewards(E(86_400), 86_400)).wait();
+    eq('the funding divides exactly, so nothing is carried yet',
+       D(await stC.undistributed()), 0);
+    await provider.send('evm_increaseTime', [86_401]);
+    await provider.send('evm_mine', []);
+    eq('and the stored figure is still zero until something advances it',
+       D(await stC.undistributed()), 0);
+    const held = await hcow.balanceOf(aC);
+    const funderHeld = await hcow.balanceOf(funder);
+    // fundRewards runs _updateGlobal first, which is what moves the elapsed
+    // seconds into `undistributed`. Reading the getter before any state
+    // changing call returns the stale value, which is exactly why the guard
+    // had to move below the update.
+    // Guarded rather than awaited bare. If the guard were ever moved back above
+    // _updateGlobal this call reverts, and an unguarded revert kills the
+    // process before the report prints, hiding this failure and every other.
+    let released = true;
+    try { await (await stC.connect(funderS).fundRewards(0, 86_400)).wait(); }
+    catch { released = false; }
+    ok('the carry can be released with no new money', released);
+    if (!released) { console.log('  (skipping the rest of the carry block)'); }
+    else {
+    ok('a dust pool carried the whole period rather than losing it',
+       D(await stC.rewardRate()) * 86_400 > 86_000,
+       `rate * duration ${D(await stC.rewardRate()) * 86_400}`);
+    eq('releasing the carry moves no tokens in', D(await hcow.balanceOf(aC)), D(held));
+    eq('and costs the funder nothing', D(await hcow.balanceOf(funder)), D(funderHeld));
+
+    // a real pool now collects what was carried, with no new money
+    await (await stC.connect(aliceS).stake(E(1_000), A)).wait();
+    await provider.send('evm_increaseTime', [86_401]);
+    await provider.send('evm_mine', []);
+    const got = D(await stC.pendingRewardOf(alice));
+    ok('and a real pool collects it without the funder acting again',
+       got > 86_000 && got <= 86_400, `collected ${got}`);
+    }
+  }
+
+  // ---------------- the registry ceiling is real ----------------
+  //
+  // The cap exists because the identifier array is walked, and there is no way
+  // to reclaim a slot: the hundredth registration is final for the life of the
+  // contract. Independent mutation testing raised the bound by a factor of a
+  // thousand and no suite in either repository failed, which means the bound
+  // that exists was not protected against being changed by accident.
+  {
+    const stR = await deploy('HCOWStaking', ownerS, [await hcow.getAddress(), owner, funder]);
+    const cap = Number(await stR.MAX_REPRESENTATIVES());
+    eq('the published ceiling is one hundred', cap, 100);
+    // Bounded independently of the constant. Deriving the loop from the value
+    // under test means a mutation that raises the ceiling makes this suite run
+    // for hours instead of failing, and a test that hangs is a test that gets
+    // deleted.
+    const N = Math.min(cap, 100);
+    for (let i = 0; i < N; i++) {
+      await (await stR.registerRepresentative(
+        ethers.zeroPadValue(ethers.toBeHex(i + 1), 32), `r${i}`, repAPayout, 0, false)).wait();
+    }
+    eq('the registry filled to the ceiling', (await stR.representativeIds()).length, N);
+    await rv('and the next registration is refused', stR, ownerS, 'registerRepresentative',
+      [ethers.zeroPadValue(ethers.toBeHex(N + 1), 32), 'over', repAPayout, 0, false],
+      'TooManyRepresentatives');
+
+    // marking one inactive does not reclaim its slot, which is the disclosed
+    // limit rather than a defect
+    await (await stR.updateRepresentative(
+      ethers.zeroPadValue(ethers.toBeHex(1), 32), repAPayout, 0, false)).wait();
+    const counts = await stR.representativeCount();
+    eq('the inactive one is still counted against the ceiling', Number(counts[0]), N);
+    eq('but not as active', Number(counts[1]), N - 1);
+    await rv('and the slot is not reclaimed', stR, ownerS, 'registerRepresentative',
+      [ethers.zeroPadValue(ethers.toBeHex(N + 2), 32), 'over', repAPayout, 0, false],
+      'TooManyRepresentatives');
+  }
+
+  // ---------------- ownership moves in two steps ----------------
+  {
+    const stO = await deploy('HCOWStaking', ownerS, [await hcow.getAddress(), owner, funder]);
+    await rv('a stranger cannot start a transfer', stO, aliceS,
+      'transferOwnership', [alice], 'NotOwner');
+    await (await stO.transferOwnership(alice)).wait();
+    eq('the owner does not change on the first step', await stO.owner(), owner);
+    eq('the nominee is recorded', await stO.pendingOwner(), alice);
+    await rv('only the nominee can accept', stO, bobS, 'acceptOwnership', [], 'NotPendingOwner');
+    await (await stO.cancelOwnershipTransfer()).wait();
+    eq('a nomination can be withdrawn outright', await stO.pendingOwner(), ethers.ZeroAddress);
+    await rv('and then nobody can accept it', stO, aliceS,
+      'acceptOwnership', [], 'NotPendingOwner');
+    await (await stO.transferOwnership(alice)).wait();
+    await (await stO.connect(aliceS).acceptOwnership()).wait();
+    eq('the nominee becomes the owner on the second step', await stO.owner(), alice);
+    eq('and the nomination is cleared', await stO.pendingOwner(), ethers.ZeroAddress);
+    await rv('the old owner has no powers left', stO, ownerS,
+      'setRewardFunder', [bob], 'NotOwner');
+  }
 
   // Deregistration is deliberately not offered: a record reads empty the
   // moment a delegator requests a full unstake, while the delegation still

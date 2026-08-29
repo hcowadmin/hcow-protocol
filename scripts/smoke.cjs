@@ -20,10 +20,25 @@ const { buildTree, getProof, verifyProof } = require("../lib/merkle");
 const E = (n) => ethers.parseUnits(String(n), 18);
 const fmt = (v) => ethers.formatUnits(v, 18);
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skipped = 0;
 function ok(name, cond, detail) {
   if (cond) { pass++; console.log(`  ok    ${name}`); }
   else { fail++; console.log(`  FAIL  ${name}${detail ? "  " + detail : ""}`); }
+}
+/**
+ * A section this run could not reach.
+ *
+ * Tracked, not swallowed. This script used to `return` out of main() when the
+ * ledger epoch had not finished yet, which is the normal state for the whole
+ * first hour after a deployment and for any re-run started early in an hour.
+ * That return sat above the summary and above `process.exitCode`, so the run
+ * printed no total, skipped every HCOWProfitShare and HCOWStaking assertion,
+ * and exited 0 EVEN IF the one assertion it had run already failed. A green
+ * exit that verified almost nothing is worse than a red one.
+ */
+function skip(section, why) {
+  skipped++;
+  console.log(`  SKIPPED  ${section}: ${why}`);
 }
 
 async function main() {
@@ -58,7 +73,7 @@ async function main() {
   const leaves = records.map((r) => leafHash(r, "skill"));
   const { root, levels } = buildTree(leaves);
   const proof = getProof(levels, 2);
-  ok("proof verifies locally before publishing", verifyProof(leaves[2], proof, root));
+  ok("proof verifies locally before publishing", verifyProof(leaves[2], proof, root, leaves.length));
 
   const nextEpoch = await ledger.nextEpoch();
   // Refuse to write junk into a live ledger: the epoch numbering is permanent
@@ -67,20 +82,24 @@ async function main() {
   if (chainId === 56) throw new Error("smoke.cjs must never run on BNB mainnet");
   const endsAt = (BigInt(nextEpoch) + 1n) * 3600n;
   const nowTs = BigInt((await provider.getBlock("latest")).timestamp);
+  let tx, rc;
   if (nowTs < endsAt) {
-    console.log(`  skipping ledger anchor: epoch ${nextEpoch} ends at ${endsAt}, now ${nowTs}`);
-    return;
-  }
-  let tx = await ledger.anchorEpoch(nextEpoch, root, records.length);
-  let rc = await tx.wait();
-  console.log(`  anchored epoch ${nextEpoch}  tx ${rc.hash}  gas ${rc.gasUsed}`);
+    // An epoch may only be anchored after the period it covers has finished,
+    // so this is expected rather than an error. It skips the ledger section
+    // alone; everything below still runs.
+    skip("ledger anchor", `epoch ${nextEpoch} ends at ${endsAt}, now ${nowTs}`);
+  } else {
+    tx = await ledger.anchorEpoch(nextEpoch, root, records.length);
+    rc = await tx.wait();
+    console.log(`  anchored epoch ${nextEpoch}  tx ${rc.hash}  gas ${rc.gasUsed}`);
 
-  const stored = await ledger.getEpoch(nextEpoch);
-  ok("stored root matches", stored.root.toLowerCase() === root.toLowerCase());
-  ok("record count stored", stored.recordCount === BigInt(records.length));
-  ok("contract verifies a real proof", await ledger.verifyEpochRecord(nextEpoch, leaves[2], proof));
-  const tampered = leafHash({ ...records[2], score: 999999 }, "skill");
-  ok("contract rejects a tampered record", !(await ledger.verifyEpochRecord(nextEpoch, tampered, proof)));
+    const stored = await ledger.getEpoch(nextEpoch);
+    ok("stored root matches", stored.root.toLowerCase() === root.toLowerCase());
+    ok("record count stored", stored.recordCount === BigInt(records.length));
+    ok("contract verifies a real proof", await ledger.verifyEpochRecord(nextEpoch, leaves[2], proof));
+    const tampered = leafHash({ ...records[2], score: 999999 }, "skill");
+    ok("contract rejects a tampered record", !(await ledger.verifyEpochRecord(nextEpoch, tampered, proof)));
+  }
 
   // ----------------------------------------------------------- profit share
   console.log("\nHCOWProfitShare");
@@ -167,11 +186,17 @@ async function main() {
      commission * 19n >= pending - 2n && commission * 19n <= pending + 2n,
      `${fmt(commission)} vs ${fmt(pending)}`);
 
-  console.log(`\n${pass} passed, ${fail} failed`);
-  process.exitCode = fail ? 1 : 0;
 }
 
-main().catch((e) => {
-  console.error(e.message || e);
-  process.exitCode = 1;
-});
+function report() {
+  console.log(`\n${pass} passed, ${fail} failed, ${skipped} section(s) skipped`);
+  // A skipped section is not a pass. The exit code says so, because the whole
+  // point of this script is that a green exit means the deployed contracts
+  // were exercised, and a run that could not reach half of them did not do
+  // that. Re-run it once the epoch has finished.
+  process.exitCode = (fail || skipped) ? 1 : 0;
+}
+
+main()
+  .catch((e) => { console.error(e.message || e); fail++; })
+  .finally(report);

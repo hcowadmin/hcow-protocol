@@ -11,7 +11,13 @@ let STEP = '';
 
 function ok(name, cond, detail) {
   if (cond) { pass++; results.push(['ok', name, '']); }
-  else { fail++; results.push(['XX', name, detail || '']); }
+  else {
+    fail++;
+    results.push(['XX', name, detail || '']);
+    // Printed as it happens. This suite has sequential dependencies, so it dies
+    // on the first unexpected revert, and the report then never prints.
+    console.log(`  XX  ${name}  ${detail || ''}`);
+  }
 }
 const eq = (name, a, b) => ok(name, String(a) === String(b), `got ${a}, want ${b}`);
 const near = (name, a, b, tol = 1e-9) =>
@@ -163,7 +169,48 @@ async function main() {
 
   await rv('stranger cannot take ownership', faucet, aliceS, 'transferOwnership', [alice], 'NotOwner');
   await (await faucet.transferOwnership(bob)).wait();
-  eq('ownership moved', await faucet.owner(), bob);
+  eq('the owner does not change on the first step', await faucet.owner(), owner);
+  eq('the nominee is recorded', await faucet.pendingOwner(), bob);
+  await rv('only the nominee can accept', faucet, aliceS, 'acceptOwnership', [], 'NotPendingOwner');
+  await (await faucet.cancelOwnershipTransfer()).wait();
+  eq('a nomination can be withdrawn', await faucet.pendingOwner(), ethers.ZeroAddress);
+  await (await faucet.transferOwnership(bob)).wait();
+  await (await faucet.connect(bobS).acceptOwnership()).wait();
+  eq('ownership moved on the second step', await faucet.owner(), bob);
+  await rv('and the old owner has no powers left', faucet, ownerS,
+    'setAmounts', [1, 1], 'NotOwner');
+
+  step('status tells the truth about a one-sided payout'); // ----------------
+  // claimsLeft counts FULL allowances, and the two sides are paid
+  // independently, so it reads zero while a claim would still succeed on one
+  // side. An interface that disables the button on claimsLeft blocks claims the
+  // contract would honour, and with USDT draining far faster than HCOW that is
+  // the steady state rather than an edge case.
+  {
+    const f2 = await deploy('HCOWFaucet', ownerS,
+      [await hcow.getAddress(), await usdt.getAddress(), owner]);
+    const a2 = await f2.getAddress();
+    const [hcowAmt, usdtAmt] = [await f2.hcowAmount(), await f2.usdtAmount()];
+    // HCOW enough for one claim, USDT one wei short of one
+    await (await hcow.transfer(a2, hcowAmt)).wait();
+    await (await usdt.transfer(a2, usdtAmt - 1n)).wait();
+
+    const st = await f2.status(carol);
+    eq('claimsLeft reads zero, because a full allowance is not available',
+       Number(st[5]), 0);
+    eq('but the caller would still receive the whole HCOW side', st[8], hcowAmt);
+    eq('and nothing on the USDT side', Number(st[9]), 0);
+
+    const before = await hcow.balanceOf(carol);
+    await (await f2.connect(carolS).claim()).wait();
+    eq('and the claim the view predicted is the claim that happened',
+       (await hcow.balanceOf(carol)) - before, hcowAmt);
+    eq('the cooldown is spent even on a one-sided payout',
+       (await f2.claimableAt(carol)) > 0n, true);
+    const after = await f2.status(carol);
+    eq('and the view then reports nothing available to that caller',
+       `${after[8]}/${after[9]}`, '0/0');
+  }
 
   step('supply safety'); // ----------------
   // The faucet must never be able to create tokens. Total supply is fixed at

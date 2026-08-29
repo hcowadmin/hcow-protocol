@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.34;
 
 import {Test} from "forge-std/Test.sol";
 import {HCOWProfitShare} from "../../contracts/HCOWProfitShare.sol";
@@ -42,6 +42,27 @@ contract ProfitShareHandler is Test {
     uint256 public ghostWorstSingleDropPpm;
     uint256 public ghostDivisorMoved;    // a bystander was materially worse off
     uint256 public ghostWorstBystanderDrop;  // the largest reduction seen, in wei
+
+    // ---- coverage ghosts ----
+    // A campaign that explores nothing passes every property vacuously. These
+    // count what actually landed, so the run can be made to fail when it did
+    // not reach the states the properties are about. Caught reverts are
+    // counted rather than discarded for the same reason: "settleEpoch reverted
+    // 4,133 times out of 4,133" and "settleEpoch succeeded 4,133 times" are
+    // indistinguishable to a property that only reads state.
+    uint256 public ghostBonds;
+    uint256 public ghostBondReverts;
+    uint256 public ghostUnbondRequests;
+    uint256 public ghostWithdrawals;
+    uint256 public ghostClaims;
+    uint256 public ghostSettleReverts;
+    uint256 public ghostDeductions;          // settlements that actually burned principal
+    uint256 public ghostOverCapRefused;      // an over-cap rate was offered and refused
+    uint256 public ghostSubFloorCarried;     // a settlement withheld and carried the leg
+    uint256 public ghostOverCapAccepted;     // must stay zero
+    uint256 public ghostStallCloses;
+    uint256 public ghostStallClosedTooEarly; // must stay zero
+    bytes4 public lastSettleError;
 
     // Arrivals waiting to be checked against the settlement that follows them.
     //
@@ -118,17 +139,31 @@ contract ProfitShareHandler is Test {
             // Only an account holding no shares is a clean test: one that
             // already holds eligible shares earns from those legitimately in
             // the same settlement.
+            ghostBonds += 1;
             if (sharesBefore == 0 && arrivedInEpoch[current] == 0) {
                 arrivedInEpoch[current] = ps.nextEpoch() + 1;   // +1 so 0 means "not recorded"
                 claimableAtArrival[current] = owedBefore;
             }
-        } catch {}
+        } catch {
+            ghostBondReverts += 1;
+        }
     }
 
     function requestUnbond(uint256 actorSeed, uint256 amtSeed) external useActor(actorSeed) {
         uint256 owned = ps.bondedOf(current);
-        if (owned == 0) return;
-        try ps.requestUnbond(_amount(amtSeed, owned)) {} catch {}
+        if (owned == 0) {
+            // Join first, then leave. Returning here instead made the exit
+            // path's coverage depend on some other action having bonded for
+            // this actor earlier in the same 128 call budget, and every action
+            // added to this handler made that likelier to fail: it did, on two
+            // runs in 256, the first time a new action was added.
+            uint256 bal = hcow.balanceOf(current);
+            if (bal == 0) return;
+            try ps.bond(bal > 100_000e18 ? 100_000e18 : bal) { ghostBonds += 1; } catch { return; }
+            owned = ps.bondedOf(current);
+            if (owned == 0) return;
+        }
+        try ps.requestUnbond(_amount(amtSeed, owned)) { ghostUnbondRequests += 1; } catch {}
     }
 
     function cancelUnbond(uint256 actorSeed) external useActor(actorSeed) {
@@ -136,11 +171,11 @@ contract ProfitShareHandler is Test {
     }
 
     function withdrawUnbonded(uint256 actorSeed) external useActor(actorSeed) {
-        try ps.withdrawUnbonded() {} catch {}
+        try ps.withdrawUnbonded() { ghostWithdrawals += 1; } catch {}
     }
 
     function claimUsdt(uint256 actorSeed) external useActor(actorSeed) {
-        try ps.claimUsdt() {} catch {}
+        try ps.claimUsdt() { ghostClaims += 1; } catch {}
     }
 
     function warp(uint256 seed) external {
@@ -239,8 +274,163 @@ contract ProfitShareHandler is Test {
         try ps.settleEpoch(epoch, gross, direct, opex, ppm) {
             ghostSettlements += 1;
             _checkPolicy(epoch, ppm, priceBefore);
-        } catch {}
+        } catch (bytes memory err) {
+            ghostSettleReverts += 1;
+            // The refusal is counted by its reason, not by the fact that
+            // something reverted. An over-cap rate that was refused because
+            // the epoch was too young says nothing about the cap, and counting
+            // it would rebuild the same vacuous guard one level down.
+            if (err.length >= 4) {
+                bytes4 sel; assembly { sel := mload(add(err, 32)) }
+                lastSettleError = sel;
+                if (sel == HCOWProfitShare.DeductionRateAboveCap.selector) {
+                    ghostOverCapRefused += 1;
+                }
+            }
+        }
         vm.stopPrank();
+        _afterAction();
+    }
+
+    /**
+     * The operator's actual runbook: wait out the minimum interval, then
+     * settle. The unguided `settle` action above lands rarely, because a
+     * random walk over 21 day warps and 128 calls mostly offers settlements to
+     * an epoch that is still too young: measured, eleven refusals for every
+     * four settlements, almost all EpochTooSoon. Every property about
+     * distribution, burning and claiming is silent on a campaign that never
+     * settles, so the sequence that reaches those states is generated
+     * deliberately rather than waited for.
+     *
+     * The rate is still allowed above the cap, because the cap has to be
+     * offered a violation before refusing one means anything.
+     */
+    function settleRunbook(uint256 grossSeed, uint256 ppmSeed) external {
+        vm.warp(block.timestamp + 7 days + 1);
+        uint256 gross = bound(grossSeed, 1e18, 5_000_000e18);
+        uint32 ppm = uint32(bound(ppmSeed, 0, 60_000));
+        uint64 epoch = ps.nextEpoch();
+        uint256 priceBefore = _price();
+
+        inSettlement = true;
+        vm.startPrank(settler);
+        try ps.settleEpoch(epoch, gross, 0, 0, ppm) {
+            ghostSettlements += 1;
+            _checkPolicy(epoch, ppm, priceBefore);
+        } catch (bytes memory err) {
+            ghostSettleReverts += 1;
+            if (err.length >= 4) {
+                bytes4 sel; assembly { sel := mload(add(err, 32)) }
+                lastSettleError = sel;
+                if (sel == HCOWProfitShare.DeductionRateAboveCap.selector) {
+                    ghostOverCapRefused += 1;
+                }
+            }
+        }
+        vm.stopPrank();
+        _afterAction();
+    }
+
+    /**
+     * The full operator cycle, generated rather than waited for: a position in
+     * the pool, an over-cap rate offered and refused, a valid settlement that
+     * consumes principal, and a participant claiming what it earned.
+     *
+     * This exists because the coverage floor in afterInvariant is a per-run
+     * floor, and an unguided walk of 128 calls reaches all four of those
+     * states in most runs but not in every run. A property that is only
+     * exercised in most runs is a property that is not exercised in the run
+     * that would have failed it. The rate is deliberately well under the
+     * window ceiling so several cycles fit inside one DECAY_WINDOW.
+     */
+    function settleRunbookFullCycle(uint256 actorSeed, uint256 grossSeed) external {
+        address a = actors[actorSeed % actors.length];
+        if (ps.bondedOf(a) == 0 && hcow.balanceOf(a) > 0) {
+            uint256 bal = hcow.balanceOf(a);
+            vm.prank(a);
+            try ps.bond(bal > 100_000e18 ? 100_000e18 : bal) { ghostBonds += 1; } catch {}
+        }
+
+        vm.warp(block.timestamp + 7 days + 1);
+        uint256 gross = bound(grossSeed, 1_000e18, 5_000_000e18);
+        uint64 epoch = ps.nextEpoch();
+        uint256 priceBefore = _price();
+
+        inSettlement = true;
+        vm.startPrank(settler);
+
+        // A rate one part per million above the cap. This must be refused for
+        // that reason and no other.
+        try ps.settleEpoch(epoch, gross, 0, 0, uint32(ps.MAX_DEDUCT_PPM()) + 1) {
+            ghostOverCapAccepted += 1;
+        } catch (bytes memory err) {
+            if (err.length >= 4) {
+                bytes4 sel; assembly { sel := mload(add(err, 32)) }
+                if (sel == HCOWProfitShare.DeductionRateAboveCap.selector) ghostOverCapRefused += 1;
+            }
+        }
+
+        // The same settlement at a rate the contract accepts.
+        try ps.settleEpoch(epoch, gross, 0, 0, 5_000) {
+            ghostSettlements += 1;
+            _checkPolicy(epoch, 5_000, priceBefore);
+        } catch (bytes memory err) {
+            ghostSettleReverts += 1;
+            if (err.length >= 4) {
+                bytes4 sel; assembly { sel := mload(add(err, 32)) }
+                lastSettleError = sel;
+            }
+        }
+        vm.stopPrank();
+
+        vm.prank(a);
+        try ps.claimUsdt() { ghostClaims += 1; } catch {}
+
+        _afterAction();
+    }
+
+    /**
+     * Close an abandoned epoch. Permissionless by design, so the generator
+     * calls it as a stranger.
+     *
+     * It warps to the deadline itself. The unguided walk bounds a warp at 21
+     * days and the stall ceiling is 30, so a campaign could reach the state but
+     * would almost never sit still long enough to, and the function would have
+     * no coverage at all: the first version of this handler had none, and the
+     * two defects the review found in `closeStalledEpoch` were both invisible
+     * to it for that reason.
+     */
+    function closeStalled() external {
+        uint64 deadline = ps.epochStallDeadline();
+
+        // Both halves, every call, with nothing left to a draw.
+        //
+        // Two earlier versions chose between them on `seed % 4`. The first
+        // warped BACKWARDS to deadline - 1 for the too-early half, which parked
+        // the clock under the deadline so every later call in the sequence
+        // computed the same target, did not warp, and reverted again: one draw
+        // poisoned the whole run. The second stopped warping backwards but
+        // still returned early on that branch, and the fuzz dictionary's
+        // preference for small integers meant a run could take it every time.
+        // Both showed up as the coverage floor failing on two or three
+        // invariants per run, which is a suite that fails at random, which is a
+        // suite people stop believing.
+        //
+        // A generator's job here is to reach the states the properties are
+        // about. Randomising WHICH of two states it reaches, when both are
+        // wanted, buys nothing.
+        if (block.timestamp < deadline) {
+            vm.prank(address(0xC105E));
+            try ps.closeStalledEpoch() { ghostStallClosedTooEarly += 1; } catch {}
+        }
+
+        if (uint256(deadline) + 1 > block.timestamp) vm.warp(uint256(deadline) + 1);
+
+        vm.prank(address(0xC105E));
+        try ps.closeStalledEpoch() {
+            ghostStallCloses += 1;
+            if (block.timestamp < deadline) ghostStallClosedTooEarly += 1;
+        } catch {}
         _afterAction();
     }
 
@@ -248,10 +438,33 @@ contract ProfitShareHandler is Test {
         if (ppm > ps.MAX_DEDUCT_PPM()) ghostRateCapBreaches += 1;
 
         HCOWProfitShare.Settlement memory st = ps.getSettlement(epoch);
+        if (st.hcowDeducted > 0) ghostDeductions += 1;
+        if (st.distributableProfitUsdt > 0 &&
+            uint256(st.participantsUsdt)
+              + st.gameCompanyUsdt + st.teamUsdt < st.distributableProfitUsdt) {
+            ghostSubFloorCarried += 1;
+        }
 
-        // Rule 6. Principal is only consumed by an epoch that actually pays
-        // participants, and the test is on what reached them.
-        if (st.hcowDeducted > 0 && st.participantsUsdt < ps.MIN_PARTICIPANT_USDT()) {
+        // Rules 4 and 6. Principal is only consumed by an epoch whose OWN
+        // revenue pays participants something meaningful.
+        //
+        // The previous version of this ghost tested `st.participantsUsdt`,
+        // which is the credited total including any carried balance. That is
+        // the contract's own figure, so the ghost and the contract agreed with
+        // each other and the ghost could not have caught a defect in the gate.
+        // It did not: a settlement funded with one wei, against a large carry,
+        // burned the full 2% and this line said nothing.
+        //
+        // `distributableProfitUsdt * PARTICIPANT_BPS / 10_000` is this epoch's
+        // own participant leg, computed here from the published settlement
+        // rather than read out of the contract's internals. It is an upper
+        // bound on what this epoch alone credits, so a deduction taken while it
+        // is below the floor is a breach whatever the eligible pool was.
+        if (
+            st.hcowDeducted > 0 &&
+            (uint256(st.distributableProfitUsdt) * ps.PARTICIPANT_BPS()) / 10_000
+                < ps.MIN_PARTICIPANT_USDT()
+        ) {
             ghostRule6Breaches += 1;
         }
 

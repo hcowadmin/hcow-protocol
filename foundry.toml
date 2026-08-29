@@ -16,10 +16,24 @@ libs = ["node_modules", "foundry/lib"]
 # svm-rs cannot reach binaries.soliditylang.org from here, and the pinned
 # compiler has to match what Hardhat and BscScan use anyway.
 solc = "/usr/local/bin/solc"
+# evm_version is pinned to "paris" DELIBERATELY and must match
+# hardhat.config.cjs, the other repository's foundry.toml and compile.cjs
+# exactly. The compiler settings are part of the BscScan verification input, so
+# a mismatch produces different bytecode and a verification failure with no
+# useful error. paris rather than shanghai or cancun is a portability choice
+# rather than a capability one: BNB Chain supports PUSH0, transient storage and
+# MCOPY, nothing here uses them, and paris keeps the deployed bytecode free of
+# any opcode a fork, an archive node or an auditor's tooling might not
+# implement. See hardhat.config.cjs for the full rationale.
 evm_version = "paris"
 optimizer = true
 optimizer_runs = 200
 remappings = ["@openzeppelin/=node_modules/@openzeppelin/", "forge-std/=foundry/lib/forge-std/src/"]
+# foundry/medusa holds the Medusa harness. It inherits the invariant contract
+# so the properties are never restated, which also means forge would discover
+# it as a second copy of the same suite and run every property twice.
+no_match_contract = "Medusa"
+
 
 [profile.default.invariant]
 runs = 256

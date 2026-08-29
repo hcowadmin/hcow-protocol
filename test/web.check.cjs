@@ -37,8 +37,14 @@ const rec = (o={}) => { const s=o.serverSeed||'seed-abc-123'; return {
   const t = buildTree(leaves);
   for (const idx of [0,1,2,127,128,255,256]) {
     const proof = getProof(t.levels, idx);
-    const wRoot = await pg.evaluate(([l,p]) => rootFrom(l,p), [leaves[idx], proof]);
+    // The page folds the record count in exactly as the contract does, so the
+    // comparison is against the anchored value, not the bare Merkle root.
+    const wRoot = await pg.evaluate(([l,p,n]) => commit(rootFrom(l,p),n), [leaves[idx], proof, N]);
     if (wRoot.toLowerCase() !== t.root.toLowerCase()) { bad++; console.log('root mismatch at', idx, wRoot, t.root); }
+    const wWrongCount = await pg.evaluate(([l,p,n]) => commit(rootFrom(l,p),n), [leaves[idx], proof, N + 1]);
+    if (wWrongCount.toLowerCase() === t.root.toLowerCase()) {
+      bad++; console.log('page accepted a restated record count at', idx);
+    }
   }
 
   // rejection paths must behave the same
@@ -60,9 +66,65 @@ const rec = (o={}) => { const s=o.serverSeed||'seed-abc-123'; return {
   const kindMix = await pg.evaluate(x => { try { leafOf(x,'seeded'); return false; } catch(e){ return true; } }, sk);
   if (!kindMix) { bad++; console.log('page failed to reject kind mismatch'); }
 
+  // ---- a lying RPC must not be able to grant a pass ----
+  //
+  // The page invites the visitor to point it at any endpoint, which is the
+  // honest offer and also means one HTTP server was, for a while, the single
+  // most trusted component in the whole verification. It granted a pass on
+  // eth_call returning 1, and threw away the root it had just computed itself.
+  // Both must agree now. This drives the page with an endpoint that says yes
+  // to everything and asserts the verdict is not a pass.
+  {
+    const good = rec({ roundId: 'r-liar' });
+    const gl = leafHash(good, KIND);
+    const gt = buildTree([gl, leafHash(rec({ roundId: 'r-other' }), KIND)]);
+    const gp = getProof(gt.levels, 0);
+
+    // eth_call -> 1 (accepted), getEpoch -> a plausible tuple with a root that
+    // is NOT what the receipt computes to. A page that trusts the node alone
+    // calls this genuine.
+    const fakeRoot = '0x' + 'ab'.repeat(32);
+    await pg.route('**/liar-rpc', (route) => {
+      const body = JSON.parse(route.request().postData());
+      const sel = body.params[0].data.slice(0, 10);
+      const w = (h) => h.replace(/^0x/, '').padStart(64, '0');
+      const result = sel === '0x7a05560c'
+        ? '0x' + w('0x1')                                   // verifyEpochRecord -> true
+        : '0x' + w(fakeRoot) + w('0x' + (2).toString(16))   // getEpoch: root, recordCount
+                + w('0x' + Math.floor(Date.now() / 1000).toString(16)); // anchoredAt
+      route.fulfill({ status: 200, contentType: 'application/json',
+                      body: JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) });
+    });
+
+    await pg.evaluate(([receipt, rpc, addr]) => {
+      document.getElementById('receipt').value = receipt;
+      document.getElementById('rpc').value = rpc;
+      document.getElementById('addr').value = addr;
+    }, [JSON.stringify({ epoch: 0, kind: KIND, record: good, proof: gp }),
+        'https://example.invalid/liar-rpc',
+        '0x' + '11'.repeat(20)]);
+    await pg.click('#go');
+    await pg.waitForFunction(() => document.getElementById('verdict').className !== 'verdict');
+    // verdict() writes 'verdict ok' or 'verdict no'. Checking for 'pass' here
+    // matched neither, so the assertion could never have fired: it is the
+    // check-that-checks-nothing shape, caught by reverting the fix and
+    // watching which half of this block noticed.
+    const cls = await pg.evaluate(() => document.getElementById('verdict').className);
+    if (cls.split(/\s+/).includes('ok')) {
+      bad++;
+      console.log('the page granted a PASS on a node that returned a root the receipt does not produce');
+    }
+    const said = await pg.evaluate(() => document.getElementById('checks').textContent);
+    if (!said.includes('not telling the truth')) {
+      bad++;
+      console.log('the page did not name the endpoint as the problem:', said.slice(0, 200));
+    }
+    await pg.unroute('**/liar-rpc');
+  }
+
   console.log('page errors:', errs.length ? errs : 'none');
   console.log(bad === 0
-    ? `web page matches lib on ${vectors.length} seeded vectors, 1 skill vector, 7 proofs, 4 rejection paths`
+    ? `web page matches lib on ${vectors.length} seeded vectors, 1 skill vector, 7 proofs, 4 rejection paths, and refuses a lying RPC`
     : `MISMATCHES: ${bad}`);
   await b.close();
   process.exit(bad ? 1 : 0);

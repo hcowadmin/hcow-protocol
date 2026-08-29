@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.34;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+interface IERC20Supply {
+    function totalSupply() external view returns (uint256);
+}
 
 /**
  * @title HCOWProfitShare
@@ -21,14 +25,17 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *     amount. It passes a rate in parts per million, capped at MAX_DEDUCT_PPM,
  *     and the contract computes the amount from its own pool figure. With
  *     MIN_EPOCH_INTERVAL between settlements the worst case is 2% per week,
- *     and a position that requests an unbond is charged for exactly one
+ *     and a position that requests an unbond is charged for at most one
  *     settlement, so reacting costs at most 2% of principal. Over a decay
  *     window MAX_DECAY_PER_WINDOW_PPM binds instead. That window is fixed
- *     rather than sliding, so two can be packed back to back and the true
- *     worst case over an arbitrary thirty days is more than it: measured,
- *     4.92% over thirty days and 5.87% over thirty seven, against 3% per
- *     window. Those are bounds the code enforces, not promises, and the
- *     figures to quote are the measured ones.
+ *     rather than sliding and it is anchored by the FIRST deduction in it,
+ *     so a settler chooses where the boundary falls and two windows can be
+ *     packed back to back. The true worst case over an arbitrary span is
+ *     therefore more than 3%: 59,999 ppm summed, 5.871% compounded, over
+ *     any thirty days, and 70,000 ppm summed, 6.822% compounded, over any
+ *     thirty seven. The derivation is at MAX_DECAY_PER_WINDOW_PPM below.
+ *     Those are bounds the code enforces, not promises, and the figures to
+ *     quote are the worst case ones, not the per window one.
  *   - Rule 6, a deduction requires a real distribution. The participant leg of
  *     the epoch must be non-zero. An epoch that pays participants nothing
  *     cannot consume their principal, however it is arithmetically dressed up.
@@ -103,20 +110,72 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint256 public constant MIN_PARTICIPANT_USDT = 1e18;
 
     /**
-     * @notice Floor on the pool the eligible fraction is measured against.
+     * @notice Floor on the pool the participant leg is measured against.
      *
-     * The fraction is eligibleShares / (the pool the epoch began with). Below
-     * this floor that denominator stops being a meaningful description of a
-     * participant base: one wei bonded before anybody else, with a ten million
-     * HCOW cohort arriving during the epoch, would otherwise take the entire
-     * distribution, because the cohort is quarantined and the wei is all that
-     * is left of the epoch-start pool. Measured at 300,000 USDT to one wei.
+     * Below this floor the eligible pool stops being a meaningful description
+     * of a participant base: one wei bonded before anybody else, with a ten
+     * million HCOW cohort arriving during the epoch, would otherwise take the
+     * entire distribution, because the cohort is quarantined and the wei is all
+     * that is left. Measured at 300,000 USDT to one wei.
      *
-     * With the floor, a pool that small takes essentially nothing and the rest
-     * goes to the two fixed recipients. A pool above the floor is unaffected.
-     * It is a launch-window rule and it is deliberately blunt.
+     * Two things changed here after audit.
+     *
+     * The floor was 1,000e18, one two-hundred-thousandth of supply, which is
+     * not a pool. A sole participant holding exactly that took the whole
+     * distribution with no manipulation at all. It is now 1,000,000e18, half a
+     * percent of supply, which cannot be reached without a real position.
+     *
+     * It was also armed only while the previous settlement's snapshot was
+     * itself below the floor. That condition could never be false when the
+     * first was true, because the eligible pool only ever shrinks between
+     * settlements, so it was dead code. What it did do was let the guard be
+     * switched off: park a position above the floor across one settlement,
+     * withdraw, and every settlement afterwards saw the guard disarmed. The
+     * floor now looks at the pool in front of it and nothing else.
+     *
+     * Raising it is only safe because of what happens to the part the pool
+     * cannot take. It used to go to the two fixed recipients, which charged
+     * honest early participants for the guard's existence: a sole holder of
+     * 999 tokens received 500 tokens less than the full leg and the difference
+     * left the participant side for good. It now carries into the next epoch's
+     * participant pot instead, so a small pool is paid later rather than less.
+     *
+     * It is set at deployment rather than compiled in. A single constant
+     * cannot describe "a real pool" for every deployment, and the audit's
+     * objection to the old value was exactly that it did not describe one here.
+     * Fixed at construction it is still not a lever: nobody can move it
+     * afterwards and it is readable on chain. The bound below stops it being
+     * set high enough to keep a real pool from ever being paid in full.
+     *
+     * The published mainnet value is 1,000,000e18, half a percent of supply.
      */
-    uint256 public constant MIN_POOL_SHARES = 1_000e18;
+    uint256 public immutable minPoolShares;
+
+    /// @notice Upper bound on minPoolShares, as a share of token supply at
+    ///         deployment.
+    uint256 public constant MAX_MIN_POOL_SHARES_BPS = 500; // 5%
+
+    /**
+     * @notice Ceiling on how long one epoch may stay open.
+     *
+     * MIN_EPOCH_INTERVAL bounds a settler that settles too often. Nothing
+     * bounded one that stops: a settler that simply never calls settleEpoch
+     * again leaves the current epoch open forever, and every deposit made into
+     * it stays quarantined, earning nothing, while still carrying the full
+     * deduction whenever a settlement eventually arrives. That is an open-ended
+     * liveness dependency on a single key.
+     *
+     * Past this ceiling anyone may close the epoch with closeStalledEpoch,
+     * which moves no money and cannot state a revenue figure. It ends the
+     * quarantine and starts a fresh epoch, and that is all it does.
+     */
+    uint256 public constant MAX_EPOCH_INTERVAL = 30 days;
+
+    /// @notice The same ceiling, before the first settlement has ever happened.
+    ///         Longer, because a launch window with no revenue yet is normal
+    ///         and abandonment is not: at thirty days a stranger could burn
+    ///         several all-zero epochs during a perfectly healthy launch.
+    uint256 public constant BOOTSTRAP_STALL_INTERVAL = 90 days;
 
     /**
      * @notice Minimum wait between two settlements.
@@ -210,22 +269,42 @@ contract HCOWProfitShare is ReentrancyGuard {
     /**
      * @notice totalShares as it stood at the end of the previous settlement.
      *
-     * This is the denominator of the eligible fraction, and it is a snapshot
-     * rather than the live figure for one reason: the live figure moves, and
-     * the settler can move it. `bond` is permissionless, so anyone including
-     * the settler, from any address, can inflate totalShares inside the
-     * settlement block itself. Measured against the live figure, bonding 999
-     * times the pool cut an honest holder's share of the participant leg from
-     * 100,000 USDT to 100, and the difference went to the two fixed
-     * recipients. The settler does not receive it, but the settler is not
-     * independent of them, and a contract that is marketed as enforcing a
-     * 50/25/25 split has to actually enforce it.
+     * NOT the denominator of the eligible fraction. It was, for one round of
+     * fixes, and the comment that said so outlived the code by two rewrites.
+     * Freezing the denominator to the epoch-start pool while the numerator
+     * stayed live is what made the requestUnbond/cancelUnbond flip profitable,
+     * so the divisor is now `max(eligibleShares, minPoolShares)` and this is
+     * read by nothing in the contract at all.
      *
-     * Taken as of the previous settlement, the denominator is a fact about the
-     * pool the epoch began with. Nothing that happens during the epoch, or in
-     * the settlement block, can change it.
+     * It is kept because it is the one figure that says what the pool looked
+     * like when the epoch opened, which an observer cannot otherwise reconstruct
+     * from events, and because both settlement paths write it so it never goes
+     * stale. Treat it as published history, not as an input. A reviewer who
+     * takes the old comment at face value will reason about the wrong divisor,
+     * which is the whole reason this one is written out.
      */
     uint256 public sharesAtLastSettlement;
+
+    /**
+     * @notice USDT held back from a participant leg the eligible pool was too
+     *         small to take, waiting for the next epoch.
+     *
+     * It is participant money that has not been paid yet, not protocol money.
+     * It is added to the next epoch's participant pot before the fraction is
+     * applied, so it is attributed to shares rather than sitting in a pot
+     * somebody has to be trusted to release. The two fixed recipients never
+     * receive it and there is no path by which anyone else can.
+     */
+    uint256 public carriedParticipantUsdt;
+
+    /// @notice Set at construction, so a settler that never settles even once
+    ///         still has a deadline attached to it.
+    uint64 public immutable deployedAt;
+
+    /// @notice Two-step ownership. A mistyped address ends control of the
+    ///         settler role and both payout addresses permanently, so the
+    ///         incoming address has to prove it exists first.
+    address public pendingOwner;
 
 
     /**
@@ -267,18 +346,45 @@ contract HCOWProfitShare is ReentrancyGuard {
      * bonded decays at this rate for every settlement it sits through, and
      * because deductPpm sums linearly while poolIndex compounds, actual
      * destruction is always below the meter. A pending unbond is a different
-     * case and a weaker one: _chargeIndex charges it for exactly one
+     * case and a weaker one: _chargeIndex charges it for AT MOST one
      * settlement however long it waits, so requesting an unbond is a
      * one-time-priced, permanent opt-out of all further deduction. That is
      * deliberate, it is what stops a settlement from being able to reach a
      * position that has already asked to leave, and it means the meter
      * overstates rather than understates what a campaign destroys.
      *
-     * The window is fixed, not sliding, so two adjacent windows can be packed
-     * back to back. MIN_EPOCH_INTERVAL is seven days, which stops two full
-     * windows landing inside thirty. Measured against a greedy settler: 4.92
-     * percent of the bonded pool over any thirty days, 5.87 percent over
-     * thirty seven. Quote those, not the per window figure.
+     * At most one, not exactly one. _chargeIndex prices a pending unbond
+     * against poolIndexAtEpoch[unbondEpoch], the index written by whichever
+     * call closes that epoch, and closeStalledEpoch is one of the two calls
+     * that can close it. A stall close writes poolIndex unchanged because it
+     * deducts nothing, so an unbond that was requested into an epoch nobody
+     * ever settled is charged zero rather than one. That is the direction
+     * that favours the holder, so it is left as it is, but the earlier
+     * wording said "exactly one" and that was wrong.
+     *
+     * The window is fixed, not sliding, and decayWindowAt is written by the
+     * FIRST deduction in a window rather than by the clock. A settler
+     * therefore chooses where the boundary falls, and two windows can be
+     * packed back to back. MIN_EPOCH_INTERVAL at seven days is what stops
+     * two full windows landing inside thirty; it does not stop the packing.
+     *
+     * Worst case over an arbitrary thirty days, 59,999 ppm summed. Anchor a
+     * window with 1 ppm at t0 so its budget is spent late: 20,000 at t0+16d
+     * and 9,999 at t0+23d. The next window cannot anchor before t0+30d, so
+     * anchor it there with 20,000 and spend 10,000 at t0+37d. The span
+     * [t0+16d, t0+46d) holds all four. 60,000 is unreachable because it
+     * would need both anchors inside one thirty day span and they are
+     * thirty days apart. Compounded, 5.871%.
+     *
+     * Worst case over an arbitrary thirty seven days, 70,000 ppm summed. A
+     * thirty seven day span can touch three windows: the tail of one
+     * (20,000 at t0-7d), all of the next (20,000 at t0, 9,999 at t0+7d,
+     * 1 at t0+14d), and the anchor of the one after (20,000 at t0+30d).
+     * Compounded, 6.822%.
+     *
+     * Both figures are the meter, which sums linearly while poolIndex
+     * compounds on a shrinking base, so actual destruction sits at or below
+     * them. Quote 5.87% and 6.82%, not the 3% per window figure.
      */
     uint64 public decayWindowAt;
     uint256 public decayWindowPpm;
@@ -356,14 +462,24 @@ contract HCOWProfitShare is ReentrancyGuard {
     /**
      * @dev The two fixed legs are stated rather than left to be reconstructed.
      *      They are NOT a quarter of distributableProfitUsdt each: floor
-     *      division puts up to two wei of dust on the team, and whatever the
-     *      eligible pool could not take is split between the two on top of the
-     *      quarter. An indexer applying the 25% rule to an odd profit figure
-     *      gets a number that does not add up, which is exactly the
-     *      reconciliation this event exists to make possible.
+     *      division puts up to two wei of dust on the team. An indexer applying
+     *      the 25% rule to an odd profit figure gets a number that does not add
+     *      up, which is exactly the reconciliation this event exists to make
+     *      possible.
      *
-     *      distributableProfitUsdt = participantsUsdt + gameCompanyUsdt +
-     *      teamUsdt, exactly, in every branch.
+     *      The identity is
+     *
+     *        distributableProfitUsdt
+     *          = participantsUsdt + gameCompanyUsdt + teamUsdt
+     *            + the change in carriedParticipantUsdt
+     *
+     *      exactly, in every branch. The carry term is zero in an ordinary
+     *      epoch, positive when the eligible pool is below the floor, and
+     *      negative when a real pool releases what was withheld. It is reported
+     *      by ParticipantUsdtCarried and ParticipantUsdtReleased, so the
+     *      reconciliation needs no storage read. The three legs alone stopped
+     *      summing to the profit when the carry was introduced, and a comment
+     *      that still said they did was worse than no comment.
      */
     event EpochSettled(
         uint64 indexed epoch,
@@ -382,6 +498,17 @@ contract HCOWProfitShare is ReentrancyGuard {
     event SettlerChanged(address indexed account);
     event RecipientsChanged(address indexed gameCompany, address indexed team);
     event OwnershipTransferred(address indexed from, address indexed to);
+    event OwnershipTransferStarted(address indexed from, address indexed to);
+    event OwnershipTransferCancelled(address indexed nominee);
+    event StalledEpochClosed(uint64 indexed epoch, address indexed closedBy, uint64 openSince);
+    /// @notice Part of an epoch's participant leg was withheld because the
+    ///         eligible pool was below the floor, and is held for the first real
+    ///         pool. `amount` is what this epoch added, `carriedTotal` the
+    ///         running balance after it.
+    event ParticipantUsdtCarried(uint64 indexed epoch, uint256 amount, uint256 carriedTotal);
+    /// @notice A carried balance was released to a real pool. `amount` is what
+    ///         this epoch paid out of the carry, `carriedTotal` what is left.
+    event ParticipantUsdtReleased(uint64 indexed epoch, uint256 amount, uint256 carriedTotal);
 
     // ------------------------------------------------------------------
     // errors
@@ -389,6 +516,13 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     error NotOwner();
     error NotSettler();
+    error NotPendingOwner();
+    error MinPoolSharesTooHigh(uint256 given, uint256 max);
+    error EpochNotStalled(uint64 openAt);
+    /// A settlement bringing money in while no shares exist at all. The
+    /// participant half would be carried with nothing that could ever release
+    /// it.
+    error NoParticipantsToCarryFor();
     error ZeroAddress();
     error ZeroAmount();
     error WrongEpoch(uint64 expected, uint64 given);
@@ -424,7 +558,8 @@ contract HCOWProfitShare is ReentrancyGuard {
         address initialOwner,
         address initialSettler,
         address gameCompany_,
-        address team_
+        address team_,
+        uint256 minPoolShares_
     ) {
         if (
             hcowToken == address(0) || usdtToken == address(0) ||
@@ -442,8 +577,22 @@ contract HCOWProfitShare is ReentrancyGuard {
             revert SettlerIsRecipient();
         }
 
+        // The floor the participant leg is measured against. Zero would let a
+        // single wei take an entire distribution; too high would keep a real
+        // pool from ever being paid in full.
+        if (minPoolShares_ == 0) revert ZeroAmount();
+        {
+            uint256 supply = IERC20Supply(hcowToken).totalSupply();
+            if (supply == 0) revert ZeroAmount();
+            if (minPoolShares_ > (supply * MAX_MIN_POOL_SHARES_BPS) / 10_000) {
+                revert MinPoolSharesTooHigh(minPoolShares_, (supply * MAX_MIN_POOL_SHARES_BPS) / 10_000);
+            }
+        }
+        minPoolShares = minPoolShares_;
+
         hcow = IERC20(hcowToken);
         usdt = IERC20(usdtToken);
+        deployedAt = uint64(block.timestamp);
         owner = initialOwner;
         settler = initialSettler;
         gameCompany = gameCompany_;
@@ -697,101 +846,88 @@ contract HCOWProfitShare is ReentrancyGuard {
         uint256 profit = netRevenue - operatingCostsUsdt;
         uint256 eligibleShares = totalShares - totalNewShares;
 
-        // The participant leg, and the part of it the eligible pool may take.
+        // Rule 2. A settlement that brings money in needs somebody for the
+        // participant half to eventually reach.
         //
-        // Dividing the whole leg across the eligible shares alone hands it to
-        // whoever arrived first however small they are: one wei bonded an epoch
-        // early otherwise takes the entire distribution from a pool a hundred
-        // million times its size. Scaling to the eligible fraction fixes that.
+        // With no shares outstanding at all, the participant leg is carried,
+        // and the carry's only exit is a later settlement with a non-empty
+        // eligible pool. If nobody ever bonds again it is unreachable forever:
+        // there is no sweep, no owner rescue, and `claimUsdt` cannot see it.
+        // Measured on the version without this check: the last participant
+        // withdrew, the settler kept settling, and 200,000 USDT accumulated
+        // that nobody had any claim on, while the two fixed recipients were
+        // paid their quarters in full each time and so had no signal that
+        // anything was wrong.
         //
-        // The rest goes to the two fixed recipients, not back to the settler
-        // and not into a holding balance. Both alternatives were tried and both
-        // were defects. Held for a later epoch it becomes a pot with no link to
-        // the shares it was deferred for, and one wei bonded after everybody
-        // else has left collects the lot. Returned to the settler it is self
-        // dealing, because the settler is the party that both authors the
-        // revenue figure and moves the divisor: bonding into the pool in the
-        // settlement block, from any address, shrinks the eligible fraction
-        // without limit and hands the difference straight back. Measured at 999
-        // times the pool, a settler recovered 49,950 of a 50,000 USDT
-        // participant leg and unbonded a week later at no cost.
+        // `totalShares == 0` is the precise condition, and it is not the
+        // launch case. During the launch window a bonded position exists and
+        // is merely quarantined, so `totalShares > 0` while `eligibleShares`
+        // is 0, the leg is carried, and the first settlement lifts the
+        // quarantine exactly as intended. Testing `eligibleShares` here
+        // instead would deadlock that.
         //
-        // Sent to gameCompany and team the incentive is gone rather than
-        // bounded: diluting the pool costs the settler exactly as much either
-        // way and gains it nothing, and neither recipient may be the settler.
+        // An epoch with no revenue is still allowed, so the settler can always
+        // advance the sequence.
+        if (profit > 0 && totalShares == 0) revert NoParticipantsToCarryFor();
+
+        // The waterfall is a function of its arguments and nothing else. It
+        // was inline, at a measured branch complexity of twenty-one across
+        // roughly two hundred lines, and several of this contract's historical
+        // findings lived in the ordering between the distribution gate and the
+        // leg scaling. Separating it makes that ordering visible at a glance
+        // and costs nothing at runtime.
         uint256 participants;
         uint256 toGameCompany;
         uint256 toTeam;
-        {
-            uint256 leg = (profit * PARTICIPANT_BPS) / 10_000;
-            // The whole leg goes to the eligible pool. Nothing that happens
-            // during the epoch, or in the settlement block, changes that.
-            //
-            // Three divisors were tried before this one and each was worse.
-            // The live share count let anyone shrink the eligible fraction by
-            // bonding in the settlement block: measured, an honest holder's
-            // 100,000 USDT leg became 100. Freezing the denominator to the
-            // epoch-start pool moved the same attack to the numerator, because
-            // requestUnbond followed by cancelUnbond in one block removes a
-            // position from eligibleShares and puts it back as new shares at
-            // zero cost: measured, 150 USDT of a 300,000 USDT leg reached
-            // participants. And any divisor larger than eligibleShares hands
-            // the difference to the two fixed recipients whenever somebody
-            // simply leaves mid epoch, which is an ordinary user action: a
-            // holder exiting a 50/50 pool moved the split from 50/25/25 to
-            // 25/37.5/37.5.
-            //
-            // Dividing by eligibleShares itself removes the lever entirely.
-            // Shrinking the eligible pool no longer concentrates the leg on a
-            // smaller base for free; it just means whoever is left takes what
-            // the leavers gave up, and getting out of the eligible pool costs
-            // the position.
-            //
-            // The floor is what stops the degenerate end of that. One wei
-            // eligible against a ten million HCOW arrival would otherwise take
-            // 300,000 USDT. It applies only while the pool the epoch began with
-            // was itself below the floor, so it is a launch window rule and
-            // cannot be triggered against a real pool: the epoch-start figure
-            // is a snapshot and nothing in the block can move it.
-            uint256 denom = eligibleShares;
-            if (sharesAtLastSettlement < MIN_POOL_SHARES && denom < MIN_POOL_SHARES) {
-                denom = MIN_POOL_SHARES;
-            }
-            participants = (eligibleShares == 0 || denom == 0)
-                ? 0
-                : Math.mulDiv(leg, eligibleShares, denom);
-            // The fixed quarter, plus half of whatever the eligible pool could
-            // not take. The team gets the rest of the profit, so rounding dust
-            // never strands here and the three legs add up to `profit` exactly
-            // in every branch, which is what makes the published waterfall
-            // reconstructible from the log alone.
-            toGameCompany = (profit * GAME_COMPANY_BPS) / 10_000 + (leg - participants) / 2;
-            toTeam = profit - participants - toGameCompany;
-        }
+        (participants, toGameCompany, toTeam) =
+            _waterfall(profit, eligibleShares, carriedParticipantUsdt);
 
         // Rule 5. The rate is capped, and two deductions cannot be stacked
         // inside the cooldown. Together these bound the worst case at 2% a week.
         if (deductPpm > MAX_DEDUCT_PPM) {
             revert DeductionRateAboveCap(deductPpm, MAX_DEDUCT_PPM);
         }
-        if (deductPpm != 0) {
-            // Rule 4 and Rule 6. Principal is only consumed by an epoch that
-            // actually pays participants, and the test is on what reaches
-            // them, not on what was computed. `participants` here is already
-            // the credited figure, not the computed leg: testing the computed
-            // one let a settlement where the eligible pool is a rounding error
-            // burn the whole pool's worth of principal while crediting zero.
-            // One wei of profit rounds the leg to zero; burning principal
-            // against that is the same defect wearing different arithmetic.
-            //
-            // With nobody eligible the whole leg goes to the two recipients, so
-            // there is nothing to charge and nothing to charge it against, and
-            // the deduction is dropped rather than the settlement refused: a
-            // single dominant holder could otherwise veto every settlement by
-            // front running it with an unbond request.
-            if (eligibleShares != 0 && participants < MIN_PARTICIPANT_USDT) {
-                revert DeductionWithoutDistribution();
-            }
+        // Rules 4 and 6, as one test, on THIS epoch's own contribution to
+        // participants.
+        //
+        // Two earlier versions of this gate were wrong in the same way, and the
+        // second was introduced by the fix for the first. Testing the computed
+        // leg let a settlement whose eligible pool is a rounding error burn the
+        // whole pool's worth of principal while crediting nothing. Testing the
+        // credited figure fixed that and opened a worse hole once the carry
+        // existed: `participants` is computed on `participantLeg + carried`, so
+        // a balance withheld from earlier epochs satisfies the gate on behalf
+        // of an epoch that brought in almost nothing. Adding `profit != 0` in
+        // front of it did not close that, because one wei is not zero.
+        // Measured on that version: a carry of 300,000 USDT let a settlement
+        // funded with ONE WEI burn 200,000 HCOW of participant principal.
+        //
+        // `_epochCredit` is what this epoch's own revenue actually puts in
+        // participants' hands, with the carry excluded. Principal is consumed
+        // only when that figure is meaningful on its own.
+        //
+        // THE COST, in the other direction, stated so the next person to touch
+        // this does not "fix" it by putting the carry back in. An epoch that
+        // pays participants a large REAL distribution out of a carried balance
+        // still cannot take a deduction if its own revenue is under two USDT:
+        // measured, 300,000 USDT carried, the next settlement funded with one
+        // USDT credits 300,000.5 and is refused any deduction. That is a delay,
+        // not a loss. The settler settles it at deductPpm zero and takes the
+        // deduction the following epoch. Letting the carry satisfy the gate is
+        // what made one wei buy a full two percent burn, and no framing of it
+        // is safe.
+        //
+        // With nobody eligible the leg is carried rather than credited, so
+        // there is nothing to charge and nothing to charge it against, and the
+        // deduction is dropped rather than the settlement refused: a single
+        // dominant holder could otherwise veto every settlement by front
+        // running it with an unbond request.
+        if (
+            deductPpm != 0 &&
+            eligibleShares != 0 &&
+            _epochCredit(profit, eligibleShares) < MIN_PARTICIPANT_USDT
+        ) {
+            revert DeductionWithoutDistribution();
         }
 
         // The settler states a rate. The contract owns the arithmetic, so a
@@ -808,12 +944,14 @@ contract HCOWProfitShare is ReentrancyGuard {
             // two fixed legs out of a figure that was requested rather than
             // received would take any shortfall out of the participant
             // reserve, and the contract would be quietly insolvent.
+            //
+            // The two payouts do NOT happen here. They are the last thing this
+            // function does, after every piece of state is written. See the
+            // block at the end.
             uint256 beforeUsdt = usdt.balanceOf(address(this));
             usdt.safeTransferFrom(msg.sender, address(this), profit);
             uint256 arrived = usdt.balanceOf(address(this)) - beforeUsdt;
             if (arrived != profit) revert ProfitNotFunded(profit, arrived);
-            if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);
-            if (toTeam > 0) usdt.safeTransfer(team, toTeam);
         }
 
         if (participants > 0) {
@@ -846,12 +984,31 @@ contract HCOWProfitShare is ReentrancyGuard {
             poolIndex = nextIndex;
             totalBondedHcow -= hcowToDeduct;
             totalHcowDeducted += hcowToDeduct;
-            hcow.safeTransfer(BURN_ADDRESS, hcowToDeduct);
         }
 
         // This epoch's arrivals start earning from the next one. Recording
         // the accumulator here is what lets an untouched account be promoted
         // later without losing the epochs in between.
+        {
+            // Whatever the eligible pool was too small to take stays here for
+            // the next epoch. It never reaches the two fixed recipients.
+            uint256 prior = carriedParticipantUsdt;
+            uint256 newCarry = (profit * PARTICIPANT_BPS) / 10_000 + prior - participants;
+            if (newCarry != prior) {
+                carriedParticipantUsdt = newCarry;
+                // The direction is reported, and the amount is the change
+                // rather than the running total. The first version passed the
+                // total in both fields and fired on every epoch where a carry
+                // merely survived, so an indexer summing `amount` got nonsense
+                // and the most interesting moment, the release, was silent.
+                if (newCarry > prior) {
+                    emit ParticipantUsdtCarried(epoch, newCarry - prior, newCarry);
+                } else {
+                    emit ParticipantUsdtReleased(epoch, prior - newCarry, newCarry);
+                }
+            }
+        }
+
         accAtEpoch[epoch] = accUsdtPerShare;
         poolIndexAtEpoch[epoch] = poolIndex;
         totalNewShares = 0;
@@ -880,6 +1037,24 @@ contract HCOWProfitShare is ReentrancyGuard {
             operatingCostsUsdt, profit, participants, toGameCompany, toTeam,
             hcowToDeduct, snapshot
         );
+
+        // ---- interactions, last ----
+        //
+        // Checks, effects, interactions, in that order. Every piece of state
+        // above is written before any of these three transfers runs.
+        //
+        // The incoming transferFrom has to be first, because the amount that
+        // actually arrives is an input to the arithmetic; that is a pull, and
+        // pulls before effects are the normal shape. These three are pushes,
+        // and they were previously interleaved with the accumulator and pool
+        // writes. `nonReentrant` covered it and neither token has a transfer
+        // hook, so nothing was exploitable, but "not exploitable given two
+        // facts about the deployment" is a weaker statement than "ordered
+        // correctly", and this is the one place in the contract where the
+        // ordering was not free. It is now.
+        if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);
+        if (toTeam > 0) usdt.safeTransfer(team, toTeam);
+        if (hcowToDeduct > 0) hcow.safeTransfer(BURN_ADDRESS, hcowToDeduct);
     }
 
     // ------------------------------------------------------------------
@@ -938,9 +1113,23 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     /**
      * @notice Lifetime totals for an account.
+     *
      * @dev deductedHcow includes deduction that has accrued but has not yet
      *      been folded in by a state-changing call, so it is correct between
      *      settlements without anyone having to poke the contract.
+     *
+     *      It is an upper bound, not an exact figure. The per-share accumulator
+     *      rounds the account's share of each deduction up rather than down, so
+     *      the sum of every account's `deductedHcow` can exceed
+     *      `totalHcowDeducted` by up to one wei per account per settlement. The
+     *      direction is deliberate and is not changed: rounding the charge down
+     *      instead would let an account be charged less than its share, which
+     *      is a leak that compounds across settlements, while rounding up costs
+     *      an account at most a wei it never actually loses, because the wei is
+     *      never taken from the pool. Any figure published from this getter
+     *      should be described as at most this much, and reconciliation against
+     *      `totalHcowDeducted` should allow that slack rather than assert
+     *      equality.
      */
     function lifetimeOf(address account)
         external
@@ -994,7 +1183,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     // ------------------------------------------------------------------
 
     function setSettler(address account) external onlyOwner {
-        if (account == address(0)) revert ZeroAddress();
+        if (account == address(0) || account == address(this)) revert ZeroAddress();
         if (account == gameCompany || account == team) revert SettlerIsRecipient();
         settler = account;
         emit SettlerChanged(account);
@@ -1005,22 +1194,252 @@ contract HCOWProfitShare is ReentrancyGuard {
     ///      the settler something, or any revenue figure can be published for
     ///      free and the published waterfall stops meaning anything.
     function setRecipients(address gameCompany_, address team_) external onlyOwner {
+        // address(this) alongside address(0), because it is the same kind of
+        // mistake with a worse ending. A recipient set to this contract makes
+        // every settlement execute usdt.safeTransfer(address(this), ...), a
+        // valid self transfer that raises the balance above what
+        // accUsdtPerShare accounts for. There is no sweep and no owner rescue,
+        // so that USDT is unreachable by claimUsdt forever. It costs one
+        // comparison to make unreachable in the first place, and HCOWVesting
+        // already refuses address(this) as a beneficiary for the same reason.
         if (gameCompany_ == address(0) || team_ == address(0)) revert ZeroAddress();
+        if (gameCompany_ == address(this) || team_ == address(this)) revert ZeroAddress();
         if (gameCompany_ == settler || team_ == settler) revert SettlerIsRecipient();
         gameCompany = gameCompany_;
         team = team_;
         emit RecipientsChanged(gameCompany_, team_);
     }
 
+    /**
+     * @notice Step one of two. The new owner is not the owner until it accepts.
+     *
+     * @dev A single step wrote the address immediately, so a mistyped or
+     *      unreachable one ended the ability to rotate the settler or change
+     *      either payout address, permanently and with no recovery. The vesting
+     *      contract already worked this way; this makes the codebase agree with
+     *      itself.
+     *
+     *      setSettler and setRecipients stay single step deliberately. Both are
+     *      recoverable by a live owner, both are read straight off an explorer,
+     *      and the runbook requires the owner key to be a multisig, which is
+     *      what stops a mistyped address being submitted without review.
+     */
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /// @notice Withdraw a standing nomination without handing the role to
+    ///         anyone. `transferOwnership(address(0))` is refused, so without
+    ///         this the only way to cancel was to nominate the current owner
+    ///         and accept, which leaves a live pending administrator visible on
+    ///         an explorer in the meantime and is not something an operator who
+    ///         has just typed the wrong address will find.
+    function cancelOwnershipTransfer() external onlyOwner {
+        address was = pendingOwner;
+        if (was == address(0)) revert ZeroAddress();
+        pendingOwner = address(0);
+        emit OwnershipTransferCancelled(was);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        emit OwnershipTransferred(owner, msg.sender);
+        owner = msg.sender;
+        delete pendingOwner;
+    }
+
+    /**
+     * @notice Closes an epoch that has been left open past MAX_EPOCH_INTERVAL.
+     *         Permissionless.
+     *
+     * @dev MIN_EPOCH_INTERVAL bounded a settler that settled too often. Nothing
+     *      bounded one that stopped. A settler that simply never calls
+     *      settleEpoch again leaves the epoch open forever, and every deposit
+     *      made into it stays quarantined, earning nothing, while still
+     *      carrying the full deduction whenever a settlement eventually
+     *      arrives. Depositors could withdraw after the cooldown, but nobody
+     *      could advance the period.
+     *
+     *      This moves no money. It states no revenue figure: every one is
+     *      hard-coded zero here, so a caller cannot author a settlement, and
+     *      with zero profit no principal can be consumed either. All it does is
+     *      end the quarantine and open the next epoch.
+     *
+     *      It gives an impatient depositor nothing they could not already get
+     *      by waiting for the settler, and it costs a griefer gas to advance an
+     *      epoch that pays nobody. Because MAX_EPOCH_INTERVAL is longer than
+     *      MIN_EPOCH_INTERVAL, closing a stalled epoch never lets the settler
+     *      settle sooner than it otherwise could have.
+     */
+    function closeStalledEpoch() external nonReentrant {
+        // Two fuses, and the one before the first settlement is much longer.
+        //
+        // At thirty days from deployment a stranger could close epoch 0 during
+        // the launch window with no participant, no revenue and nothing wrong,
+        // and then one every thirty days after: measured, four epochs burned as
+        // all-zero records before the operator had settled anything, each
+        // pushing that settlement out by another MIN_EPOCH_INTERVAL.
+        //
+        // Refusing the path outright until the first settlement was the
+        // obvious fix and it opened a liveness hole instead: a settler that
+        // never settles even once leaves nextEpoch at zero forever, every
+        // bonded position quarantined and earning nothing, with no
+        // permissionless call able to advance anything however long anyone
+        // waits. Principal still leaves through requestUnbond at no charge, so
+        // it is not a loss, but it is unrecoverable in a contract whose whole
+        // point is that nobody has to wait on the operator.
+        //
+        // Ninety days from deployment with no settlement at all is not a launch
+        // window, it is abandonment.
+        uint64 openedAt = lastSettledAt;
+        uint64 deadline = openedAt == 0
+            ? deployedAt + uint64(BOOTSTRAP_STALL_INTERVAL)
+            : openedAt + uint64(MAX_EPOCH_INTERVAL);
+        if (block.timestamp < deadline) revert EpochNotStalled(deadline);
+
+        uint64 epoch = nextEpoch;
+        uint256 snapshot = totalBondedHcow;
+
+        accAtEpoch[epoch] = accUsdtPerShare;
+        poolIndexAtEpoch[epoch] = poolIndex;
+        totalNewShares = 0;
+        sharesAtLastSettlement = totalShares;
+        lastSettledAt = uint64(block.timestamp);
+
+        _settlements[epoch] = Settlement({
+            grossReceivedUsdt: 0,
+            directCostsUsdt: 0,
+            operatingCostsUsdt: 0,
+            distributableProfitUsdt: 0,
+            participantsUsdt: 0,
+            gameCompanyUsdt: 0,
+            teamUsdt: 0,
+            hcowDeducted: 0,
+            snapshotBondedHcow: snapshot.toUint128(),
+            settledAt: uint64(block.timestamp)
+        });
+
+        nextEpoch = epoch + 1;
+
+        // Deliberately NOT EpochSettled. An epoch closed by a stranger because
+        // the settler stopped is not a settlement, and emitting the settlement
+        // event with every figure at zero made the two indistinguishable to
+        // anything reading events. Consumers that need every epoch should read
+        // getSettlement, which still returns the zero record.
+        emit StalledEpochClosed(epoch, msg.sender, openedAt);
+    }
+
+    /// @notice When the current epoch may be closed by anyone. Reaching this
+    ///         without a settlement is the liveness failure the ceiling exists
+    ///         for, not a normal state.
+    /// @notice When the open epoch may be closed by anyone.
+    function epochStallDeadline() external view returns (uint64) {
+        if (lastSettledAt == 0) return deployedAt + uint64(BOOTSTRAP_STALL_INTERVAL);
+        return lastSettledAt + uint64(MAX_EPOCH_INTERVAL);
     }
 
     // ------------------------------------------------------------------
     // internal
     // ------------------------------------------------------------------
+
+    /**
+     * @notice Splits one epoch's profit. Pure: no storage, no time, no caller.
+     *
+     * @param profit          Distributable profit for the epoch.
+     * @param eligibleShares  Shares that were not bonded during this epoch.
+     * @param carried         Participant money held back from earlier epochs.
+     *
+     * @return participants   Credited to the eligible pool now.
+     * @return toGameCompany  The fixed quarter. Never more than that.
+     * @return toTeam         The fixed quarter, plus rounding dust.
+     *
+     * Whatever the pool was too small to take is `participantLeg + carried -
+     * participants`. It is derived again at the write site rather than returned
+     * here, because one more return value put settleEpoch over the stack limit.
+     *
+     * @dev Three divisors were tried before this one and each was worse. The
+     *      live share count let anyone shrink the eligible fraction by bonding
+     *      in the settlement block: measured, an honest holder's 100,000 USDT
+     *      leg became 100. Freezing the denominator to the epoch-start pool
+     *      moved the same attack to the numerator, because requestUnbond
+     *      followed by cancelUnbond in one block removes a position from
+     *      eligibleShares and puts it back as new shares at zero cost:
+     *      measured, 150 USDT of a 300,000 USDT leg reached participants. And
+     *      any divisor larger than eligibleShares hands the difference away
+     *      whenever somebody simply leaves mid epoch, which is an ordinary user
+     *      action: a holder exiting a 50/50 pool moved the split from 50/25/25
+     *      to 25/37.5/37.5.
+     *
+     *      Dividing by eligibleShares itself removes the lever entirely, and
+     *      minPoolShares stops the degenerate end of it.
+     *
+     * @dev What the floor holds back is carried, not given away. Sending it to
+     *      the two fixed recipients charged honest early participants for the
+     *      guard: a sole holder of 999 tokens received 500 less than the leg and
+     *      the difference left the participant side permanently. Holding it in a
+     *      separate claimable pot was tried earlier and was worse, because a pot
+     *      has no link to the shares it was deferred for and one wei bonded
+     *      after everybody left collects the lot. Folding it into the next
+     *      epoch's pot before the fraction is applied attributes it to shares
+     *      instead, which is what makes it safe.
+     *
+     *      Returning it to the settler was also tried and is self dealing: the
+     *      settler both authors the revenue figure and can move the divisor.
+     *      Measured at 999 times the pool, a settler recovered 49,950 of a
+     *      50,000 USDT participant leg and unbonded a week later at no cost.
+     *
+     * @dev The two fixed recipients now receive exactly their own quarter and
+     *      nothing else, in every branch. That is a change: they used to
+     *      collect whatever the participant pool could not take.
+     */
+    /**
+     * @dev What THIS epoch's revenue alone credits to participants, with any
+     *      carried balance excluded. The deduction gate tests this rather than
+     *      the credited total, because the credited total can be carried money.
+     *      Same scaling as `_waterfall`, applied to this epoch's leg only.
+     */
+    function _epochCredit(uint256 profit, uint256 eligibleShares)
+        private
+        view
+        returns (uint256)
+    {
+        if (eligibleShares == 0) return 0;
+        uint256 leg = (profit * PARTICIPANT_BPS) / 10_000;
+        uint256 floor_ = minPoolShares;
+        uint256 denom = eligibleShares < floor_ ? floor_ : eligibleShares;
+        return Math.mulDiv(leg, eligibleShares, denom);
+    }
+
+    function _waterfall(uint256 profit, uint256 eligibleShares, uint256 carried)
+        private
+        view
+        returns (uint256 participants, uint256 toGameCompany, uint256 toTeam)
+    {
+        uint256 participantLeg = (profit * PARTICIPANT_BPS) / 10_000;
+        uint256 pot = participantLeg + carried;
+
+        // The floor looks at the pool in front of it and nothing else. It used
+        // to be armed only while the previous settlement's snapshot was also
+        // below the floor, which could never be false when the pool was, so it
+        // was dead code that could nonetheless be switched off: park a position
+        // above the floor across one settlement, withdraw, and the guard stayed
+        // disarmed from then on.
+        uint256 floor_ = minPoolShares;
+        uint256 denom = eligibleShares < floor_ ? floor_ : eligibleShares;
+
+        participants = eligibleShares == 0 ? 0 : Math.mulDiv(pot, eligibleShares, denom);
+        // What the pool could not take is `pot - participants`. It is derived
+        // again at the write site rather than returned, because one more
+        // return value put settleEpoch over the stack limit.
+
+        toGameCompany = (profit * GAME_COMPANY_BPS) / 10_000;
+        // The remainder of the profit after the other two legs, so rounding
+        // dust never strands and participants + gameCompany + team + newCarry
+        // reconstructs profit + carried exactly in every branch.
+        toTeam = profit - participantLeg - toGameCompany;
+    }
 
     /**
      * Fold everything that accrued at the account's current share count into

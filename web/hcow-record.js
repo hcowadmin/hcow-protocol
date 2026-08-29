@@ -54,6 +54,12 @@
   function readQueue() {
     try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); } catch (e) { return []; }
   }
+  // Keeps the NEWEST MAX_QUEUE entries. Past that the oldest rounds are
+  // dropped, silently and by design: a queue that grows without bound during a
+  // long offline session eventually breaks localStorage for the whole origin,
+  // and a round nobody can send is worth less than the ability to keep
+  // recording. It is a real data loss and it is stated here rather than
+  // hidden.
   function writeQueue(q) {
     try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q.slice(-MAX_QUEUE))); } catch (e) {}
   }
@@ -73,18 +79,42 @@
     });
   }
 
+  /**
+   * Drain the queue, removing each entry only once its send has SUCCEEDED.
+   *
+   * The queue used to be cleared up front and the survivors written back when
+   * the last send settled. If the tab was closed, navigated away from or killed
+   * while sends were in flight - which is the exact moment a game ends and the
+   * whole reason `keepalive` is on the request - every queued round was gone.
+   * keepalive keeps the HTTP request alive across the unload; it does not keep
+   * the retry state alive.
+   *
+   * Now nothing leaves localStorage until the server has accepted it. A round
+   * can therefore be sent twice if the tab dies between the server accepting it
+   * and this callback running, which is harmless: the table's
+   * (game_id, round_id) key makes the second insert a no-op.
+   */
   function flush() {
     var q = readQueue();
     if (!q.length) return;
-    writeQueue([]);
-    var stuck = [];
-    var done = 0;
-    q.forEach(function (rec) {
-      send(rec).catch(function () { stuck.push(rec); }).then(function () {
-        if (++done === q.length && stuck.length) {
-          writeQueue(readQueue().concat(stuck));
+    var inflight = {};
+    q.forEach(function (rec, i) {
+      var key = String(rec.gameId) + '\u0000' + String(rec.roundId);
+      if (inflight[key]) return;          // one attempt per round per flush
+      inflight[key] = true;
+      send(rec).then(function () {
+        // Re-read rather than splicing the snapshot: other rounds may have
+        // been queued while this request was in flight.
+        var cur = readQueue();
+        for (var j = 0; j < cur.length; j++) {
+          if (String(cur[j].gameId) === String(rec.gameId) &&
+              String(cur[j].roundId) === String(rec.roundId)) {
+            cur.splice(j, 1);
+            break;
+          }
         }
-      });
+        writeQueue(cur);
+      }).catch(function () { /* stays queued for the next flush */ });
     });
   }
 

@@ -78,6 +78,24 @@ drop trigger if exists rounds_block_delete on public.rounds;
 create trigger rounds_block_delete before delete on public.rounds
   for each row execute function public.rounds_no_mutation();
 
+-- TRUNCATE fires no row level trigger, so the two above left the table one
+-- statement away from empty while the comment above claimed it was append
+-- only. A statement level trigger is the only thing that sees it.
+drop trigger if exists rounds_block_truncate on public.rounds;
+create trigger rounds_block_truncate before truncate on public.rounds
+  for each statement execute function public.rounds_no_mutation();
+
+-- ENABLE ALWAYS, not the default ORIGIN.
+--
+-- An ORIGIN trigger is skipped for the whole session after
+-- `set session_replication_role = 'replica'`, which the postgres role in a
+-- Supabase project can set. The append only guarantee was therefore one
+-- SET away from not existing, which is a weaker claim than the one this file
+-- and the README make. ALWAYS fires in every replication role.
+alter table public.rounds enable always trigger rounds_block_update;
+alter table public.rounds enable always trigger rounds_block_delete;
+alter table public.rounds enable always trigger rounds_block_truncate;
+
 -- ---------------------------------------------------------------------
 -- access
 -- ---------------------------------------------------------------------

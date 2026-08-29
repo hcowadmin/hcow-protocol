@@ -2129,7 +2129,7 @@ abstract contract ReentrancyGuard {
 // File contracts/HCOWStaking.sol
 
 // Original license: SPDX_License_Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.34;
 
 
 
@@ -2218,7 +2218,12 @@ contract HCOWStaking is ReentrancyGuard {
     IERC20 public immutable hcow;
 
     address public owner;
+    /// @notice Nominated owner. Not the owner until it calls acceptOwnership.
+    address public pendingOwner;
     address public rewardFunder;
+    /// @notice Representatives currently marked active. Maintained on write so
+    ///         the view does not walk storage.
+    uint256 public activeRepresentatives;
 
     struct Representative {
         address payout;            // receives commission
@@ -2304,9 +2309,12 @@ contract HCOWStaking is ReentrancyGuard {
     event RewardsFunded(uint256 amount, uint256 rewardRate, uint64 duration);
     event RewardFunderChanged(address indexed account);
     event OwnershipTransferred(address indexed from, address indexed to);
+    event OwnershipTransferStarted(address indexed from, address indexed to);
+    event OwnershipTransferCancelled(address indexed nominee);
 
     error NotOwner();
     error NotFunder();
+    error NotPendingOwner();
     error ZeroAddress();
     error ZeroAmount();
     error UnknownRepresentative(bytes32 id);
@@ -2371,6 +2379,7 @@ contract HCOWStaking is ReentrancyGuard {
         r.isFoundation = isFoundation;
         r.exists = true;
         r.name = name;
+        activeRepresentatives += 1;
         _updateGlobal();
         r.accNetAnchor = accRewardPerShare;
         r.commAnchor = accRewardPerShare;
@@ -2413,7 +2422,15 @@ contract HCOWStaking is ReentrancyGuard {
         }
         r.payout = payout;
         r.commissionBps = commissionBps;
-        r.active = active;
+        if (r.active != active) {
+            // Maintained here rather than counted by a loop on read. The loop
+            // was bounded by MAX_REPRESENTATIVES and safe, but a view that
+            // walks storage is work a caller pays for on every read and this
+            // is the only place the answer changes.
+            if (active) activeRepresentatives += 1;
+            else activeRepresentatives -= 1;
+            r.active = active;
+        }
 
         if (owed > 0) {
             hcow.safeTransfer(oldPayout, owed);
@@ -2605,15 +2622,36 @@ contract HCOWStaking is ReentrancyGuard {
      */
     function fundRewards(uint256 amount, uint64 duration) external nonReentrant {
         if (msg.sender != rewardFunder) revert NotFunder();
-        if (amount == 0) revert ZeroAmount();
+        // A zero token call is allowed when, and only when, there is a carried
+        // balance to release.
+        //
+        // Seconds that elapse while too little is staked to move the
+        // accumulator are carried rather than stranded or handed to whoever
+        // stakes next, which is right. But the carry had no delivery path of
+        // its own: it could only ever leave in the arithmetic of the NEXT
+        // ordinary funding, so rewards that were already committed depended on
+        // the funder choosing to fund again. That is a promise resting on a
+        // role continuing to act. This releases what is already here, over a
+        // fresh duration, under exactly the same rate and duration floors, so
+        // the guarantee that a funding never slows a live stream is untouched.
         if (duration > MAX_REWARD_DURATION) revert BadDuration(duration);
 
+        // AFTER _updateGlobal, deliberately. `undistributed` is written by
+        // _updateGlobal: it is where a released second goes when too little is
+        // staked to move the accumulator. Testing it before the accumulator has
+        // advanced refuses the call in exactly the state this path exists for,
+        // which is how the first attempt at a zero token funding was wrong and
+        // was removed. The reordering is the whole fix.
         _updateGlobal();
+        if (amount == 0 && undistributed == 0) revert ZeroAmount();
 
-        uint256 before = hcow.balanceOf(address(this));
-        hcow.safeTransferFrom(msg.sender, address(this), amount);
-        uint256 received = hcow.balanceOf(address(this)) - before;
-        if (received == 0) revert ZeroAmount();
+        uint256 received;
+        if (amount > 0) {
+            uint256 before = hcow.balanceOf(address(this));
+            hcow.safeTransferFrom(msg.sender, address(this), amount);
+            received = hcow.balanceOf(address(this)) - before;
+            if (received == 0) revert ZeroAmount();
+        }
 
         // Whatever the running period has not released yet, plus anything that
         // elapsed while nothing was staked, rolls into the new one. Funding
@@ -2750,11 +2788,7 @@ contract HCOWStaking is ReentrancyGuard {
     }
 
     function representativeCount() external view returns (uint256 total, uint256 active) {
-        uint256 n = _repIds.length;
-        total = n;
-        for (uint256 i = 0; i < n; ++i) {
-            if (_reps[_repIds[i]].active) active += 1;
-        }
+        return (_repIds.length, activeRepresentatives);
     }
 
     // ------------------------------------------------------------------
@@ -2767,10 +2801,39 @@ contract HCOWStaking is ReentrancyGuard {
         emit RewardFunderChanged(account);
     }
 
+    /**
+     * @notice Step one of two. The nominee is not the owner until it accepts.
+     *
+     * @dev A single step wrote the address immediately, so a mistyped or
+     *      unreachable one permanently ended the ability to register or update
+     *      a representative and to replace the reward funder. Neither role can
+     *      move staked principal, which bounds the damage, but neither is
+     *      recoverable, and the sibling contracts already work this way.
+     *
+     *      setRewardFunder stays single step: it is recoverable by a live
+     *      owner, and a wrong value stops funding rather than locking anything.
+     */
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /// @notice Step two of two, called by the nominee. This is what proves the
+    ///         address is reachable.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        emit OwnershipTransferred(owner, msg.sender);
+        owner = msg.sender;
+        pendingOwner = address(0);
+    }
+
+    /// @notice Withdraw a standing nomination.
+    function cancelOwnershipTransfer() external onlyOwner {
+        address was = pendingOwner;
+        if (was == address(0)) revert ZeroAddress();
+        pendingOwner = address(0);
+        emit OwnershipTransferCancelled(was);
     }
 
     // ------------------------------------------------------------------

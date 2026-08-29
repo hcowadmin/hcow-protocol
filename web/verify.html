@@ -103,6 +103,21 @@ footer a{color:var(--ink-2);margin-right:18px;font-weight:600}
   <details>
     <summary>Settings and record format</summary>
     <div class="adv">
+      <!--
+        DEPLOYMENT NOTE. Both values below are placeholders and both must be
+        set when this page is published.
+
+          rpc   defaults to a BSC TESTNET seed node. Against a mainnet contract
+                address it returns 0x for every call and the page reports "could
+                not reach the chain", which reads as our fault rather than as a
+                misconfiguration.
+          addr  is empty, so out of the box the page can only check a receipt
+                locally and says so.
+
+        Change the rpc value to a mainnet endpoint and put the deployed
+        HCOWLedger address in the addr value at the same time. They are wrong
+        together or right together.
+      -->
       <label for="rpc">BNB Chain RPC endpoint</label>
       <input id="rpc" value="https://data-seed-prebsc-1-s1.bnbchain.org:8545">
       <label for="addr">HCOWLedger contract</label>
@@ -197,6 +212,21 @@ const pair=(a,b)=>a.toLowerCase()<=b.toLowerCase()
   ?kHex('0x'+NODE_PREFIX+a.slice(2)+b.slice(2))
   :kHex('0x'+NODE_PREFIX+b.slice(2)+a.slice(2));
 function rootFrom(leaf,proof){let h=leaf.toLowerCase();for(const p of proof)h=pair(h,p.toLowerCase());return h;}
+// 0x02 prefix matches HCOWLedger.COUNT_PREFIX and lib/merkle.js. What the
+// contract stores is the Merkle root with the record count folded in, not the
+// bare root, so the count is part of what a receipt is checked against and
+// cannot be restated afterwards.
+const COUNT_PREFIX='02';
+// Matches HCOWLedger.EMPTY_PERIOD: what the operator anchors for an hour that
+// genuinely had no rounds. A zero root is refused by the contract, so it means
+// only "never anchored".
+const EMPTY_PERIOD=kUtf8('HCOWv1|empty-period');
+// Note on tree shape: levels are padded to a power of two with a filler leaf
+// (HCOWLedger.EMPTY_LEAF) rather than pairing an odd node with itself, so a
+// duplicated final record cannot produce the same root as a tree without it.
+// This page never needs the constant: a proof simply carries it as a sibling.
+const commit=(root,count)=>kHex('0x'+COUNT_PREFIX+root.slice(2).toLowerCase()
+  +BigInt(count).toString(16).padStart(16,'0'));
 
 /* =============================== chain =============================== */
 async function ethCall(rpc,addr,data){
@@ -211,7 +241,19 @@ async function ethCall(rpc,addr,data){
 // length against the record count the epoch was anchored with, and it does not
 // test that the epoch is inside the anchored range. Those are exactly the two
 // substitutions the contract refuses, so a page that skips them can call a
-// receipt verified that the chain rejects. This is the authoritative answer.
+// receipt verified that the chain rejects.
+//
+// So the chain's answer is necessary. It is NOT sufficient, and this page used
+// to treat it as if it were: a pass was granted on `accepted` alone, while the
+// locally recomputed root sat one line away unused. The page invites the
+// visitor to point it at any RPC endpoint, which is the honest thing to offer
+// and also means the single most trusted component was an arbitrary HTTP
+// server. One that answers 0x...01 to eth_call and returns a plausible
+// getEpoch tuple produced a full green PASS.
+//
+// Both must now agree. The chain's answer catches what the page cannot check,
+// the page's arithmetic catches an endpoint that is simply lying, and a
+// forgery has to beat keccak256 as well as the endpoint.
 async function verifyOnChain(rpc,addr,epoch,leaf,proof){
   const sel='0x7a05560c'; // verifyEpochRecord(uint64,bytes32,bytes32[])
   const w=n=>BigInt(n).toString(16).padStart(64,'0');
@@ -285,9 +327,14 @@ $('go').onclick=async()=>{
     render([{state:'fail',title:'Receipt could not be read',
       body:'"proof" must be an array of 32 byte hex strings.'}]); return;
   }
-  if(!Number.isInteger(epoch)||epoch<0){
+  // uint64 on the contract side, and the calldata this page builds by hand
+  // pads to 32 bytes without truncating. Number.isInteger(1e300) is true, so
+  // an absurd epoch produced a 250 character hex word, a malformed head, and
+  // an array offset pointing into the wrong slot. The RPC error was caught and
+  // reported as "could not reach the chain", which is not what happened.
+  if(!Number.isInteger(epoch)||epoch<0||epoch>Number.MAX_SAFE_INTEGER){
     render([{state:'fail',title:'Receipt could not be read',
-      body:'"epoch" must be a non negative whole number.'}]); return;
+      body:'"epoch" must be a non negative whole number within the safe integer range.'}]); return;
   }
 
   // 1. record hash
@@ -310,23 +357,42 @@ $('go').onclick=async()=>{
   }
 
   // 3. anchor on chain
-  const computed=rootFrom(leaf,proof);
+  const merkleRoot=rootFrom(leaf,proof);
   const addr=$('addr').value.trim(), rpc=$('rpc').value.trim();
   if(!/^0x[0-9a-fA-F]{40}$/.test(addr)){
     out.push({state:'warn',title:'Contract address not set',
-      body:'Computed Merkle root '+computed+'. Enter the HCOWLedger address under Settings to compare it against the chain.'});
+      body:'Computed Merkle root '+merkleRoot+'. Enter the HCOWLedger address under Settings to compare it against the chain.'});
     render(out); verdict(false,'Checked locally. The on chain comparison has not run.'); return;
   }
   try{
     const on=await readEpochRoot(rpc,addr,epoch);
     const accepted=await verifyOnChain(rpc,addr,epoch,leaf,proof);
+    // The anchored value binds the record count, so the comparison folds the
+    // count the chain reports into the locally computed root.
+    const computed=commit(merkleRoot,on.recordCount);
     const match=on.root.toLowerCase()===computed.toLowerCase();
-    out.push(accepted
+    // Three different failures used to be reported as one sentence about the
+    // receipt being altered. An epoch that was never anchored and an epoch the
+    // operator attested was empty are not tampering, and saying so is how a
+    // reader knows which question to ask next. anchoredAt is zero only when the
+    // period was never anchored.
+    const never = Number(on.anchoredAt)===0;
+    const empty = !never && on.root.toLowerCase()===EMPTY_PERIOD;
+    out.push(accepted&&match
       ? {state:'pass',title:'The contract on BNB Chain accepts this record',
-         body:'HCOWLedger.verifyEpochRecord returned true. Epoch '+epoch+' holds '+on.recordCount+' records, anchored '+new Date(on.anchoredAt*1000).toISOString().replace('T',' ').slice(0,19)+' UTC. Root '+on.root}
+         body:'HCOWLedger.verifyEpochRecord returned true, and the root this page computed from the receipt matches the one the chain holds. Epoch '+epoch+' holds '+on.recordCount+' records, anchored '+new Date(on.anchoredAt*1000).toISOString().replace('T',' ').slice(0,19)+' UTC. Root '+on.root}
+      : accepted&&!match
+      ? {state:'fail',title:'The endpoint you are using is not telling the truth',
+         body:'The node said the contract accepts this record, but the root this page computed from the receipt itself is '+computed+' while the node reports '+on.root+'. A genuine record makes those two identical. Either the endpoint is returning fabricated answers or it is not the HCOWLedger contract at that address. Change the RPC endpoint under Settings to one you chose yourself and check again.'}
+      : never
+      ? {state:'warn',title:'That period has not been anchored',
+         body:'The chain holds no anchor for epoch '+epoch+' at all, so there is nothing yet to check this receipt against. Either the hour has not been anchored yet, or the epoch number on the receipt is wrong.'}
+      : empty
+      ? {state:'fail',title:'That period was attested as having no rounds',
+         body:'The operator anchored epoch '+epoch+' as empty, so a receipt claiming a round in it cannot be genuine. Please report this receipt to us.'}
       : {state:'fail',title:'The contract on BNB Chain rejects this record',
-         body:'Computed root '+computed+', chain holds '+on.root+'.'+(match
-           ? ' The roots agree, so the proof is the wrong length for an epoch of '+on.recordCount+' records, or the epoch is outside the anchored range.'
+         body:'Computed value '+computed+', chain holds '+on.root+'.'+(match
+           ? ' The two agree, so the proof is the wrong length for an epoch of '+on.recordCount+' records.'
            : ' Either the receipt was altered or the proof belongs to a different epoch.')});
     render(out);
     const all=out.every(i=>i.state==='pass');

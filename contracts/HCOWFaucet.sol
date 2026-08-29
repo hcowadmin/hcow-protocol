@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.34;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -26,6 +26,8 @@ contract HCOWFaucet {
     IERC20 public immutable usdt;
 
     address public owner;
+    /// @notice Nominated owner. Not the owner until it calls acceptOwnership.
+    address public pendingOwner;
 
     /// @notice One claim per address per interval.
     uint64 public constant CLAIM_INTERVAL = 24 hours;
@@ -61,9 +63,12 @@ contract HCOWFaucet {
     event Withdrawn(address indexed token, address indexed to, uint256 amount);
     event WindowReset(uint64 at);
     event OwnershipTransferred(address indexed from, address indexed to);
+    event OwnershipTransferStarted(address indexed from, address indexed to);
+    event OwnershipTransferCancelled(address indexed nominee);
 
     error NotOwner();
     error ZeroAddress();
+    error NotPendingOwner();
     error CooldownActive(uint64 readyAt);
     error FaucetEmpty(address token, uint256 requested, uint256 available);
     error SameToken();
@@ -112,6 +117,20 @@ contract HCOWFaucet {
         // cost and it is accepted here because this is a testnet faucet handing
         // out stand-in tokens: a tester who cannot claim can ask the team, and
         // a faucet that is empty helps nobody at all.
+        //
+        // EIP-7702 went live on BNB Chain on 20 March 2025 and it changed which
+        // half of this line carries the weight. Before it, msg.sender ==
+        // tx.origin was read as "the caller is an EOA". It is not that any
+        // more: a delegated EOA is the origin of its own transaction and has
+        // code, so the two are no longer equivalent and neither implies the
+        // other. The pair still holds, because code.length rejects a delegated
+        // EOA and tx.origin rejects a contract calling mid-constructor, but
+        // the reasoning is now "an address with no code that sent its own
+        // transaction", not "an EOA".
+        //
+        // These are the only two uses of tx.origin or code.length anywhere in
+        // either repository, and this is the only function that has them. No
+        // contract that moves real value depends on either.
         if (msg.sender != tx.origin || msg.sender.code.length != 0) revert ContractCaller();
 
         if (windowAt == 0 || block.timestamp >= windowAt + CLAIM_INTERVAL) {
@@ -190,7 +209,9 @@ contract HCOWFaucet {
             uint64 readyAt,
             uint256 claimsLeft,
             uint256 windowClaimsLeft,
-            uint64 windowResetsAt
+            uint64 windowResetsAt,
+            uint256 hcowNow,
+            uint256 usdtNow
         )
     {
         hcowPerClaim = hcowAmount;
@@ -202,6 +223,21 @@ contract HCOWFaucet {
         if (last != 0 && block.timestamp < last + CLAIM_INTERVAL) {
             readyAt = last + CLAIM_INTERVAL;
         }
+
+        // What this caller would ACTUALLY receive if they claimed right now,
+        // computed the same way claim() computes it.
+        //
+        // claimsLeft below counts FULL allowances, and the two sides are paid
+        // independently, so it reads zero while a claim would still succeed on
+        // one side. An interface that disables the button on claimsLeft blocks
+        // claims the contract would honour, and in the state this faucet
+        // actually lives in, with USDT draining far faster than HCOW, that is
+        // the steady state rather than an edge case. These two are what the UI
+        // should show: a user about to spend their daily claim on a one-sided
+        // payout can then see that is what they are doing and decide.
+        hcowNow = hcowRemaining >= hcowAmount ? hcowAmount : 0;
+        usdtNow = usdtRemaining >= usdtAmount ? usdtAmount : 0;
+        if (readyAt != 0) { hcowNow = 0; usdtNow = 0; }
 
         // The binding constraint, so the UI can say "3 claims left" honestly.
         // A claim spends the cooldown whether or not both sides paid, so the
@@ -221,6 +257,7 @@ contract HCOWFaucet {
             : MAX_CLAIMS_PER_INTERVAL - used;
         windowResetsAt = fresh ? 0 : windowAt + CLAIM_INTERVAL;
         if (windowClaimsLeft < claimsLeft) claimsLeft = windowClaimsLeft;
+        if (windowClaimsLeft == 0) { hcowNow = 0; usdtNow = 0; }
     }
 
     // ------------------------------------------------------------------
@@ -260,9 +297,34 @@ contract HCOWFaucet {
         emit Withdrawn(token, to, amount);
     }
 
+    /**
+     * @notice Step one of two. The nominee is not the owner until it accepts.
+     *
+     * @dev Testnet only, so a lost owner key costs nothing of value: claims
+     *      keep working until the balance runs out and the remainder is then
+     *      unrecoverable. Two steps here is consistency with the sibling
+     *      contracts rather than a risk judgement, and consistency is worth
+     *      something on its own: this is the contract a reader meets first.
+     */
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /// @notice Step two of two, called by the nominee.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        emit OwnershipTransferred(owner, msg.sender);
+        owner = msg.sender;
+        pendingOwner = address(0);
+    }
+
+    /// @notice Withdraw a standing nomination.
+    function cancelOwnershipTransfer() external onlyOwner {
+        address was = pendingOwner;
+        if (was == address(0)) revert ZeroAddress();
+        pendingOwner = address(0);
+        emit OwnershipTransferCancelled(was);
     }
 }

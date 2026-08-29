@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.34;
 
 import {Test} from "forge-std/Test.sol";
 import {HCOWProfitShare} from "../contracts/HCOWProfitShare.sol";
@@ -19,6 +19,13 @@ import {ProfitShareHandler} from "./handlers/ProfitShareHandler.sol";
  * Deep: FOUNDRY_PROFILE=deep forge test --match-contract ProfitShareInvariants
  */
 contract ProfitShareInvariants is Test {
+    /// The participant floor, set to this campaign's own scale. Mainnet uses
+    /// 1,000,000e18 against a 200,000,000 supply; the campaign works in pools
+    /// of a few thousand, so a floor at mainnet scale would leave every
+    /// settlement in the sub-floor branch and the campaign would observe
+    /// nothing else.
+    uint256 internal constant MIN_POOL = 1_000e18;
+
     HCOWProfitShare internal ps;
     MockHCOW internal hcow;
     MockUSDT internal usdt;
@@ -33,7 +40,7 @@ contract ProfitShareInvariants is Test {
     function setUp() public {
         hcow = new MockHCOW();
         usdt = new MockUSDT();
-        ps = new HCOWProfitShare(address(hcow), address(usdt), owner, settler, gameCo, team);
+        ps = new HCOWProfitShare(address(hcow), address(usdt), owner, settler, gameCo, team, MIN_POOL);
 
         // MockHCOW mints its whole fixed supply to the deployer, exactly as
         // HCOWToken does, so the actors are funded from here rather than minted.
@@ -78,11 +85,20 @@ contract ProfitShareInvariants is Test {
         );
     }
 
+    /**
+     * Everything the contract owes, not just what is claimable.
+     *
+     * `carriedParticipantUsdt` is a withheld participant leg the contract is
+     * holding for the first real pool. It is an obligation with no claimant yet,
+     * so summing claimableOf alone would not have noticed an unbacked carry: the
+     * property would have passed with the carry paid out twice.
+     */
     function invariant_usdtSolvent() public view {
-        uint256 owed;
+        uint256 owed = ps.carriedParticipantUsdt();
         uint256 n = handler.actorCount();
         for (uint256 i = 0; i < n; ++i) owed += ps.claimableOf(handler.actorAt(i));
-        assertGe(usdt.balanceOf(address(ps)), owed, "contract owes more USDT than it holds");
+        assertGe(usdt.balanceOf(address(ps)), owed,
+            "contract owes more USDT than it holds, counting the carry");
     }
 
     function invariant_burnAccounted() public view {
@@ -179,6 +195,13 @@ contract ProfitShareInvariants is Test {
 
     /// A burn must move poolIndex, or a pending unbond sits through a
     /// settlement it is never charged for and the dodge that H-2 closed reopens.
+    /// An epoch cannot be closed as stalled before its deadline, and the
+    /// deadline is measured from a settlement that actually happened.
+    function invariant_stallCannotBeClosedEarly() public view {
+        assertEq(handler.ghostStallClosedTooEarly(), 0,
+            "an epoch was closed as stalled before its deadline");
+    }
+
     function invariant_burnAlwaysMovesPoolIndex() public view {
         assertEq(handler.ghostIndexStalls(), 0,
             "a settlement burned principal without moving poolIndex");
@@ -209,9 +232,35 @@ contract ProfitShareInvariants is Test {
             "a passive holder lost more than rounding to somebody else's action");
     }
 
-    function invariant_callSummary() public view {
-        // Not an assertion. Printed so a run that explores nothing is visible
-        // as such rather than passing quietly.
-        assertGe(handler.ghostSettlements(), 0);
+    /**
+     * Coverage, asserted rather than hoped for.
+     *
+     * The previous version of this function asserted that an unsigned counter
+     * was greater than or equal to zero, which is true of every unsigned
+     * counter and therefore said nothing: a campaign in which every single
+     * call reverted would have passed it, and every property above it would
+     * have passed too, on an empty state. The audit was right to call that
+     * out.
+     *
+     * These are the states the properties above are actually about. If a
+     * campaign does not reach them, the campaign proved nothing and is failed
+     * rather than reported green.
+     *
+     * afterInvariant rather than an invariant: invariant functions are also
+     * evaluated once before any call is made, where a coverage floor can only
+     * fail. That is the same mistake in a different place.
+     */
+    function afterInvariant() public view {
+        assertGt(handler.ghostBonds(), 0, "no bond landed, so the pool was never populated");
+        assertGt(handler.ghostSettlements(), 0, "no settlement landed, so nothing was distributed");
+        assertGt(handler.ghostDeductions(), 0,
+            "no settlement consumed principal, so every burn property observed nothing");
+        assertGt(handler.ghostOverCapRefused(), 0,
+            "an over-cap rate was never offered and refused, so the cap was never exercised");
+        assertGt(handler.ghostUnbondRequests(), 0, "nobody ever left, so the exit path was never taken");
+        assertGt(handler.ghostClaims(), 0, "nobody ever claimed, so the payout path was never taken");
+        assertEq(handler.ghostOverCapAccepted(), 0, "a rate above the cap was accepted");
+        assertGt(handler.ghostStallCloses(), 0,
+            "no epoch was ever closed as stalled, so that path observed nothing");
     }
 }

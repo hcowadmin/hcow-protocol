@@ -81,6 +81,8 @@ async function runSeed(seed, opCount) {
     await settler.getAddress(),
     await gameCo.getAddress(),
     await team.getAddress(),
+    // the participant floor, set to this campaign's own scale
+    ethers.parseEther('1000'),
   ]);
   const psAddr = await ps.getAddress();
 

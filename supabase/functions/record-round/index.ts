@@ -94,14 +94,23 @@ Deno.serve(async (req) => {
   const claimed = kind === 'seeded' ? body.timestamp : body.endedAt;
   let endedAt = int(claimed, now + LIMITS.clockSkewSec) ?? now;
   if (Math.abs(endedAt - now) > LIMITS.clockSkewSec) endedAt = now;
-  // The anchorer closes an epoch the moment it ends, so a round backdated into
-  // the previous epoch by a slow client clock lands in one that is already
-  // anchored. The table is append only and epochs never reopen, so that row is
+  // The anchorer now leaves one period of grace before closing an epoch, but
+  // that grace is slack for commit latency and clock skew, not a licence to
+  // backdate: a round backdated into the previous epoch by a slow client clock
+  // still lands in one that will be anchored before anybody notices. The table is append only and epochs never reopen, so that row is
   // unanchorable forever: no receipt, no verification, and a silent hole in a
   // ledger whose whole claim is that it has none. The accepted skew may move
   // the timestamp within the current epoch, never out of it.
   const epochStart = Math.floor(now / 3600) * 3600;
   if (endedAt < epochStart) endedAt = epochStart;
+  // And forward too. The clamp was one sided, so the sentence above was false
+  // in the other direction: with `now` late in an epoch and a client clock
+  // running fast, an accepted skew pushed the timestamp into the NEXT epoch.
+  // That epoch is still open, so it is not the unanchorable case, but it files
+  // a round into an hour it did not happen in and makes both hours' counts
+  // wrong. Clamped to the last second of the current period.
+  const epochEnd = epochStart + 3599;
+  if (endedAt > epochEnd) endedAt = epochEnd;
 
   const row: Record<string, unknown> = {
     kind, game_id: gameId, round_id: roundId, player_ref: playerRef,
@@ -166,9 +175,37 @@ Deno.serve(async (req) => {
   // limit has. It also lets a caller write a victim's address into an
   // append-only table and rate limit that victim. The last element is the one
   // the edge tier added. Length capped because this is stored, forever.
+  //
+  // What this ASSUMES, stated because it is an assumption and not a check:
+  // that exactly one trusted proxy appends to the header. Two ways it can be
+  // wrong, and this function cannot tell either of them from correct
+  // operation.
+  //
+  //   - A CDN in front of the platform makes the last hop the CDN's own
+  //     address, shared by every caller. perIpPerHour then becomes a GLOBAL
+  //     cap that one caller exhausts, denying service to everyone else.
+  //   - No X-Forwarded-For reaching the function at all leaves `ip` empty,
+  //     source_ip unset, and NO ip limit in force. It fails open, and the
+  //     player_ref limit that remains is keyed on a value the caller chooses.
+  //
+  // Both are deployment properties, so the honest thing is a deployment check
+  // rather than more code here: after deploying, call this endpoint from two
+  // different networks and confirm the two rows carry two different
+  // source_ip values, and that neither is a private or CDN range. Do it again
+  // after any change to the domain or CDN in front of it. This is the third
+  // iteration of this control (SECURITY.md section 15 records the first) and
+  // the trust boundary has been assumed every time.
+  //
+  // A missing header is at least made visible rather than silently skipped.
   const hops = (req.headers.get('x-forwarded-for') ?? '')
     .split(',').map((h) => h.trim()).filter(Boolean);
   const ip = (hops[hops.length - 1] ?? '').slice(0, 45);
+  if (!ip) {
+    // Not a rejection: refusing every round because the platform stopped
+    // sending a header would be a worse outage than the flood this limits.
+    // But it must not be invisible.
+    console.warn('record-round: no X-Forwarded-For, the per IP rate limit is NOT in force');
+  }
   if (ip) {
     const { count: ipCount } = await db.from('rounds')
       .select('id', { count: 'exact', head: true })

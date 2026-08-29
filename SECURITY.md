@@ -3,17 +3,33 @@
 This document states plainly what has and has not been done to these
 contracts. It is updated when that changes.
 
-## Not audited
+## Audit status
 
-**These contracts have not been audited by a third-party firm.**
-There is no audit report, and we will keep saying so on every surface we
-control until one exists. Do not treat anything below as a substitute.
+**A third-party audit is in progress.** SolidProof was engaged on 26 August
+2026 and delivered its first report on 28 August 2026, covering all six
+contracts across both repositories at the commits pinned below. Section 20
+records every finding, what was changed, and what was declined and why. The
+fixes are complete and the re-audit has not yet been delivered, so until that
+second report exists:
+
+- Nothing here is a clean bill of health. The first report found two Mediums in
+  `HCOWVesting` and two in `HCOWProfitShare`, and the fixes for them have been
+  reviewed by nobody outside this repository. An internal review of those fixes,
+  section 21, found that **two of them were themselves High severity defects**
+  while every suite was green. That is the argument for the re-audit, not
+  against it.
+- **The second report will be published in full, findings included**, whatever
+  it says. That commitment is public and it is not conditional on the outcome.
+- The audited commits are `hcow-protocol` `94ebe48` and `hcow-contracts`
+  `4a3e373`. The fixes in section 20 are **after** those commits and are
+  therefore outside the first report's scope. Anyone quoting the first report
+  must quote it against those commits, not against this tree.
 
 ## What has been done
 
 ### 1. Unit tests
 
-357 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
+490 assertions across `test/ledger.test.cjs`, `test/profitshare.test.cjs`,
 `test/staking.test.cjs` and `test/faucet.test.cjs`, including every revert
 path. `test/eventsigs.check.cjs` additionally checks every event the indexer
 declares against the compiled ABIs, in both directions, because a hand written
@@ -54,17 +70,36 @@ is the structural limit of this whole estate, and it is why the same function
 was rewritten four times in one day: each rewrite fixed the scenario someone had
 just constructed, and the next scenario nobody had constructed yet broke it.
 
-Foundry invariant testing was added on 26 August 2026 to let a machine search
-instead. **38 invariant properties** across both repositories, 25 here and 13 in
-`hcow-contracts`, plus 12 plain tests. Each property is explored over **256
-generated sequences of 128 calls, 32,768 calls in total**, with the generators
-biased toward the values a person does not type: one wei, one less than the
-whole position, exactly the cliff, exactly the final second.
+Two engines search instead: Foundry's invariant runner, added on 26 August
+2026, and Medusa, added on 29 August 2026. They are both coverage guided and
+they schedule differently, which is the point of having both: Foundry draws a
+fresh sequence per run and reverts the chain between runs, Medusa keeps a
+corpus, mutates the sequences that reached new code, and carries block time
+forward across a much longer campaign. The Medusa harnesses in
+`foundry/medusa/` inherit the invariant contracts and delegate each `property_`
+to the `invariant_` of the same name, so the properties exist once and the two
+engines cannot disagree about what they mean.
+
+**39 invariant properties** across both repositories, 25 here and 14 in
+`hcow-contracts`, plus 12 plain tests, 6 in each. Under Foundry each property
+is explored over **256 generated sequences of 128 calls, 32,768 calls in
+total**, with the generators biased toward the values a person does not type:
+one wei, one less than the whole position, exactly the cliff, exactly the final
+second.
 
 ```
-npm run test:fuzz          # 256 runs x 128 calls per property
-npm run test:fuzz:deep     # 2000 x 400
+npm run test:fuzz              # 256 runs x 128 calls per property
+npm run test:fuzz:deep         # 2000 x 400
+npm run test:medusa            # HCOWProfitShare, 17 properties, second engine
+npm run test:medusa:staking    # HCOWStaking, 8 properties, second engine
 ```
+
+The Medusa campaigns run on 29 August 2026 were **300,481 calls over 3,000
+sequences** on `HCOWProfitShare` and **295,275 over 2,949** on `HCOWStaking`,
+zero failures. Both harnesses were checked against a deliberately broken
+contract first: deleting the `poolIndex` decay fails
+`property_burnAlwaysMovesPoolIndex`, deleting the staking rate floor fails
+`property_fundingNeverSlowsTheStream`.
 
 More important than the properties is whether they bite. Every economic guard in
 each contract was deleted in turn and the suite re-run. The first result was the
@@ -114,6 +149,25 @@ property that was failing on the unmutated contract. Both are corrected above
 and both mutations are now caught by the named test. Re-run the table before
 trusting it; a mutation table that has drifted is a claim of coverage that does
 not exist.
+
+Which is why it is no longer maintained by hand. Both repositories now carry a
+runner:
+
+```
+npm run test:mutate        # applies each mutation, runs the suite, restores
+```
+
+It refuses to report a mutation as caught unless the suite fails **on the
+assertion that names it**. **40 of 40** in `hcow-protocol` and **9 of 9** in
+`hcow-contracts` as of 29 August 2026, and the coverage now reaches the
+off-chain code as well: `lib/merkle.js`, `lib/canonical.js` and `lib/anchor.js`
+each carry mutations driven by the suite that is supposed to notice. A suite that fails for an unrelated reason, a
+compile error included, proves nothing about the guard, and that distinction is
+what two of this round's entries turned on. It also verifies every source is
+restored before it exits.
+
+The sixteen guards added answering the first external audit are listed in
+section 20; all sixteen are caught.
 
 ### 3. Invariant (property) tests
 
@@ -194,7 +248,7 @@ Reviewed after the two contracts above, and fixed in the same pass.
 | G-2 | Critical | Three ways for two different records to hash to one leaf: unpaired surrogates collapsed to U+FFFD by `TextEncoder`, database nulls stringified to `"null"`, and integers past 2^53 losing precision. Any of them lets one anchored leaf stand for more than one record, which is the substitution the whole scheme exists to prevent. | Canonicalisation rejects ill-formed strings, requires NFC, and requires safe integers with no negative zero. The database reader refuses null and parses integers from their string form. |
 | G-3 | High | A stolen anchorer key could anchor empty roots forward past the current hour, permanently consuming the epoch namespace for about thirty cents a year. Revoking the key would not give it back. | An epoch may only be anchored once its period has ended. A stolen key is confined to the past. |
 | G-4 | High | Nothing stopped the same root being anchored to more than one epoch, so a receipt verified in several periods at once and "this round belongs to hour N" was the operator's choice rather than the chain's. | A root may be anchored once **to a live epoch**. Historical batches are deliberately outside that rule and outside the sequence: `anchorHistorical` neither reads nor writes `rootAnchored`, because writing it in both let a backfill consume a root a live epoch then needed and bricked the ledger. A historical root can be re-submitted, and `totalRecords()` counts whatever a historical batch asserts, so neither is a chain-proven figure. |
-| G-5 | High | Leaf and node hashes shared a preimage space, and an odd node was promoted rather than paired, so two different leaf sets could produce one root and a shortened proof let the root itself be presented as a record. | Node hashes carry a `0x01` prefix, odd nodes are paired with themselves, and the proof length must equal the depth implied by the record count. The separation is now structural rather than an argument about collision difficulty. |
+| G-5 | High | Leaf and node hashes shared a preimage space, and an odd node was promoted rather than paired, so two different leaf sets could produce one root and a shortened proof let the root itself be presented as a record. | Node hashes carry a `0x01` prefix, levels are padded to a power of two with a filler leaf, and the proof length must equal the depth implied by the record count. The separation is now structural rather than an argument about collision difficulty. |
 | G-6 | Medium | The published `LEAF_DOMAIN` was the seeded tag, but the sixteen puzzle and arcade titles use a different one. An independent verifier following the on-chain constant would fail on every skill record. | `LEAF_DOMAIN_SEEDED` and `LEAF_DOMAIN_SKILL`, both published. |
 | G-7 | Medium | The faucet required both token balances before dispensing either, and USDT drains fifty times faster than HCOW, so the expected steady state was a faucet holding tens of millions of test HCOW and refusing to give any of it out. | Each side is dispensed on its own. Refusal only when both are short. |
 | G-8 | Low | `setAmounts(0, 0)` let a claim succeed paying nothing while still burning the caller's cooldown, and reported an infinite number of claims left. A faucet deployed with one address for both tokens bricked on its first claim. `anchorHistorical` accepted a range ending in the future. `smoke.cjs` would anchor fabricated data into whatever ledger it was pointed at. | All four refused outright. |
@@ -247,7 +301,7 @@ work from the previous round.
 
 | ID | Severity | Defect | Fix |
 | --- | --- | --- | --- |
-| A-1 | Critical | The per settlement cap bounds a mistake but not a campaign. At two percent a day a compromised settler reduced a 1,000,000 HCOW pool to 627 HCOW in a year, for 730 USDT of funding, 370 of which came back through the two fixed legs. | `MAX_DECAY_PER_WINDOW_PPM`, three percent per window, on top of the per settlement cap. Windows are fixed rather than sliding, so two can be packed and the honest worst case over an arbitrary thirty days is six percent. The published usage rule decays about half a percent a month, so this is six times the headroom honest operation needs. |
+| A-1 | Critical | The per settlement cap bounds a mistake but not a campaign. At two percent a day a compromised settler reduced a 1,000,000 HCOW pool to 627 HCOW in a year, for 730 USDT of funding, 370 of which came back through the two fixed legs. | `MAX_DECAY_PER_WINDOW_PPM`, three percent per window, on top of the per settlement cap. Windows are fixed rather than sliding and are anchored by the first deduction in them, so two can be packed and the worst case over an arbitrary thirty days is 5.87% compounded (59,999 ppm summed), and 6.82% over thirty seven. The published usage rule decays about half a percent a month, so this is six times the headroom honest operation needs. |
 | A-2 | High | A pending unbond kept paying the deduction rate forever, including long after its cooldown had run out. Measured: a position that was slow to press withdraw lost 999,372 of 1,000,000 HCOW. The position was not in the pool for any of those settlements. | The charge stops at `unbondReadyAt`. `poolIndexAtEpoch` and `settledAtEpoch` make the window exact, and `MIN_EPOCH_INTERVAL` against `UNBOND_COOLDOWN` bounds the walk to two settlements. |
 | A-3 | High | Quarantine ended at the next settlement and the floor on epoch length was one day, so an arrival could buy eligibility for a quarterly distribution with one day of exposure. Measured: 270,000 of a 300,000 USDT leg. | `MIN_EPOCH_INTERVAL` raised to seven days, matching `UNBOND_COOLDOWN`. Becoming eligible now costs the same real time as leaving. |
 | A-4 | High | Both exit doors called the token's own `burn`. HCOW is not in this repository; a burn that is absent, paused or role gated would have locked every pending position permanently, on a contract with no admin recovery. | Consumed principal is transferred to the standard burn address. That works against any ERC20 and removes supply just as verifiably, and no exit depends on an external function any more. |
@@ -434,10 +488,22 @@ run a single one of the assertions its README cites.
 
 **What could not be broken.** Merkle second-preimage and node-as-leaf
 substitution, across 12 epochs and 108 receipts, with root-as-leaf, internal
-nodes, foreign leaves, reversed, short and over-long proofs all rejected.
-Three-way canonicalisation agreement between the recorder, the anchorer and the
-verifier: 678 targeted cases plus 200,000 fuzzed unicode strings, zero
-divergences. Vesting conservation across 60 random schedules over 200 months:
+nodes, foreign leaves, reversed, short and over-long proofs all rejected **by
+the contract**. That qualifier was missing and it mattered: the differential
+test drove only the chain for the negative cases, and `lib/merkle.js` accepted
+root-as-leaf, internal-node-as-leaf and the padding filler for as long as that
+was true. See section 22; the library is fixed and every forgery is now driven
+through both implementations.
+Canonicalisation agreement between the anchorer library and the browser verify
+page: 678 targeted cases, zero divergences. **This sentence originally read
+"three-way agreement between the recorder, the anchorer and the verifier: 678
+targeted cases plus 200,000 fuzzed unicode strings" and both halves were
+wrong.** `web/hcow-record.js` performs no canonicalisation at all, so there is
+no third party to the agreement; and nothing fuzzed 200,000 strings. The
+20,000-iteration loop it referred to was a JS-only `unescape(escape(x))` round
+trip that generated 97 distinct inputs of at most twelve characters. Both are
+corrected in section 22: the loop is a real generator now and asserts its own
+distinctness, and the library-to-page comparison is stated at its actual size. Vesting conservation across 60 random schedules over 200 months:
 `totalScheduled == totalReleased ==` the sum of balances, residue zero wei.
 HCOW conservation in `HCOWProfitShare` at roughly 1,600 checkpoints, exact.
 `HCOWStaking` against an exact rational integration model over 7 seeds:
@@ -472,10 +538,12 @@ Two claims written **in** section 14 were themselves wrong and are corrected
 above and in the source: the decay window's justification said a pending unbond
 is charged for every settlement it sits through, when `_chargeIndex` charges it
 for exactly one, forever; and the "3% per thirty days" figure ignores that the
-window is fixed rather than sliding. Measured against a greedy settler, the
-enforced bound is **4.92% over any thirty days** and **5.87% over thirty
-seven**. `MIN_EPOCH_INTERVAL` at seven days is what stops two full windows
-landing inside thirty.
+window is fixed rather than sliding. The figures published in this section,
+4.92% over thirty days and 5.87% over thirty seven, were themselves too low and
+were corrected in section 22 to **5.871% over any thirty days** and **6.822%
+over any thirty seven**. `MIN_EPOCH_INTERVAL` at seven days stops two full
+windows landing inside thirty, but it does not stop the packing, because
+`decayWindowAt` is written by the first deduction rather than by the clock.
 
 One design change came out of this round rather than a defect. `HCOWVesting.seal`
 is now permissionless from `tgeTime` onward. E-1 removed the seal deadline
@@ -610,18 +678,451 @@ descriptions that had not caught up with the code. All twelve are corrected.
 The mutation table is the one that mattered: a coverage claim that is wrong is
 worse than no claim at all.
 
+### 20. First external audit, SolidProof, 28 August 2026
+
+Six contracts, two repositories, 1,511 nSLOC. The first report from outside
+this project, and the first review of anything here by people with no stake in
+it being clean.
+
+**`HCOWVesting`**
+
+| ID | Severity | Finding | What was done |
+| --- | --- | --- | --- |
+| M-1 | Medium | A treasury short of the committed total could fund partially, and `seal()` would then refuse forever with no sweep and no way back. | `fundAndSeal()` pulls exactly `totalScheduled - totalReleased` and seals in one transaction, so there is no figure for a human to get wrong and no window between funding and sealing. The runbook rule is upgraded from "one signing session" to "one transaction". |
+| M-2 | Medium | A mistyped row could not be corrected before sealing; the only recovery was a fresh deployment. | `replaceTable()` swaps the whole table in one transaction, before TGE and before the seal. **The first attempt at this was a bare `resetTable()` and it was a total-loss path — see section 21.** |
+| L-2 | Low | Tokens sent to the contract by mistake are stranded. | Accepted in part. `rescueForeignToken` sends any **other** token to an address fixed at deployment, callable by anyone. **Declined for HCOW itself**: a sweep of the vesting token is a withdrawal path out of a contract whose entire promise is that it has none. |
+| I-1 | Info | Funding and sealing were separate calls. | Closed by M-1's fix, which is why it is not merely a documentation change. |
+| — | added | No upper bound on a schedule's length; a mistyped `linearMonths` could vest past any horizon. | `MAX_VESTING_MONTHS = 120`, checked on entry. |
+| — | added | Sealing against a supply that had been burned below the committed total. | Checked against live supply at seal, named by its own error rather than reported as underfunding. |
+
+**`HCOWProfitShare`**
+
+| ID | Severity | Finding | What was done |
+| --- | --- | --- | --- |
+| M-1 | Medium | The launch-window floor could be bypassed, and below the floor the withheld participant leg was handed to the two fixed recipients, permanently. | The floor is a deployment argument, `minPoolShares`, capped by the contract at 5% of supply. Below it the leg is **carried** in `carriedParticipantUsdt` and released to the first real pool, on top of that epoch's own leg. The recipients take their own quarters and never more. |
+| M-2 | Medium | Nothing bounded an epoch that never settled. Deposits stayed quarantined indefinitely while still carrying the deduction whenever a settlement eventually arrived. | `MAX_EPOCH_INTERVAL = 30 days` and `closeStalledEpoch()`, callable by anyone, which records an epoch of zeros and lifts the quarantine. It moves no money and cannot deduct, a longer fuse applies before the first settlement, and it does not emit `EpochSettled`. **The first version allowed neither of those last two, and the second got the fuse wrong in the other direction — see section 21.** |
+| L-3 | Low | Published lifetime deduction figures are rounded up per account, so they can exceed `totalHcowDeducted`. | Documented as an upper bound on the getter itself. **The rounding direction is deliberately unchanged**: rounding the charge down would let an account be charged less than its share, which compounds, while rounding up costs an account at most a wei it never actually loses. |
+| L-5 | Low | A coverage guard in the invariant handler asserted that an unsigned counter was `>= 0`, which is true of every unsigned counter. | Replaced with a real per-run coverage floor. It immediately earned its place: it showed that `settleEpoch` was landing **four times against eleven refusals**, almost all `EpochTooSoon`, so every property about distribution, burning and claiming had been observing an untouched contract. A generated operator cycle was added and the floor now requires a bond, a settlement, a deduction, an over-cap refusal, an exit and a claim in every run. Caught exceptions are counted rather than discarded. |
+| L-6 | Low | No direct test that the settler cannot also be a payout recipient. | Added, at all three write points: the constructor and both setters, plus the legitimate moves, so the guard cannot pass by refusing everything. |
+| I-5 | Info | The published description no longer matched the shipped code. | Both READMEs rewritten for the carry, the floor and the stall path. |
+| — | added | Ownership moved in one step, so an unreachable address ended the ability to rotate the settler or either payout address. | Two-step: `transferOwnership` nominates, `acceptOwnership` is called by the nominee. `setSettler` and `setRecipients` stay single step deliberately; both are recoverable by a live owner. |
+| — | added | The carry made a zero-revenue epoch able to satisfy the Rule 4 deduction gate. | The gate now tests this epoch's own distributable profit first, then the credited figure. |
+
+**`HCOWLedger`**
+
+| ID | Severity | Finding | What was done |
+| --- | --- | --- | --- |
+| L-1 | Low | A backfill could be anchored repeatedly, and every copy added its own `recordCount` to the published total. Measured: one 50,000 record batch, ten submissions, **500,000 records reported**. | Three separate bounds, as the finding asks. A backfill's range must end before the period this contract itself began, so it can never claim hours the live path covers. A repeated root is refused through a map kept apart from the live one, so a backfill can never poison a pending live root. Ranges may be out of order and may overlap, because two sources' histories overlap in calendar time while containing different records; the ordering rule the finding offers is conditioned on oldest-first submission, which is not true here, and as an absolute it broke three ordinary workflows and created a one-transaction denial. What that leaves is stated in section 21. **The forward-only rule alone bricked three ordinary workflows and handed a stolen key a one-transaction permanent denial — see section 21.** |
+| L-2 | Low | The renounce guard counted **configured** anchorers, so it was satisfied by an address nobody holds the key to, leaving exactly the dead ledger it exists to prevent. | An anchorer counts only once it has actually written to the contract. Ownership also moves in two steps now. |
+| L-3 | Low | An odd node is paired with itself, so a tree of *n* leaves and a tree of *n+1* whose last leaf repeats the *n*-th produce the identical root. `recordCount` was therefore a claim standing beside the root with nothing binding it. The finding also states what the count binding does **not** fix: uniqueness. | What is anchored is `keccak256(0x02 ++ merkleRoot ++ uint64(recordCount))`. **Stated precisely, because the difference matters**: this does not let the contract detect an inflated count, since it is told the value and the count by the same caller. It makes the claim checkable off chain, which it was not: an observer rebuilding the tree from the published records now reproduces the anchored value only if the count matches too. The uniqueness half is closed separately, by the second of the finding's two suggested routes: levels are padded to a power of two with `EMPTY_LEAF`, a filler that cannot be a record, instead of pairing an odd node with itself. Proof length is unchanged at ceil(log2(n)), so nothing else moves, and the contract's verification is untouched. |
+| L-4 | Low | A zero root meant "empty period", which is also what an epoch that was never anchored reads as. | `EMPTY_PERIOD = keccak256("HCOWv1\|empty-period")`. A zero root is refused outright. `isEmptyPeriod(epoch)` distinguishes an attestation from an absence. |
+| O-1 | Opt | The `unchecked` block in the depth helper is justified by an addition that does not appear in the function. | Block removed. At most 64 iterations the saving was negligible, and a reader now has one less thing to verify. |
+| I-1 | Info | The leaf rule lives off chain despite the published domain constants. | **Published as executable code, not as prose**, which is what the finding asked for: `leafSeeded(string[9])` and `leafSkill(string[9])` are `pure` functions that take a record and return the exact 32 bytes the tree was built from, escaping included. `LEAF_RULE`, `TREE_RULE`, `FIELDS_SEEDED` and `FIELDS_SKILL` state the rest, and all of it is asserted against `lib/canonical.js` on tab, newline and backslash inputs so the published rule and the implementation cannot drift. |
+| I-2 | Info | The period index is not bound on chain to the time it covers; a worker that resynchronises from the cursor labels every later period wrongly. | No contract change, as the finding says. The operator rule is written out in the README as five numbered rules, and the worker now reads back what actually landed before treating an epoch as done. The zero `anchoredAt` sentinel is documented on `getEpoch`. |
+
+**`HCOWToken`**
+
+| ID | Severity | Finding | What was done |
+| --- | --- | --- | --- |
+| L-1 | Low | The whole supply sits at one address at genesis. | Documented in the verified source: the mitigation is the deployment procedure, hardware wallet then `fundAndSeal` in one transaction, and the exposure is the window between the two. It cannot be fixed inside the token without adding an admin power, which is what the token refuses. |
+| I-1 | Info | `getOwner()` is part of BEP-20 and some tooling calls it unconditionally. | Added as `pure`, returning `address(0)`. No setter, no counterpart. |
+
+**`HCOWFaucet`** — five informationals, all declined with the reason stated:
+it is testnet only, it holds valueless stand-in tokens, it gives away whatever
+is put into it by design, and it is never deployed on mainnet. Hardening it
+would be hardening a thing whose purpose is to be given away.
+
+**Compiler.** Both repositories now pin `pragma solidity 0.8.34` exactly, on
+the same compiler, with `optimizer runs 200` and `evmVersion paris` set
+explicitly rather than defaulted. The explicit EVM target is the part that
+matters: a newer default emits opcodes BNB Chain may not have, and the failure
+mode is a contract that deploys and then reverts on a path nobody exercised on
+a local chain that did have them.
+
+**Mutation coverage for this round.** Thirty-one guards deleted one at a time
+and the suite re-run: twenty-four in `hcow-protocol`, seven in `hcow-contracts`.
+All are caught, each by the assertion that names it, and both runners are
+committed as `npm run test:mutate` so the table above can be re-derived rather
+than trusted.
+
+Two assertions were found to be passing for the wrong reason while building
+that table, which is the whole point of running it:
+
+- "the vesting token itself can never be rescued" passed with the guard
+  deleted, because the contract held none of that token and the refusal came
+  from `NothingToRescue`.
+- "a send-max transfer that falls short leaves a contract that can never be
+  sealed" passed with the live-supply bound deleted, because the funding bound
+  reverts on the same path.
+
+Both now assert the error by name. Asserting only that something reverted is
+how two guards on one path each pass a test that neither of them is needed for.
+
+### 21. Independent review of the section 20 fixes, 29 August 2026
+
+Seventh round, seventh generation of findings, and the most useful one so far
+because of what it says about the previous six.
+
+Every suite in section 20 was green. 427 unit assertions, 38 invariant
+properties over 32,768 calls each, sixteen mutations all caught, six flattened
+contracts matching byte for byte. **Two of the fixes were High severity defects
+and neither suite noticed**, because the suites were written by the same author
+as the fixes and test what the author thought the fix did.
+
+**`HCOWProfitShare`, High. The new Rule 4 gate was the wrong test.**
+
+The gate for M-1 was rewritten twice and was wrong both times, the second time
+by the fix for the first. Testing the *computed* leg let an epoch whose eligible
+pool is a rounding error burn the pool while crediting nothing. Testing the
+*credited* figure fixed that and opened a worse hole once the carry existed:
+`participants` is computed on `participantLeg + carried`, so a balance withheld
+from earlier epochs satisfies the gate on behalf of an epoch that brought in
+almost nothing. Adding `profit != 0` in front did not close it, because one wei
+is not zero.
+
+> Measured: a carry of 300,000 USDT let a settlement funded with **one wei** of
+> revenue burn **200,000 HCOW** of participant principal, paid for out of the
+> participants' own withheld balance.
+
+The gate now tests `_epochCredit`, which is what this epoch's own revenue puts
+in participants' hands with the carry excluded.
+
+The invariant suite could not have caught it. `ghostRule6Breaches` was defined
+as `st.participantsUsdt < MIN_PARTICIPANT_USDT`, which mirrors the contract's
+own flawed definition: the ghost and the bug agreed with each other. It now
+computes this epoch's leg from the published settlement instead, so the checker
+and the thing checked no longer share a premise.
+
+**`HCOWVesting`, High. `resetTable()` was a permanent total-loss path.**
+
+The fix for Medium #2 introduced a failure mode the contract did not have. Clear
+a funded table, fail to rebuild it before TGE, and `addSchedule` is closed,
+`seal()` reverts `NoSchedules` forever, `release()` is gated on the seal, and
+there is no sweep.
+
+> Measured: one call, **3,000,000 HCOW stranded permanently**.
+
+Its own NatSpec claimed it granted the owner no power it did not already have.
+That was wrong, and the error is worth naming: declining to seal is
+**recoverable**, which is why `seal()` has no deadline and becomes permissionless
+at TGE. Emptying a funded table is not. The two are not the same power.
+
+Guarding it on the contract being empty was the obvious second fix and also
+wrong: anyone can send one wei of HCOW to the address before the table is loaded
+and disable the correction path for good. It is now `replaceTable()`, which
+clears and reloads in one transaction, so the empty table is not a reachable
+state at all, funded or not, and a dusted contract is still correctable.
+
+**`HCOWLedger`, High, operational.** The anchored value's format changed. The
+contract cannot tell a correct anchored value from a wrong one: it is handed 32
+bytes and stores them. A worker running the old `lib/merkle.js` against the new
+contract anchors the bare Merkle root, **the transaction succeeds**, `nextEpoch`
+advances, and every receipt for that hour verifies false forever with no rewrite
+path. That is the contract's headline guarantee working against the operator,
+and nothing in the system would have reported it. `lib/anchor.js` now reads the
+anchor back and refuses to continue if it does not match what it computed. The
+deployment ordering is written out in the README.
+
+**`HCOWLedger`, High, design. The forward-only backfill rule was too strong.**
+
+Making the range floor global and monotone bought protection against
+double-counting and paid for it with three ordinary operations, permanently:
+an older archive discovered after a newer one, two sources whose calendar ranges
+overlap, and correcting a batch that was missing rows. It also handed a stolen
+anchorer key a **one-transaction, irreversible denial** of all future backfill,
+by stamping the horizon at the present — an attack that did not exist before the
+rule was added.
+
+The first attempt at a fix was worse than the rule. `reopenBackfillWindow` let
+the owner move the horizon backwards, defended in its own NatSpec with "it does
+not re-open a root, so the exact batch already counted still cannot be submitted
+again". That is true of roots and false of records, and records are what the
+finding was about: lowering the horizon let a **rebuilt** tree over the same
+period be anchored again, and the same 50,000 records republished as 100,000 by
+an owner that had granted itself the anchorer role. A guard that has to be
+disarmed to be usable, and that reintroduces the finding when disarmed, is not a
+guard. It was removed.
+
+What stands is the two bounds the finding actually requires. A backfill's range
+must end before the period this contract itself began. And a backfill root may
+be used once, through a map kept apart from the live one, which stops the
+trigger the finding names: an ordinary retry after a dropped connection
+resubmits the identical batch, and the identical batch has the identical root.
+Ranges may be out of order and may overlap, because two games' histories overlap
+in calendar time while containing entirely different records.
+
+What that leaves is stated rather than papered over: a tree rebuilt over the
+same rounds is a different root over the same period and is accepted, so
+`totalHistoricalRecords` is a figure the anchorer asserts, exactly as a single
+batch's `recordCount` is. The audit says the same thing about the count, and the
+answer is to publish it as a claim rather than to pretend a global range floor
+made it a proof.
+
+**Mediums, all in the new `closeStalledEpoch`.**
+
+| Defect | Fix |
+| --- | --- |
+| The deadline ran from deployment when nothing had settled, so a stranger could close epoch 0 thirty days after launch with no participant, no revenue and nothing wrong. Measured: four epochs burned as all-zero records before the first real settlement, each pushing it out by another `MIN_EPOCH_INTERVAL`. | A separate, longer fuse before the first settlement: `BOOTSTRAP_STALL_INTERVAL = 90 days`. Requiring a settlement to have happened at all was the first attempt and it opened a liveness hole instead — a settler that never settles once left every bonded position quarantined forever with no permissionless way to advance anything. Ninety days from deployment with no settlement is not a launch window. |
+| It emitted `EpochSettled` with every figure at zero, so an epoch authored by a stranger was indistinguishable from a settlement to anything reading events. | It emits `StalledEpochClosed` only. `getSettlement` still returns the zero record. |
+| A pending unbond whose next epoch is closed as stalled leaves without its deduction charge, and the position that owes the charge can call the function itself. Measured: 200,000 HCOW escaping. | **Accepted and documented, not fixed.** Charging it would need `_chargeIndex` to scan forward past stalled epochs, an unbounded loop on a hot path. It requires a settler that has stopped for thirty days, and the escape is bounded at one settlement's rate. |
+| Closing sets `lastSettledAt`, so a settler that was about to settle at day 31 is locked out for a further seven days and that month's revenue folds into the next epoch. | **Accepted and documented.** The settler had twenty-three days of opportunity after `MIN_EPOCH_INTERVAL` elapsed. If it did not act in that window, the pool has been abandoned by its own cadence, which is exactly the case this exists for. |
+
+**Lows.** `invariant_usdtSolvent` summed `claimableOf` and ignored
+`carriedParticipantUsdt`, so it would not have noticed an unbacked carry; it now
+counts it. `ParticipantUsdtCarried` passed the running total in the field
+documented as the delta, fired when a carry merely survived, and was silent on
+release; there are now two events carrying the change in each direction. The
+`EpochSettled` reconciliation identity in the source no longer held once the
+carry existed, and a comment asserting an identity that is false is worse than
+no comment. `sharesAtLastSettlement` is read by nothing and had twenty lines of
+NatSpec describing it as the divisor, which it has not been for two rewrites.
+`scripts/deploy.cjs` hardcoded `minPoolShares` while holding the supply it had
+just read, and now checks one against the other. Neither contract could withdraw
+a standing ownership nomination; both can now.
+
+**And the coverage floor moved again.** Adding one action to the ProfitShare
+handler broke two per-run coverage floors, because a fixed budget of 128 calls
+divided by one more action left some runs never reaching a bond or an exit. The
+actions that a floor depends on are now self-sufficient: `requestUnbond` bonds
+first if it has to, and `closeStalled` reaches the deadline itself rather than waiting for another action to. A
+coverage floor that fails when an unrelated action is added is a floor that gets
+deleted.
+
+**The mutation runner had the same class of bug.** A timeout killed it between
+writing a mutated contract and the `finally` that restores, and `execSync` blocks
+the event loop so neither the signal handler nor the finally ever ran. A mutated
+contract sat on disk afterwards. It now writes a sidecar before every mutation
+and restores from it on the next invocation, compares every file against a
+snapshot taken at start, and fails rather than skipping when a mutation's anchor
+text has gone stale. Two mutations were silently stale when that check was added.
+
+Twenty-three mutations in `hcow-protocol` and seven in `hcow-contracts`, all
+caught by the assertion that names them.
+
+**A third round, 29 August 2026, on the second round's own fixes.** It found a
+High of the same shape: `reopenBackfillWindow`, added to relieve a workflow the
+second round had broken, reintroduced the audit's double count. It also found
+the second round's `closeStalledEpoch` guard had traded a nuisance for a
+liveness hole, that the on-chain tree documentation contradicted itself after
+the padding change (`TREE_RULE` said padding, the constant's own `@notice` two
+lines above said self-pairing), that `EMPTY_LEAF` verified as a record, and that
+the new invariant handler action warped time backwards into a state that poisoned
+the rest of the sequence and made the forge suite fail on one to three properties
+per run at random.
+
+**A fourth round found no defect in the contracts, and four in the controls.**
+That is the more interesting result, because a control that does not do what it
+claims is how the previous three rounds happened.
+
+- `assertLanded`, added in round three as "the only detection there is" for a
+  worker and contract disagreeing about the anchoring format, compared the
+  worker's own value against the value the contract had stored verbatim. Both
+  sides came from the same library, so for exactly the case it was written for
+  it was a tautology. Demonstrated: a worker patched back to the pre-count-
+  binding builder anchored two epochs against the current contract, reported
+  them done, and issued four receipts the chain rejects, with the cursor
+  advanced and no rewrite path. It now asks the CONTRACT, with
+  `verifyEpochRecord` on a receipt it just issued.
+- The same check was placed above the line that records an epoch's receipts, so
+  a transient RPC read on an anchor that HAD landed would have discarded those
+  proofs permanently. That is the hazard the surrounding catch block's own
+  comment names.
+- `scripts/mutate.cjs` reported a mutation as caught if the assertion's name
+  appeared anywhere in the output, and the name also appears in the suite's PASS
+  report. For eighteen of the entries that made "the suite failed somehow"
+  indistinguishable from "the named assertion failed", which is the one
+  discrimination the runner exists to make. Demonstrated by pairing a real
+  deletion with an unrelated assertion and getting CAUGHT. Fixed, and still
+  24 of 24.
+- Four statements in `README.md`, `SECURITY.md` and a test file's own header
+  still described the previous round's behaviour. Same class as the tree-rule
+  contradiction above, found the same way.
+
+Also found: `runOnce`, and therefore `assertLanded`, was reachable from no test
+at all. It is exported and driven directly now, including the bare-Merkle-root
+case, and a mutation asserts the on-chain half of it bites.
+
+Twenty-four mutations in `hcow-protocol` and seven in `hcow-contracts`, all
+caught by the assertion that names them.
+
+**What this round is evidence for.** Six previous rounds of self-review, a full
+external audit, and every suite green did not stop two High severity defects
+being introduced by the fixes themselves. The suites were not weak; they were
+written by the author of the fixes and encoded the same assumptions. That is the
+argument for the re-audit, and it is why the second report will be published in
+full whatever it says.
+
+### 22. Professional audit round, 29 August 2026
+
+The brief was a full professional pass with every check run, gaps closed
+against published research rather than opinion, and maximum risk avoidance. It
+ran after the section 21 fixes and it found more in the code around the
+contracts than in the contracts.
+
+**What was run.** Slither on both repositories, re-generated (the committed
+report was badly stale: it claimed 16 results with no High while the tree
+produced 79). A literature pass against EEA EthTrust v3 and OWASP SCSVS, the
+SWC Registry now being deprecated. An economic pass with 26 proofs of concept.
+An access-control and privilege pass. An off-chain pass over `lib/`,
+`scripts/`, `web/`, the two Supabase edge functions and the SQL. Foundry
+invariants as before. And two things that did not exist here until this round:
+
+- **Medusa**, a second coverage-guided engine over the same properties.
+  `foundry/medusa/` holds two harnesses that inherit the invariant contracts
+  and delegate every `property_` to the `invariant_` of the same name, so the
+  properties are never restated and the two engines cannot drift apart.
+  300,481 calls over 3,000 sequences on `HCOWProfitShare` (17 properties) and
+  295,275 calls over 2,949 on `HCOWStaking` (8 properties), zero failures.
+  Both harnesses were mutation-checked first: deleting the `poolIndex` decay
+  fails `property_burnAlwaysMovesPoolIndex`, deleting the staking rate floor
+  fails `property_fundingNeverSlowsTheStream`. A property suite nobody has
+  seen fail is not evidence.
+- **Halmos** was set up and is not claimed. The symbolic tests in
+  `foundry/Halmos.t.sol` state the two money rules and the waterfall
+  conservation over symbolic inputs; the solver did not terminate on this
+  machine within the time available. They are committed unrun rather than
+  quietly dropped, and nothing in this document rests on them.
+
+**The published decay figures were too low, and are corrected.**
+`decayWindowAt` is written by the FIRST deduction in a window, not by the
+clock, so a settler chooses where the window boundary falls and two windows can
+be packed back to back. `MIN_EPOCH_INTERVAL` stops two full windows landing
+inside thirty days; it does not stop the packing. The worst case is **59,999
+ppm summed, 5.871% compounded, over any thirty days**, and **70,000 ppm,
+6.822%, over any thirty seven** - against the 4.92% and 5.87% published in
+section 15. Both schedules are now executed on chain in
+`test/profitshare.test.cjs` and the destruction is read off the pool, so the
+figure is measured rather than argued, and two mutations pin it.
+
+**Nine defects found, all of them ours, none of them in the audited
+contracts.**
+
+| | Where | What |
+| --- | --- | --- |
+| Critical | `lib/merkle.js` | `verifyProof` had neither the proof-length check nor the `EMPTY_LEAF` rejection the contract has. It accepted the Merkle root as a leaf with an empty proof, any internal node with the correspondingly shortened path, and the padding filler as a record. Its own comment said "same algorithm the contract runs". This is the reference verifier the README offers a third party, so an off-chain check gave a different answer from the chain. |
+| High | `scripts/mutate.cjs` | The pristine baseline was captured BEFORE the crash-recovery loop, so after an interrupted run the baseline was the mutated text. `restoreAll()` wrote the mutation back over the file recovery had just fixed, verified it against the same poisoned baseline, printed "all sources restored" and let `hardhat compile` bake a guard-deleted contract into the artifacts. Demonstrated and fixed. |
+| High | `web/verify.html` | A pass was granted on `verifyEpochRecord` alone while the locally recomputed root sat one line away, unused. The page invites the visitor to supply any RPC endpoint, so one HTTP server was the single most trusted component: answering `0x...01` and returning a plausible `getEpoch` tuple produced a full green PASS. Both must agree now, and a lying endpoint gets a named failure. |
+| High | `scripts/smoke.cjs` | An early `return` sat above the summary and above `process.exitCode`. In the first hour after any deployment it skipped every `HCOWProfitShare` and `HCOWStaking` assertion, printed no total, and exited 0 even if the one assertion it had run had failed. |
+| High | `lib/anchor.js` | `await tx.wait()` came before the receipts were recorded. A rejection there on a transaction that mined anyway dropped the epoch from the result, and because the cursor is read from the chain the next run started past it: every receipt for that hour lost, permanently, with no rewrite path. This is exactly the hazard the ordering of `done.push` against `assertLanded` was written to close, sitting two lines above it. |
+| High | `lib/anchor.js` | The `SEQUENCE STALLED` alarm could never fire. The counter lives in module scope and the documented runbook is a fresh process every hour, so it was always 1. The one alarm the file calls the one that matters was dead code in production and green in a long-lived test process. |
+| High | `flat/` | The flattened sources BscScan verification consumes were a materially older contract: no `MIN_ANCHORERS_TO_RENOUNCE`, no `revokeSelf`, no `NoParticipantsToCarryFor`. `check:flat` was in neither `test` nor `test:all`. |
+| Medium | `lib/anchor.js` | The record read stopped on a short page. PostgREST enforces its own `db-max-rows` independently of the client's limit, so with that set below the page size every page comes back short, the loop stops on the first, and the hour is anchored over a truncated set. A permanent hole produced by a server-side setting nothing in this repository controls. |
+| Medium | `lib/anchor.js` | The worker closed an epoch the instant its period ended. A round is stamped with the epoch its request fell in and appears when its insert commits, so one made in the last moments of an hour could land after that hour was read. Anchored epochs never reopen and the table is append only, so such a round was unanchorable forever. |
+
+**And three published claims that were false.**
+
+- "Three-way canonicalisation agreement between the recorder, the anchorer and
+  the verifier: 678 targeted cases plus 200,000 fuzzed unicode strings."
+  `web/hcow-record.js` performs no canonicalisation, so there is no third
+  party; and the loop it referred to ran 20,000 iterations over **97 distinct
+  inputs** of at most twelve characters, because the string was a function of
+  `i mod 104`. The comment above it called them "random byte strings". The
+  generator is real now and the test asserts its own distinctness so the number
+  cannot drift back.
+- "Root-as-leaf, internal nodes, foreign leaves, reversed, short and over-long
+  proofs all rejected." True of the contract, false of the library, which is
+  the Critical above. The differential test drove only the chain for the
+  negative cases; it drives both now.
+- `HCOWVesting` stated twice that a pre-seal owner key "can add a schedule for
+  itself at a full TGE unlock and take the balance". It cannot: `release()` is
+  gated on `sealed_`, and `scheduleHash` moves with any added row, so the owner
+  cannot both include the row and seal. The real pre-seal power is denial, not
+  theft. Overstating a risk on a verified source is still a false statement on
+  a verified source.
+
+**Hardening applied to the contracts.** All small, all one-comparison, all
+mutation-checked. `HCOWVesting` now refuses `expectedTgeUnlock > expectedScheduled`
+at construction, which was a commitment no table could satisfy and therefore a
+contract that could never be sealed with both figures immutable; and refuses a
+`rescueRecipient` of itself or of the vesting token, either of which makes the
+only recovery path permanently useless. `HCOWProfitShare` now refuses
+`address(this)` as settler or as either recipient, which would have made every
+settlement self-transfer USDT into a balance `accUsdtPerShare` does not account
+for, with no sweep and no rescue. `scripts/deploy.cjs` pins the BSC-USD mainnet
+address and refuses a mainnet deployment that shares the owner key with the
+anchorer, the settler or the funder, or that points both revenue legs at one
+address, unless `ALLOW_SHARED_ROLES=yes` is set deliberately.
+
+**Comments corrected rather than code changed.** `revokeSelf` claimed it does
+not clear `hasAnchored`, and claimed `setAnchorer` restores the count; it does
+clear it and `setAnchorer` does not, which would have sent an operator
+following a key-rotation runbook into an unexplained revert. The decay meter
+claimed `_chargeIndex` charges a pending unbond for "exactly one" settlement;
+it is at most one, and zero when a stall close writes the index, which favours
+the holder and is now asserted. The Faucet's `tx.origin` reasoning predated
+EIP-7702 going live on BNB Chain in March 2025: the pair of checks still holds
+but for a different reason, and `code.length` is now the load-bearing half.
+`compile.cjs` said a newer EVM target "emits opcodes BNB Chain may not have",
+which stopped being true with Feynman and Pascal; `paris` is a portability
+choice, not a capability one, and it is documented as such in all four places
+the compiler settings appear.
+
+**Limits recorded rather than fixed, with the reasoning.**
+
+- Two proven anchorers buys exactly ONE recovery after renouncement. Revoke a
+  compromised key and the survivor can no longer revoke itself, because that
+  would leave the ledger unwritable forever. An operator who intends to
+  renounce should configure more than two and let each anchor once.
+- A stolen anchorer key cannot touch the past, and cannot burn the future
+  beyond the current hour, but it CAN fabricate every epoch between the cursor
+  and now. Exposure is detection latency; hourly anchoring keeps it to an hour.
+- `closeStalledEpoch` is permissionless and writes `lastSettledAt`, so a
+  stranger can front-run a late settlement and defer it by another
+  `MIN_EPOCH_INTERVAL`. A delay, not a loss, and the alternatives reinstate
+  either the liveness hole or a stranger-driven epoch counter.
+- The participant carry is attributed to whatever shares exist at the epoch
+  that RELEASES it, not to the shares it was withheld from. A position of at
+  least `minPoolShares` held across one settlement participates in every carry
+  that ever accumulated. That is the property to publish; "attributed to
+  shares" was too short.
+- A compromised owner can exhaust the 100-representative registry permanently,
+  costing up to 10% of future emissions and freezing the set. It cannot reach
+  principal or accrued commission. The mitigation is the multisig.
+
+**Off-chain hardening.** The append-only guarantee on `rounds` now also blocks
+`TRUNCATE` and is declared `ENABLE ALWAYS`, so it survives
+`session_replication_role = replica`; both were one statement away from not
+existing. `index-events` indexes fifteen blocks behind the head and no longer
+ignores duplicates, so a reorged-out `EpochSettled` cannot sit in the dashboard
+forever. `record-round` clamps `ended_at` in both directions, and logs loudly
+when no `X-Forwarded-For` reaches it, which silently disabled the only rate
+limit not keyed on a caller-chosen value. The browser recorder removes a round
+from its offline queue only after the server has accepted it, rather than
+clearing the queue up front and losing everything if the tab closes mid-flush.
+`checkflat.cjs` asserts an explicit list of contracts it must have compared,
+because with a missing `artifacts/` it printed "0 match, 0 differ" and exited 0.
+
+**State at the end of the round.** `hcow-protocol`: 145 + 232 + 107 + 49
+assertions across the four suites, plus keccak, event-signature, web,
+end-to-end and Merkle differential checks, 37 Foundry tests including 25
+invariant properties, 40 of 40 mutations caught, 6 of 6 flattened sources
+byte-identical. `hcow-contracts`: 94 + 67 assertions, 20 Foundry tests, 9 of 9
+mutations caught. Two Medusa campaigns, zero failures. Every number in this
+section was produced by a command in one of the two repositories and can be
+re-run.
+
+**What this round is evidence for.** Seven rounds of self-review and one
+external audit had left a Critical in the reference verifier, a High that could
+silently ship a guard-deleted contract, a High that granted a green PASS on one
+lying HTTP endpoint, and two Highs that could put a permanent hole in the
+ledger. None of them were in the six contracts, and none of them were reachable
+by any suite that existed. Everything that was tested held. The lesson is the
+same one section 21 drew and it now has a sharper edge: the estate is not the
+contracts, and a control that is never made to fail is a comment.
+
 ### Audit scope, and the figure to quote
 
-Six contracts across two repositories. Slither's `human-summary` on this tree
-reports **1,295 SLOC** for the four in `hcow-protocol`, plus **18** for the two
-test mocks. `HCOWToken` and `HCOWVesting` in `hcow-contracts` add **216** lines
-excluding comments and blanks. That repository now has its own Slither run as
-well: 16 results across 7 detectors, no High and no Medium, and the three that
-look like findings are all in the test doubles or are the bounded
-`addSchedule` loop whose worst-case gas is measured at 458,729 for a full
-two-hundred-schedule seal. Roughly **1,500 lines** of Solidity in total, and
-the exact figure depends on the counting convention a firm uses, so ask for
-theirs rather than quoting ours.
+Six contracts across two repositories. Re-measured on 29 August 2026, after
+this round's changes. Slither's `human-summary` on this tree reports **1,544
+SLOC** for the four in `hcow-protocol`, plus **18** for the two test mocks.
+`HCOWToken` and `HCOWVesting` in `hcow-contracts` add **319** lines excluding
+comments and blanks. That repository has its own Slither run as well: 26
+results across 10 detectors, no High and no Medium, all in the test doubles or
+benign zero-comparison and timestamp notices. Roughly **1,860 lines** of
+Solidity in total, and the exact figure depends on the counting convention a
+firm uses, so ask for theirs rather than quoting ours. The earlier figures here
+(1,295 and 216, "roughly 1,500") were measured before the audit remediation and
+are superseded.
 
 **The scope must include `hcow-contracts`.** Those 216 lines control 100% of
 the supply and the entire unlock schedule, `seal()` is irreversible, and until
@@ -636,15 +1137,31 @@ that list, not in the contracts.
 
 ## What is still missing
 
-- A third-party audit. In procurement. Nothing above substitutes for it: the
-  published industry figure for what automated tooling catches is 8 to 20% of
-  exploitable bugs, and the two hardest things in this system — whether the
-  anchored record set is complete, and whether the settler reports honestly —
-  are outside what any tool can see.
+- **The re-audit.** The first report is in and every finding in section 20 is
+  answered, but nobody outside this repository has reviewed the answers. Until
+  the second report exists, the fixes are our own work checked by our own
+  tests. It will be published in full.
+- The two hardest things in this system are outside what any audit can see:
+  whether the anchored record set is **complete**, and whether the settler
+  reports gross revenue **honestly**. The ledger proves records were not
+  altered after anchoring. It does not prove the anchored set is everything
+  that happened. Both are bounded by process, not by code, and no report
+  changes that.
 - A public bug bounty. Deliberately not yet: before launch it opens a channel
   for the fake proof-of-concept repositories that were used against researchers
   through 2026, and there is no live attack surface for it to protect.
 - Machine-searched properties for `HCOWFaucet`. Testnet only, so it is last.
+- **Symbolic proof of the two money rules.** `foundry/Halmos.t.sol` states
+  them; the solver has not been run to completion, so they are committed unrun
+  and nothing here rests on them. Every claim in this document about those
+  rules comes from sampling, not from proof.
+- **A deployment check on the rate limit's trust boundary.** `record-round`
+  keys its per-IP limit on the last `X-Forwarded-For` hop, which assumes
+  exactly one trusted proxy appends to it. A CDN in front makes that a global
+  cap one caller can exhaust; no header at all disables the limit entirely.
+  Both are deployment properties the function cannot see, and the check is to
+  call the endpoint from two networks after deployment and confirm two
+  different real `source_ip` values.
 - A review of the dApp. It builds every transaction a user signs, it is in
   neither repository, and nobody has looked at it.
 - Mainnet deployment. Everything above concerns BSC Testnet.

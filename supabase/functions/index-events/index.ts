@@ -102,6 +102,22 @@ const PROFIT_SHARE_EVENTS = [
   "event SettlerChanged(address indexed account)",
   "event RecipientsChanged(address indexed gameCompany, address indexed team)",
   "event OwnershipTransferred(address indexed from, address indexed to)",
+  // Ownership moves in two steps now, so the nomination is its own row. A
+  // nomination that is never accepted changes nothing on chain, and without
+  // this row there is no record that one was made.
+  "event OwnershipTransferStarted(address indexed from, address indexed to)",
+  "event OwnershipTransferCancelled(address indexed nominee)",
+  // An epoch closed by the stall path rather than by the settler. It also
+  // emits EpochSettled with every figure at zero, so without this row the two
+  // are indistinguishable in the index.
+  "event StalledEpochClosed(uint64 indexed epoch, address indexed closedBy, uint64 openSince)",
+  // The participant leg withheld from a pool below the floor and held for the
+  // first real pool. Without this row a settlement's four legs do not add up
+  // to its distributable profit and the difference has no explanation.
+  "event ParticipantUsdtCarried(uint64 indexed epoch, uint256 amount, uint256 carriedTotal)",
+  // The other direction. Without it a settlement's legs do not reconcile to its
+  // distributable profit in the epoch that releases a carried balance.
+  "event ParticipantUsdtReleased(uint64 indexed epoch, uint256 amount, uint256 carriedTotal)",
 ];
 
 const LEDGER_EVENTS = [
@@ -109,11 +125,17 @@ const LEDGER_EVENTS = [
   "event HistoricalBatchAnchored(uint64 indexed batchId, bytes32 root, uint64 recordCount, uint64 coversFrom, uint64 coversTo, uint64 anchoredAt)",
   "event AnchorerSet(address indexed account, bool allowed)",
   "event OwnershipTransferred(address indexed from, address indexed to)",
+  // Ownership moves in two steps now, so the nomination is its own row.
+  "event OwnershipTransferStarted(address indexed from, address indexed to)",
+  "event OwnershipTransferCancelled(address indexed nominee)",
 ];
 
 const STAKING_EVENTS = [
   "event Staked(address indexed account, bytes32 indexed repId, uint256 amount)",
   "event Redelegated(address indexed account, bytes32 indexed fromRep, bytes32 indexed toRep, uint256 amount)",
+  // Staking ownership moves in two steps now, like the sibling contracts.
+  "event OwnershipTransferStarted(address indexed from, address indexed to)",
+  "event OwnershipTransferCancelled(address indexed nominee)",
   "event UnstakeRequested(address indexed account, uint256 amount, uint64 readyAt)",
   "event UnstakeCancelled(address indexed account, bytes32 indexed repId, uint256 amount)",
   // Governance and commission. Without these a representative's commission can
@@ -284,7 +306,18 @@ async function run(): Promise<Response> {
     return json({ error: "no contract addresses configured" }, 500);
   }
 
-  const head = Number(BigInt(await rpc<string>("eth_blockNumber", [])));
+  // Index behind the head, not to it.
+  //
+  // eth_blockNumber returns `latest`, which on BSC can still be reorged out.
+  // Rows for a reorged block were inserted and never removed, and because the
+  // upsert below uses ignoreDuplicates a later re-index could not correct the
+  // block number or timestamp either. The dashboard reads epoch_settlements and
+  // revenue_windows off this table, so an EpochSettled that no longer exists on
+  // chain was displayed as revenue. Staying CONFIRMATIONS behind costs a few
+  // seconds of freshness on a table this file's own header calls a cache.
+  const CONFIRMATIONS = 15;
+  const rawHead = Number(BigInt(await rpc<string>("eth_blockNumber", [])));
+  const head = Math.max(0, rawHead - CONFIRMATIONS);
   const report: Record<string, unknown>[] = [];
 
   for (const source of SOURCES) {
@@ -302,7 +335,7 @@ async function run(): Promise<Response> {
       continue;
     }
 
-    let inserted = 0;
+    let written = 0;
     let chunks = 0;
     let cursor = from;
     let width = START_CHUNK;
@@ -332,22 +365,37 @@ async function run(): Promise<Response> {
           tx_hash: log.transactionHash,
           log_index: Number(BigInt(log.logIndex)),
           account: decoded.args.account ? decoded.args.account.toLowerCase() : null,
-          epoch: decoded.name === "EpochSettled" ? Number(decoded.args.epoch) : null,
+          // Any event that carries an epoch, not EpochSettled alone: the
+          // stall path and the carried participant leg are both keyed by
+          // epoch and both need to be findable next to the settlement they
+          // belong to.
+          epoch: decoded.args.epoch !== undefined ? Number(decoded.args.epoch) : null,
           args: decoded.args,
         });
       }
 
       if (rows.length > 0) {
-        // Idempotent: re-running a range already covered updates nothing new.
+        // ignoreDuplicates is deliberately OFF. It made a re-index unable to
+        // correct a row whose block_number or block_time was wrong, which is
+        // exactly the row a re-index exists to fix. Re-running a covered range
+        // now rewrites those fields to what the chain currently says.
         const { error } = await supabase
           .from("chain_events")
-          .upsert(rows, { onConflict: "tx_hash,log_index", ignoreDuplicates: true });
+          .upsert(rows, { onConflict: "tx_hash,log_index", ignoreDuplicates: false });
         if (error) throw new Error(`insert: ${error.message}`);
-        inserted += rows.length;
+        // Rows written, not rows new. With ignoreDuplicates off an upsert
+        // rewrites existing rows, so a re-index reports the same figure it
+        // reported the first time. Named accordingly below.
+        written += rows.length;
       }
 
       // Advance the cursor only after the rows for this range are committed,
-      // so a crash mid-run replays the chunk instead of skipping it.
+      // so a crash mid-run replays the chunk instead of skipping it. Note what
+      // this does NOT cover: an endpoint that answers 200 with an empty or
+      // truncated log list. The cursor advances past that range and the events
+      // in it are gone from the index until indexer_state is reset by hand.
+      // This table is a cache and is documented as one; the chain is the source
+      // of truth and the verify page reads the chain directly.
       const { error: cursorErr } = await supabase
         .from("indexer_state")
         .upsert({ key, last_block: to, updated_at: new Date().toISOString() });
@@ -363,13 +411,14 @@ async function run(): Promise<Response> {
       from,
       to: cursor - 1,
       head,
-      inserted,
+      rawHead,
+      written,
       chunkSize: width,
       caughtUp: cursor > head,
     });
   }
 
-  return json({ ok: true, chainId: CHAIN_ID, head, ms: Date.now() - started, report });
+  return json({ ok: true, chainId: CHAIN_ID, head, rawHead, confirmations: CONFIRMATIONS, ms: Date.now() - started, report });
 }
 
 function json(body: unknown, status = 200) {

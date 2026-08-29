@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.34;
 
 import {Test} from "forge-std/Test.sol";
 import {HCOWProfitShare} from "../contracts/HCOWProfitShare.sol";
@@ -10,6 +10,9 @@ import {MockHCOW, MockUSDT} from "../contracts/test/Mocks.sol";
  * belong, asserted as a test rather than described in a comment.
  */
 contract SandwichTest is Test {
+    /// The participant floor, at this test's own scale.
+    uint256 internal constant MIN_POOL = 1_000e18;
+
     HCOWProfitShare ps; MockHCOW hcow; MockUSDT usdt;
     address owner = address(0x01); address settler = address(0x02);
     address gameCo = address(0x03); address team = address(0x04);
@@ -18,7 +21,7 @@ contract SandwichTest is Test {
     function setUp() public {
         vm.warp(1_800_000_000);
         hcow = new MockHCOW(); usdt = new MockUSDT();
-        ps = new HCOWProfitShare(address(hcow), address(usdt), owner, settler, gameCo, team);
+        ps = new HCOWProfitShare(address(hcow), address(usdt), owner, settler, gameCo, team, MIN_POOL);
         usdt.mint(settler, 500_000_000e18);
         vm.prank(settler); usdt.approve(address(ps), type(uint256).max);
         hcow.transfer(alice, 10_000e18);
@@ -71,8 +74,13 @@ contract SandwichTest is Test {
     /// An ordinary exit during an epoch must give that holder's share to the
     /// holders who stayed, not to the two fixed recipients.
     function test_midEpochExitDoesNotEnrichTheRecipients() public {
-        vm.prank(alice); ps.bond(500_000e18 / 1000);      // 500 HCOW
-        vm.prank(whale); ps.bond(500_000e18 / 1000);
+        // Both positions are well clear of the floor, and so is what is left
+        // after the exit. An exit that drops the pool through the floor is a
+        // different case with a different rule, and it is tested on its own
+        // below; mixing the two here would let the floor pass this test for
+        // the wrong reason.
+        vm.prank(alice); ps.bond(5_000e18);
+        vm.prank(whale); ps.bond(5_000e18);
         vm.warp(block.timestamp + 7 days + 1);
         vm.prank(settler); ps.settleEpoch(0, 100e18, 100e18, 0, 0);
         vm.warp(block.timestamp + 7 days + 1);
@@ -100,11 +108,24 @@ contract SandwichTest is Test {
 
         assertLt(ps.claimableOf(alice), 1e18, "one wei took a real distribution");
         HCOWProfitShare.Settlement memory st = ps.getSettlement(1);
-        assertGt(uint256(st.gameCompanyUsdt) + st.teamUsdt, 599_999e18, "the leg did not go to the recipients");
 
-        // and the next epoch, with a real pool, is normal again
+        // The leg does not go to the recipients either. They take their own
+        // two quarters and nothing more, and the participant half is held by
+        // the contract until a real pool exists. Handing it to them was the
+        // audit's Medium #1: a pool that never reached the floor made the
+        // withholding permanent and the recipients took three quarters of
+        // every epoch for as long as it lasted.
+        assertEq(uint256(st.gameCompanyUsdt) + st.teamUsdt, 300_000e18,
+            "the recipients took more than their own halves of the profit");
+        assertApproxEqAbs(ps.carriedParticipantUsdt() + ps.claimableOf(alice), 300_000e18, 1,
+            "the withheld participant leg was neither carried nor credited");
+
+        // and the next epoch, with a real pool, is normal again: it takes its
+        // own leg and the carried one together
         vm.warp(block.timestamp + 7 days + 1);
         vm.prank(settler); ps.settleEpoch(2, 600_000e18, 0, 0, 0);
-        assertApproxEqRel(ps.claimableOf(whale), 300_000e18, 1e12, "a real pool did not take the whole leg");
+        assertApproxEqRel(ps.claimableOf(whale), 600_000e18, 1e12,
+            "a real pool did not take this epoch's leg and the carried one");
+        assertLt(ps.carriedParticipantUsdt(), 1e18, "a balance stayed carried after a real pool arrived");
     }
 }

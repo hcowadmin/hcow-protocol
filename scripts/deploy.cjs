@@ -76,12 +76,57 @@ async function main() {
     throw new Error('SETTLER_ADDRESS must differ from GAME_COMPANY_ADDRESS and TEAM_ADDRESS');
   }
 
+  // The rest of the separation, on mainnet only.
+  //
+  // Each role above was checked against the deploy key and against nothing
+  // else, so five different wrong-but-plausible deployments passed every gate
+  // in this script. They are not equivalent mistakes and none of them is
+  // correctable: the contracts store these addresses immutably or behind
+  // owner-only setters, and two of them govern a contract whose anchors can
+  // never be rewritten.
+  //
+  //   OWNER == ANCHORER      the cold multisig has to co-sign every hourly
+  //                          anchor, or the hot anchoring key owns the ledger.
+  //                          The whole design assumes a gas-only anchorer.
+  //   OWNER == SETTLER       the key that can rotate the settler IS the
+  //                          settler, so the incident-response lever is held
+  //                          by the thing it exists to remove.
+  //   OWNER == FUNDER        same shape, one key for governance and operations.
+  //   GAME_COMPANY == TEAM   allowed by the contract on purpose, but as a
+  //                          deliberate choice rather than a typo, so it must
+  //                          be stated.
+  //
+  // ALLOW_SHARED_ROLES is the deliberate-choice escape hatch and it is spelt
+  // out in the error, so nobody has to guess whether the check is a bug.
+  if (mainnet && process.env.ALLOW_SHARED_ROLES !== 'yes') {
+    const pairs = [
+      ['OWNER_ADDRESS', owner, 'ANCHORER_ADDRESS', anchorer],
+      ['OWNER_ADDRESS', owner, 'SETTLER_ADDRESS', settler],
+      ['OWNER_ADDRESS', owner, 'FUNDER_ADDRESS', funder],
+      ['GAME_COMPANY_ADDRESS', gameCompany, 'TEAM_ADDRESS', team],
+    ];
+    for (const [an, a, bn, b] of pairs) {
+      if (a.toLowerCase() === b.toLowerCase()) {
+        throw new Error(
+          `${an} and ${bn} are the same address (${a}). These roles are meant to ` +
+          'be separately controlled and the contracts cannot be re-pointed after ' +
+          'deployment. If this really is intended, set ALLOW_SHARED_ROLES=yes.'
+        );
+      }
+    }
+  }
+
   const put = async (name, args) => {
     const c = await deploy(name, signer, args);
     const address = await c.getAddress();
     console.log(`${name.padEnd(16)} ${address}  tx ${c.deploymentTransaction().hash}`);
     return address;
   };
+
+  // BSC-USD (the token every explorer and wallet labels USDT) on BNB Chain
+  // mainnet, 18 decimals, verified from the token's own BscScan page rather
+  // than from a search result or an aggregator. Checked below on mainnet only.
+  const BSC_USD_MAINNET = '0x55d398326f99059fF775485246999027B3197955';
 
   // ---- tokens ----------------------------------------------------------
   let hcow = process.env.HCOW_ADDRESS;
@@ -150,11 +195,62 @@ async function main() {
   if (hcow.toLowerCase() === usdt.toLowerCase()) {
     throw new Error('HCOW_ADDRESS and USDT_ADDRESS are the same address');
   }
+
+  // On BNB Chain mainnet there is exactly one BSC-USD, and its address is
+  // public and unchanging. Pin it.
+  //
+  // Every check above asks the address what it is, and a hostile or mistyped
+  // token answers every one of them correctly: name "Tether USD", symbol
+  // "USDT", 18 decimals, a plausible supply. Those checks catch a fat finger
+  // that lands on some other real token. They do not catch a lookalike, and
+  // the address is immutable in both economic contracts, so getting it wrong
+  // is a redeploy of the whole estate rather than a correction.
+  //
+  // Deliberately a hard stop with no override. If BSC-USD is ever migrated,
+  // changing this line is the right amount of friction for that decision.
+  if (mainnet && usdt.toLowerCase() !== BSC_USD_MAINNET.toLowerCase()) {
+    throw new Error(
+      `USDT_ADDRESS is ${usdt}, which is not BSC-USD on BNB Chain mainnet. ` +
+      `The only correct value is ${BSC_USD_MAINNET}. Both economic contracts ` +
+      'store this address immutably, so a wrong one cannot be corrected later.'
+    );
+  }
   console.log('');
 
   // ---- contracts -------------------------------------------------------
   const ledger = await put('HCOWLedger', [owner, anchorer]);
-  const profitShare = await put('HCOWProfitShare', [hcow, usdt, owner, settler, gameCompany, team]);
+  // The participant floor. Below this many bonded HCOW the pool is treated as
+  // not yet real: the participant leg is scaled down against the floor and the
+  // remainder is carried inside the contract until a real pool exists, rather
+  // than being handed to the two fixed recipients. It is a deployment argument
+  // rather than a compiled in constant because one number cannot describe "a
+  // real pool" for every deployment, and the contract caps it at 5% of supply.
+  // 1,000,000 HCOW is 0.5% of the 200,000,000 supply.
+  const MIN_POOL_SHARES = 1_000_000n * 10n ** 18n;
+  // Checked against the supply this script already read, rather than against
+  // the comment above it. The contract caps the floor at 5% of supply, so a
+  // token with a smaller supply than expected produces a MinPoolSharesTooHigh
+  // revert in the middle of a deployment, and a token with a much larger one
+  // produces a floor that describes nothing and no error anywhere.
+  {
+    const supply = BigInt(hcowMeta.supply);
+    const cap = (supply * 500n) / 10_000n;
+    if (MIN_POOL_SHARES > cap) {
+      throw new Error(
+        `MIN_POOL_SHARES ${MIN_POOL_SHARES} exceeds 5% of the HCOW supply ` +
+        `(${supply}), which the contract caps at ${cap}`);
+    }
+    if (mainnet && supply !== 200_000_000n * 10n ** 18n) {
+      throw new Error(
+        `HCOW supply is ${supply}, not the 200,000,000e18 this deployment is ` +
+        `sized for. Decide MIN_POOL_SHARES against the real supply before ` +
+        `continuing.`);
+    }
+    console.log(`  minPoolShares      ${MIN_POOL_SHARES} ` +
+                `(${(Number(MIN_POOL_SHARES * 10_000n / supply) / 100).toFixed(2)}% of supply, cap 5%)`);
+  }
+  const profitShare = await put('HCOWProfitShare',
+    [hcow, usdt, owner, settler, gameCompany, team, MIN_POOL_SHARES]);
   const staking = await put('HCOWStaking', [hcow, owner, funder]);
   // Testnet only, and deliberately so. The faucet gives away whatever is put
   // into it, which is meaningless for stand in tokens and unacceptable for

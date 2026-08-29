@@ -20,14 +20,18 @@
     "test:profitshare": "hardhat run test/profitshare.test.cjs",
     "test:staking": "hardhat run test/staking.test.cjs",
     "test:faucet": "hardhat run test/faucet.test.cjs",
-    "test:all": "hardhat compile && hardhat run test/ledger.test.cjs && hardhat run test/profitshare.test.cjs && hardhat run test/staking.test.cjs && hardhat run test/faucet.test.cjs && node test/eventsigs.check.cjs && node test/keccak.check.cjs && node test/web.check.cjs && hardhat run test/anchor.check.cjs && hardhat run test/merkle.differential.cjs && hardhat run test/invariant.profitshare.cjs && hardhat run test/invariant.staking.cjs && forge test",
+    "test:all": "hardhat compile && hardhat run test/ledger.test.cjs && hardhat run test/profitshare.test.cjs && hardhat run test/staking.test.cjs && hardhat run test/faucet.test.cjs && node test/eventsigs.check.cjs && node test/keccak.check.cjs && node test/web.check.cjs && hardhat run test/anchor.check.cjs && hardhat run test/merkle.differential.cjs && hardhat run test/invariant.profitshare.cjs && hardhat run test/invariant.staking.cjs && forge test && hardhat run test/adversary.settler.cjs && node scripts/checkflat.cjs",
     "test:invariant": "hardhat run test/invariant.profitshare.cjs && hardhat run test/invariant.staking.cjs",
     "analyze": "slither . --compile-force-framework hardhat --ignore-compile --exclude-dependencies",
     "test:eventsigs": "node test/eventsigs.check.cjs",
     "test:merkle": "hardhat run test/merkle.differential.cjs",
     "test:adversary": "hardhat run test/adversary.settler.cjs",
     "test:fuzz": "forge test",
-    "test:fuzz:deep": "FOUNDRY_PROFILE=deep forge test"
+    "test:fuzz:deep": "FOUNDRY_PROFILE=deep forge test",
+    "test:mutate": "node scripts/mutate.cjs",
+    "build:fuzz": "rm -rf foundry-out foundry-cache && forge build --build-info --skip LibVariable --skip StdConfig --skip Config",
+    "test:medusa": "npm run build:fuzz && medusa fuzz --config medusa.json",
+    "test:medusa:staking": "npm run build:fuzz && medusa fuzz --config medusa.staking.json"
   },
   "keywords": [],
   "author": "",
@@ -40,6 +44,7 @@
   },
   "private": false,
   "devDependencies": {
-    "solc-0834": "npm:solc@^0.8.34"
+    "solc-0834": "npm:solc@^0.8.34",
+    "playwright": "^1.48.0"
   }
 }

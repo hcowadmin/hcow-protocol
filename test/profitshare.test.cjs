@@ -10,7 +10,14 @@ let IFACE = null;
 
 function ok(name, cond, detail) {
   if (cond) { pass++; results.push(['ok', name, '']); }
-  else { fail++; results.push(['XX', name, detail || '']); }
+  else {
+    fail++;
+    results.push(['XX', name, detail || '']);
+    // Printed as it happens, not only in the report at the end. A suite with
+    // sequential dependencies dies on the first unexpected revert, and when it
+    // does the report never prints and every failure before it is invisible.
+    console.log(`  XX  ${name}  ${detail || ''}`);
+  }
 }
 const eq = (name, a, b) => ok(name, String(a) === String(b), `got ${a}, want ${b}`);
 /** Float comparison for values that pass through 18 decimal accumulators. */
@@ -49,12 +56,34 @@ async function rv(name, c, signer, fn, args, expected) {
 }
 
 const E = (n) => ethers.parseEther(String(n));
+
+/**
+ * A settlement that is supposed to succeed.
+ *
+ * Used where the point of the block is a multi-step schedule: if one step
+ * reverts, the rest of the file must still run and report, rather than the
+ * process dying and taking every later assertion with it invisibly.
+ */
+async function settles(name, fn) {
+  try { await (await fn()).wait(); ok(name, true); return true; }
+  catch (e) { ok(name, false, `reverted: ${(e.message || '').slice(0, 90)}`); return false; }
+}
+
+// The participant floor is a deployment argument now, not a compiled-in
+// constant, because a single constant cannot describe "a real pool" for every
+// deployment: at 1,000e18 against a 200,000,000 supply it described nothing,
+// which is the audit's Medium #1. Mainnet uses 1,000,000e18. These tests work
+// in pools of a few thousand tokens, so they set a floor to match their own
+// scale; the production value is exercised directly in the floor tests.
+const TEST_FLOOR = E(100);
 /** Epochs have a minimum length. Move the clock past it before settling. */
 // Long enough to clear both MIN_EPOCH_INTERVAL and DECAY_WINDOW, so the
 // scenarios below can use the maximum rate every time without running into the
 // cumulative ceiling, which is exercised on its own further down.
 let DAY = 30 * 86_400 + 1;
 const D = (v) => Number(ethers.formatEther(v));
+/** Plain integer read, for counters that are not 18 decimal amounts. */
+const D0 = (v) => Number(v);
 
 async function deploy(name, signer, args = []) {
   const art = await hre.artifacts.readArtifact(name);
@@ -82,7 +111,7 @@ async function main() {
 
   const ps = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
   ]);
   IFACE = ps.interface;
   const psAddr = await ps.getAddress();
@@ -109,7 +138,7 @@ async function main() {
   await reverts('zero address rejected in constructor',
     deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      ethers.ZeroAddress, settler, gameCo, teamAddr]), 'ZeroAddress');
+      ethers.ZeroAddress, settler, gameCo, teamAddr, TEST_FLOOR]), 'ZeroAddress');
 
   // ---------------- bonding ----------------
   await rv('cannot bond zero', ps, aliceS, 'bond', [0], 'ZeroAmount');
@@ -290,8 +319,6 @@ async function main() {
   await provider.send('evm_increaseTime', [7 * 24 * 3600 + 1]);
   await provider.send('evm_mine', []);
 
-  console.log('  DBG now:', (await provider.getBlock('latest')).timestamp);
-  console.log('  DBG accountOf(aliceS):', (await ps.accountOf(await aliceS.getAddress())).map(String).join(' | '));
   step('alice withdrawUnbonded');
   const aliceHcowBefore = await hcow.balanceOf(alice);
   // explicit gas limit for the same reason: estimation would run without a
@@ -319,36 +346,75 @@ async function main() {
   step('no participants'); // ---------------- no participants ----------------
   const ps2 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
   ]);
-  await (await usdt.connect(settlerS).approve(await ps2.getAddress(), ethers.MaxUint256)).wait();
+  const a2 = await ps2.getAddress();
+  await (await usdt.connect(settlerS).approve(a2, ethers.MaxUint256)).wait();
+
+  // A settlement that brings money in while NO shares exist at all is refused.
+  // The participant half would be carried, and the carry's only exit is a later
+  // settlement with a non-empty eligible pool, so with nobody ever bonding it
+  // is unreachable forever: no sweep, no owner rescue, and claimUsdt cannot see
+  // it. Measured on the version without this check: the last participant
+  // withdrew, the settler kept settling, and 200,000 USDT accumulated that
+  // nobody had any claim on, while the two fixed recipients were paid their
+  // quarters in full each time and so had no signal anything was wrong.
+  await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
+  await rv('a settlement with revenue and no shares at all is refused',
+    ps2, settlerS, 'settleEpoch', [0, E(1_000), 0, E(400), 0], 'NoParticipantsToCarryFor');
+  // and an epoch with no revenue is still allowed, so the sequence can always
+  // be advanced
+  await (await ps2.connect(settlerS).settleEpoch(0, 0, 0, 0, 0)).wait();
+  eq('but a zero revenue epoch still settles', await ps2.nextEpoch(), 1);
+
+  // The quarantined case is different and must still work: a position exists,
+  // so totalShares is non-zero while eligibleShares is zero. Testing
+  // eligibleShares above instead of totalShares would deadlock the launch
+  // window, because the first settlement is what lifts the quarantine.
+  // A signer of its own, so this block does not spend a balance that later
+  // blocks in this file depend on.
+  const graceS = await provider.getSigner(10);
+  const grace = await graceS.getAddress();
+  await (await hcow.transfer(grace, E(1_000))).wait();
+  await (await hcow.connect(graceS).approve(a2, ethers.MaxUint256)).wait();
+  await (await ps2.connect(graceS).bond(E(1_000))).wait();
+  eq('a bonded position exists', D(await ps2.totalShares()), 1_000);
+  eq('and is quarantined', D(await ps2.eligibleSharesOf(grace)), 0);
+
   const settlerBefore = await usdt.balanceOf(settler);
   await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []);
-  await (await ps2.connect(settlerS).settleEpoch(0, E(1_000), 0, E(400), 0)).wait();
-  // profit 600. Nobody is bonded, so there is no participant to pay and the
-  // whole 600 goes to the two fixed recipients: 300 + 300.
+  await (await ps2.connect(settlerS).settleEpoch(1, E(1_000), 0, E(400), 0)).wait();
+  // profit 600. Nobody is ELIGIBLE, so there is no participant to pay. The two
+  // fixed recipients take their own quarters (150 + 150) and the participant
+  // half is carried inside the contract for the first real pool, which is the
+  // audit's Medium #1: an empty or sub-floor pool used to hand the participant
+  // half to the fixed recipients permanently.
   //
-  // It is deliberately NOT returned to the settler. The settler is the party
-  // that authors the revenue figure and can also move the divisor by bonding
-  // into the pool from any address in the settlement block, so a refund path
-  // is a discount it can set for itself: measured, 49,950 of a 50,000 USDT
-  // leg recovered at 999 times the pool, unbonded a week later at no cost.
+  // It is deliberately NOT returned to the settler either. The settler is the
+  // party that authors the revenue figure and can also move the divisor by
+  // bonding into the pool from any address in the settlement block, so a
+  // refund path is a discount it can set for itself: measured, 49,950 of a
+  // 50,000 USDT leg recovered at 999 times the pool, unbonded a week later at
+  // no cost.
   eq('the settler is never paid back, whatever the pool looks like',
     D(settlerBefore - (await usdt.balanceOf(settler))), 600);
-  eq('empty pool records zero participants', D((await ps2.getSettlement(0)).participantsUsdt), 0);
+  eq('empty pool records zero participants', D((await ps2.getSettlement(1)).participantsUsdt), 0);
   {
-    const st = await ps2.getSettlement(0);
-    eq('and the two fixed legs absorb the whole profit',
-      D(st.gameCompanyUsdt) + D(st.teamUsdt), 600);
-    eq('the three legs are exactly the distributable profit',
+    const st = await ps2.getSettlement(1);
+    eq('the two fixed legs take their own quarters and no more',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 300);
+    eq('the participant half is carried, not reassigned',
+      D(await ps2.carriedParticipantUsdt()), 300);
+    eq('the paid legs plus the carry are exactly the distributable profit',
       D(st.distributableProfitUsdt),
-      D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt));
+      D(st.participantsUsdt) + D(st.gameCompanyUsdt) + D(st.teamUsdt)
+        + D(await ps2.carriedParticipantUsdt()));
   }
 
   step('funding required'); // ----------------
   const ps3 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
   ]);
   await rv('unfunded settlement reverts', ps3, settlerS, 'settleEpoch', [0, E(1_000), 0, 0, 0], '');
 
@@ -364,7 +430,7 @@ async function main() {
   // scenarios above. Two bonders, one settlement, one full exit.
   const ps4 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
   ]);
   const ps4Addr = await ps4.getAddress();
   await (await usdt.connect(settlerS).approve(ps4Addr, ethers.MaxUint256)).wait();
@@ -430,7 +496,7 @@ async function main() {
   step('flash bond'); // ---- bonding into a settlement earns nothing ----
   const ps6 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
   ]);
   const ps6Addr = await ps6.getAddress();
   await (await usdt.connect(settlerS).approve(ps6Addr, ethers.MaxUint256)).wait();
@@ -498,7 +564,7 @@ async function main() {
   // the position sat pending.
   const ps5 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
   ]);
   const ps5Addr = await ps5.getAddress();
   await (await usdt.connect(settlerS).approve(ps5Addr, ethers.MaxUint256)).wait();
@@ -555,7 +621,7 @@ async function main() {
   step('charge window'); // ---- a settlement inside the cooldown does bite ----
   const ps7 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
   ]);
   await (await usdt.connect(settlerS).approve(await ps7.getAddress(), ethers.MaxUint256)).wait();
   await (await hcow.connect(aliceS).approve(await ps7.getAddress(), ethers.MaxUint256)).wait();
@@ -579,7 +645,7 @@ async function main() {
   step('decay window'); // ---- the cumulative ceiling holds ----
   const ps8 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
   ]);
   await (await usdt.connect(settlerS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
   await (await hcow.connect(aliceS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
@@ -631,6 +697,130 @@ async function main() {
   await (await ps8.connect(settlerS).settleEpoch(4, E(10_000), 0, E(4_000), 20_000)).wait();
   eq('a new window starts the allowance again', Number(await ps8.decayWindowPpm()), 20_000);
 
+  // ---- the packed worst case, measured rather than argued ----
+  //
+  // decayWindowAt is written by the FIRST deduction in a window, not by the
+  // clock, so the settler chooses where the boundary falls and two windows can
+  // be packed back to back. The figure published in SECURITY.md and README.md
+  // is the worst case over an arbitrary span, not the 3% per window ceiling,
+  // and an unmeasured published figure is one nobody has checked. Both
+  // schedules below are run on chain and the destruction is read off the pool.
+  //
+  // Thirty days, 59,999 ppm summed. Anchor a window with 1 ppm so its budget
+  // is spent late (20,000 at +16d, 9,999 at +23d), then anchor the next window
+  // at the earliest instant it can exist (+30d, 20,000) and spend 10,000 at
+  // +37d. The last four land inside [+16d, +46d). 60,000 is unreachable: it
+  // needs both anchors inside one thirty day span and they are thirty days
+  // apart by construction.
+  {
+    const heidiS = await provider.getSigner(11);
+    const heidi = await heidiS.getAddress();
+    const psP = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    ]);
+    await (await usdt.connect(settlerS).approve(await psP.getAddress(), ethers.MaxUint256)).wait();
+    await (await hcow.transfer(heidi, E(1_000_000))).wait();
+    await (await hcow.connect(heidiS).approve(await psP.getAddress(), ethers.MaxUint256)).wait();
+    await (await psP.connect(heidiS).bond(E(1_000_000))).wait();
+
+    // exact timestamps, because the whole claim is about where boundaries fall
+    const at = async (t) => { await provider.send('evm_setNextBlockTimestamp', [t]); };
+    const now = async () => (await provider.getBlock('latest')).timestamp;
+
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psP.connect(settlerS).settleEpoch(0, E(100), 0, 0, 0)).wait();  // lifts quarantine
+
+    const t0 = (await now()) + 7 * 86_400 + 1;
+    await at(t0);
+    await settles('a one ppm deduction anchors a window',
+      () => psP.connect(settlerS).settleEpoch(1, E(100), 0, 0, 1));
+    eq('the window is anchored by the first deduction, not by the clock',
+      Number(await psP.decayWindowAt()), t0);
+
+    const beforeSpan = D(await psP.totalBondedHcow());  // the pool entering the span
+    await at(t0 + 16 * 86_400);
+    await settles('the window budget can be spent sixteen days after it was anchored',
+      () => psP.connect(settlerS).settleEpoch(2, E(100), 0, 0, 20_000));
+
+    await at(t0 + 23 * 86_400);
+    await settles('and spent to the last ppm seven days later',
+      () => psP.connect(settlerS).settleEpoch(3, E(100), 0, 0, 9_999));
+    eq('the first window is spent to the ceiling', Number(await psP.decayWindowPpm()), 30_000);
+
+    await at(t0 + 30 * 86_400);
+    await settles('a second window opens exactly thirty days after the first was anchored',
+      () => psP.connect(settlerS).settleEpoch(4, E(100), 0, 0, 20_000));
+    eq('the next window anchors at the earliest instant it can exist',
+      Number(await psP.decayWindowAt()), t0 + 30 * 86_400);
+    eq('and its allowance is fresh', Number(await psP.decayWindowPpm()), 20_000);
+
+    await at(t0 + 37 * 86_400);
+    await settles('and takes a second bite seven days into itself',
+      () => psP.connect(settlerS).settleEpoch(5, E(100), 0, 0, 10_000));
+    const spanEnd = D(await psP.totalBondedHcow());
+
+    // The measured span is [t0+16d, t0+37d], twenty one days, which sits inside
+    // any thirty day window.
+    const pct = 100 * (beforeSpan - spanEnd) / beforeSpan;
+    near('the packed thirty day worst case is 5.871% of the pool', pct, 5.8711, 5e-4);
+    ok('and it is above the 3% per window ceiling, which is why 3% is not the figure to quote',
+      pct > 3);
+  }
+
+  // Thirty seven days, 70,000 ppm summed: the tail of one window (20,000), all
+  // of the next (20,000 + 9,999 + 1) and the anchor of the one after (20,000).
+  {
+    const ivanS = await provider.getSigner(12);
+    const ivan = await ivanS.getAddress();
+    const psQ = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    ]);
+    await (await usdt.connect(settlerS).approve(await psQ.getAddress(), ethers.MaxUint256)).wait();
+    await (await hcow.transfer(ivan, E(1_000_000))).wait();
+    await (await hcow.connect(ivanS).approve(await psQ.getAddress(), ethers.MaxUint256)).wait();
+    await (await psQ.connect(ivanS).bond(E(1_000_000))).wait();
+
+    const at = async (t) => { await provider.send('evm_setNextBlockTimestamp', [t]); };
+    const now = async () => (await provider.getBlock('latest')).timestamp;
+
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psQ.connect(settlerS).settleEpoch(0, E(100), 0, 0, 0)).wait();
+
+    const t0 = (await now()) + 7 * 86_400 + 1;
+    await at(t0);
+    await settles('the first of three windows is anchored',
+      () => psQ.connect(settlerS).settleEpoch(1, E(100), 0, 0, 1));
+
+    const beforeSpan = D(await psQ.totalBondedHcow());  // the pool entering the span
+    await at(t0 + 23 * 86_400);
+    await settles('its tail is spent at twenty three days',
+      () => psQ.connect(settlerS).settleEpoch(2, E(100), 0, 0, 20_000));
+
+    await at(t0 + 30 * 86_400);
+    await settles('the second window opens on the boundary and is spent in full',
+      () => psQ.connect(settlerS).settleEpoch(3, E(100), 0, 0, 20_000));
+    await at(t0 + 37 * 86_400);
+    await settles('the second window takes its second bite',
+      () => psQ.connect(settlerS).settleEpoch(4, E(100), 0, 0, 9_999));
+    await at(t0 + 44 * 86_400);
+    await settles('and its last ppm',
+      () => psQ.connect(settlerS).settleEpoch(5, E(100), 0, 0, 1));
+    eq('the middle window is spent to the ceiling', Number(await psQ.decayWindowPpm()), 30_000);
+
+    await at(t0 + 60 * 86_400);
+    await settles('the third window opens on the next boundary',
+      () => psQ.connect(settlerS).settleEpoch(6, E(100), 0, 0, 20_000));
+    eq('the third window anchors exactly thirty days after the second',
+      Number(await psQ.decayWindowAt()), t0 + 60 * 86_400);
+    const spanEnd = D(await psQ.totalBondedHcow());
+
+    // measured span [t0+23d, t0+60d], exactly thirty seven days
+    const pct = 100 * (beforeSpan - spanEnd) / beforeSpan;
+    near('the packed thirty seven day worst case is 6.822% of the pool', pct, 6.822, 5e-4);
+  }
+
   // ---- the settler cannot buy itself a discount by moving the divisor ----
   // The eligible fraction is eligibleShares/totalShares and totalShares moves
   // with any bond, from any address, in the settlement block. If the part the
@@ -641,7 +831,7 @@ async function main() {
   {
     const psD = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
     ]);
     const aD = await psD.getAddress();
     await (await usdt.connect(settlerS).approve(aD, ethers.MaxUint256)).wait();
@@ -692,7 +882,7 @@ async function main() {
   {
     const ps9 = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
     ]);
     const a9 = await ps9.getAddress();
     await (await usdt.connect(settlerS).approve(a9, ethers.MaxUint256)).wait();
@@ -713,11 +903,12 @@ async function main() {
     await (await ps9.connect(settlerS).settleEpoch(1, E(4), 0, 0, 0)).wait();
     {
       const st = await ps9.getSettlement(1);
-      near('the two fixed recipients absorb the whole profit',
-        D(st.gameCompanyUsdt) + D(st.teamUsdt), 4, 1e-6);
+      near('the two fixed recipients take their quarters and no more',
+        D(st.gameCompanyUsdt) + D(st.teamUsdt), 2, 1e-6);
       near('and nothing was returned to the settler',
         D(st.distributableProfitUsdt) - D(st.participantsUsdt)
-          - D(st.gameCompanyUsdt) - D(st.teamUsdt), 0, 1e-12);
+          - D(st.gameCompanyUsdt) - D(st.teamUsdt)
+          - D(await ps9.carriedParticipantUsdt()), 0, 1e-12);
     }
     eq('and none of it went to the one wei holder', D(await ps9.claimableOf(alice)), 0);
   }
@@ -729,7 +920,7 @@ async function main() {
   {
     const psR = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
     ]);
     const aR = await psR.getAddress();
     await (await usdt.connect(settlerS).approve(aR, ethers.MaxUint256)).wait();
@@ -751,23 +942,25 @@ async function main() {
 
   // ---- the launch window: a dust holder cannot take a real distribution ----
   // One wei bonded before anybody else, then a 10,000,000 HCOW cohort arriving
-  // during the epoch. The cohort is quarantined, so without a floor on the
-  // pool the leg is measured against, the wei is the entire participant base
-  // and takes all of it. Measured before MIN_POOL_SHARES existed: 300,000 USDT
-  // to one wei.
+  // during the epoch. The cohort is quarantined, so without a floor on the pool
+  // the leg is measured against, the wei is the entire participant base and
+  // takes all of it. Measured before the floor existed: 300,000 USDT to one wei.
+  //
+  // This block runs at the published mainnet floor, not the small test one.
   {
+    const MAINNET_FLOOR = E(1_000_000);
     const psL = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr,
+      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR,
     ]);
     const aL = await psL.getAddress();
-    await (await usdt.mint(settler, E(2_000_000))).wait();
+    await (await usdt.mint(settler, E(4_000_000))).wait();
     await (await usdt.connect(settlerS).approve(aL, ethers.MaxUint256)).wait();
     await (await hcow.transfer(carol, E(10_000_000))).wait();
     await (await hcow.connect(carolS).approve(aL, ethers.MaxUint256)).wait();
     await (await hcow.connect(aliceS).approve(aL, ethers.MaxUint256)).wait();
 
-    eq('the pool floor is 1,000 HCOW', D(await psL.MIN_POOL_SHARES()), 1_000);
+    eq('the published floor is 1,000,000 HCOW', D(await psL.minPoolShares()), 1_000_000);
     await (await psL.connect(aliceS).bond(1n)).wait();
     await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
     await (await psL.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
@@ -776,21 +969,355 @@ async function main() {
     await (await psL.connect(settlerS).settleEpoch(1, E(600_000), 0, 0, 0)).wait();
 
     const st = await psL.getSettlement(1);
-    // 300 wei rather than exactly zero: one wei against the 1,000 HCOW floor.
-    // Against the 300,000 USDT it would otherwise have taken, that is a
-    // reduction of eighteen orders of magnitude.
     ok('a one wei participant base is credited dust, not a distribution',
       (await psL.claimableOf(alice)) < E(1),
       `credited ${(await psL.claimableOf(alice)).toString()} wei`);
-    near('and essentially the whole profit goes to the two fixed recipients',
-      D(st.gameCompanyUsdt) + D(st.teamUsdt), 600_000, 1e-9);
     eq('the arriving cohort is still quarantined', D(await psL.claimableOf(carol)), 0);
 
-    // once the pool is real, the floor stops binding
+    // The change the audit asked for. What the floor holds back used to go to
+    // the two fixed recipients, which charged honest early participants for the
+    // guard. They now receive exactly their own quarters and nothing more.
+    near('the two fixed recipients take their quarters and no more',
+      D(st.gameCompanyUsdt) + D(st.teamUsdt), 300_000, 1e-9);
+    near('and the participant leg is carried, not given away',
+      D(await psL.carriedParticipantUsdt()), 300_000, 1e-9);
+
+    // once the pool is real, the floor stops binding and the carry is paid
     await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
     await (await psL.connect(settlerS).settleEpoch(2, E(600_000), 0, 0, 0)).wait();
-    near('and a real pool takes the whole leg the next epoch',
-      D(await psL.claimableOf(carol)), 300_000, 1e-6);
+    near('a real pool takes this epoch\'s leg and the carried one together',
+      D(await psL.claimableOf(carol)), 600_000, 1e-6);
+    eq('and nothing is left carried', D(await psL.carriedParticipantUsdt()), 0);
+  }
+
+  // ---- a carried balance cannot buy a deduction for an epoch that earned
+  //      nothing ----
+  //
+  // The gate used to test the credited participant figure, which is computed on
+  // this epoch's leg PLUS the carry. So a settlement funded with one wei, made
+  // while a large carry was waiting, passed a gate whose entire purpose is that
+  // principal is only consumed by an epoch that pays participants. Measured on
+  // that version: a 300,000 USDT carry let a one wei settlement burn 200,000
+  // HCOW of participant principal. Adding `profit != 0` in front did not close
+  // it, because one wei is not zero.
+  {
+    const MAINNET_FLOOR = E(1_000_000);
+    const psW = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR,
+    ]);
+    const aW = await psW.getAddress();
+    await (await usdt.mint(settler, E(2_000_000))).wait();
+    await (await usdt.connect(settlerS).approve(aW, ethers.MaxUint256)).wait();
+    await (await hcow.transfer(carol, E(10_000_000))).wait();
+    await (await hcow.connect(carolS).approve(aW, ethers.MaxUint256)).wait();
+    await (await hcow.connect(aliceS).approve(aW, ethers.MaxUint256)).wait();
+
+    // build a real carry against a sub-floor pool
+    await (await psW.connect(aliceS).bond(1n)).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psW.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psW.connect(settlerS).settleEpoch(1, E(600_000), 0, 0, 0)).wait();
+    near('a carry is waiting', D(await psW.carriedParticipantUsdt()), 300_000, 1e-6);
+
+    // and a real pool arrives and becomes eligible
+    await (await psW.connect(carolS).bond(E(10_000_000))).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psW.connect(settlerS).settleEpoch(2, E(4), 0, 0, 0)).wait();
+    const bondedBefore = D(await psW.bondedOf(carol));
+
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await rv('one wei of revenue cannot buy a deduction, whatever is carried',
+      psW, settlerS, 'settleEpoch', [3, 1n, 0, 0, 20_000], 'DeductionWithoutDistribution');
+    eq('so the pool is untouched', D(await psW.bondedOf(carol)), bondedBefore);
+
+    // and an epoch that really does pay participants still can
+    await (await psW.connect(settlerS).settleEpoch(3, E(100_000), 0, 0, 20_000)).wait();
+    ok('an epoch that pays a real amount still consumes principal',
+      D(await psW.bondedOf(carol)) < bondedBefore,
+      `bonded ${D(await psW.bondedOf(carol))}, was ${bondedBefore}`);
+  }
+
+  // ---- the floor cannot be switched off by parking a position ----
+  // It used to be armed only while the previous settlement's snapshot was also
+  // below the floor. That condition could never be false when the pool was, so
+  // it was dead code, but it could be disarmed: park a position above the floor
+  // across one settlement, withdraw it, and every settlement afterwards saw the
+  // guard off. Required stake to take a whole distribution fell from the floor
+  // to one token.
+  {
+    const MAINNET_FLOOR = E(1_000_000);
+    const daveS = await provider.getSigner(7);
+    const dave = await daveS.getAddress();
+    const psP = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR,
+    ]);
+    const aP = await psP.getAddress();
+    await (await usdt.mint(settler, E(2_000_000))).wait();
+    await (await usdt.connect(settlerS).approve(aP, ethers.MaxUint256)).wait();
+    await (await hcow.transfer(dave, E(2_000_000))).wait();
+    await (await hcow.connect(daveS).approve(aP, ethers.MaxUint256)).wait();
+    await (await hcow.connect(aliceS).approve(aP, ethers.MaxUint256)).wait();
+
+    // park a real position, sit through one settlement, then leave
+    await (await psP.connect(daveS).bond(E(2_000_000))).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psP.connect(settlerS).settleEpoch(0, E(100), E(100), 0, 0)).wait();
+    ok('the parked position was above the floor',
+      (await psP.sharesAtLastSettlement()) >= MAINNET_FLOOR, 'snapshot below floor');
+    await (await psP.connect(daveS).requestUnbond(E(2_000_000))).wait();
+
+    // one token now tries to take a whole distribution
+    await (await psP.connect(aliceS).bond(E(1))).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psP.connect(settlerS).settleEpoch(1, E(100), E(100), 0, 0)).wait();
+    await provider.send('evm_increaseTime', [7 * 86_400 + 1]); await provider.send('evm_mine', []);
+    await (await psP.connect(settlerS).settleEpoch(2, E(400_000), 0, 0, 0)).wait();
+
+    ok('the previous snapshot no longer disarms the floor',
+      (await psP.claimableOf(alice)) < E(1),
+      `one token was credited ${D(await psP.claimableOf(alice))} USDT`);
+    // The one token is not credited nothing: it is credited its own share of
+    // the floor, 1 / 1,000,000 of the leg. Everything the floor withholds from
+    // it is carried, so the leg is neither concentrated nor lost.
+    near('and the withheld participant leg is carried rather than lost',
+      D(await psP.carriedParticipantUsdt()) + D(await psP.claimableOf(alice)),
+      200_000, 1e-6);
+  }
+
+  // ---- ownership moves in two steps, and the floor is bounded ----
+  {
+    const psO = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    ]);
+
+    // A single step wrote the new owner immediately, so a mistyped or
+    // unreachable address ended the ability to rotate the settler or either
+    // payout address permanently, with no recovery.
+    await rv('a stranger cannot start a transfer', psO, aliceS,
+      'transferOwnership', [alice], 'NotOwner');
+    await (await psO.connect(deployerS).transferOwnership(alice)).wait();
+    eq('the owner does not change on the first step', await psO.owner(), deployer);
+    eq('the nominee is recorded', await psO.pendingOwner(), alice);
+    await rv('only the nominee can accept', psO, bobS, 'acceptOwnership', [], 'NotPendingOwner');
+
+    // Guarded rather than awaited bare. If the two-step were ever collapsed
+    // back to one, this call reverts, and an unguarded revert here would kill
+    // the process before the report is printed: every assertion after it, and
+    // the ones above that already failed, would be invisible.
+    let accepted = true;
+    try { await (await psO.connect(aliceS).acceptOwnership()).wait(); } catch { accepted = false; }
+    ok('the nominee can complete the transfer', accepted);
+    if (accepted) {
+      eq('the nominee becomes the owner on the second step', await psO.owner(), alice);
+      eq('and the nomination is cleared', await psO.pendingOwner(), ethers.ZeroAddress);
+      await rv('the old owner has no powers left', psO, deployerS,
+        'setSettler', [bob], 'NotOwner');
+
+      // A nomination that is never accepted leaves the current owner in place,
+      // which is the whole point of the second step.
+      await (await psO.connect(aliceS).transferOwnership(bob)).wait();
+      eq('an unaccepted nomination does not move the owner', await psO.owner(), alice);
+      await (await psO.connect(aliceS).transferOwnership(alice)).wait();
+      eq('and it can be withdrawn by nominating again', await psO.pendingOwner(), alice);
+    }
+
+    // The participant floor is a deployment argument, so it is capped: an
+    // arbitrarily large floor would scale every participant leg to nothing and
+    // carry the whole participant half forever.
+    const cap = (E(200_000_000) * 500n) / 10_000n;   // 5% of supply
+    eq('the floor cap is 5% of supply', D(cap), 10_000_000);
+    await reverts('a floor above 5% of supply is refused',
+      deploy('HCOWProfitShare', deployerS, [
+        await hcow.getAddress(), await usdt.getAddress(),
+        deployer, settler, gameCo, teamAddr, cap + 1n,
+      ]), 'MinPoolSharesTooHigh');
+    const psCap = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, cap,
+    ]);
+    eq('a floor exactly at the cap is accepted', D(await psCap.minPoolShares()), 10_000_000);
+    await reverts('a zero floor is refused',
+      deploy('HCOWProfitShare', deployerS, [
+        await hcow.getAddress(), await usdt.getAddress(),
+        deployer, settler, gameCo, teamAddr, 0n,
+      ]), 'ZeroAmount');
+  }
+
+  // ---- total abandonment is not a permanent quarantine ----
+  //
+  // A settler that never settles even once used to leave nextEpoch at zero
+  // forever, every bonded position in totalNewShares earning nothing, and no
+  // permissionless call able to advance anything however long anyone waited.
+  // Principal still left through requestUnbond at no charge, so it was not a
+  // loss, but it was unrecoverable in a contract whose point is that nobody
+  // waits on the operator.
+  {
+    const psA = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    ]);
+    const aA = await psA.getAddress();
+    const frankS = await provider.getSigner(9);
+    const frank = await frankS.getAddress();
+    await (await hcow.transfer(frank, E(1_000))).wait();
+    await (await hcow.connect(frankS).approve(aA, ethers.MaxUint256)).wait();
+    await (await psA.connect(frankS).bond(E(1_000))).wait();
+    eq('the position starts quarantined', D(await psA.eligibleSharesOf(frank)), 0);
+
+    await provider.send('evm_increaseTime', [89 * 86_400]); await provider.send('evm_mine', []);
+    await rv('eighty nine days of silence is not yet abandonment',
+             psA, bobS, 'closeStalledEpoch', [], 'EpochNotStalled');
+    await provider.send('evm_increaseTime', [2 * 86_400]); await provider.send('evm_mine', []);
+    // Guarded: if the bootstrap path were ever closed off again this reverts,
+    // and an unguarded revert kills the process before the report prints.
+    let advanced = true;
+    try { await (await psA.connect(bobS).closeStalledEpoch({ gasLimit: 1_000_000 })).wait(); }
+    catch { advanced = false; }
+    ok('at ninety one, anyone can advance it', advanced);
+    eq('and the quarantine lifts without the settler ever acting',
+       D(await psA.eligibleSharesOf(frank)), advanced ? 1_000 : 0);
+    eq('the epoch advanced', await psA.nextEpoch(), advanced ? 1 : 0);
+  }
+
+  // ---- the settler can never also be a payout recipient ----
+  // Two of the three legs are paid out immediately, so a settler that is also
+  // one of the recipients pays itself back inside the same transaction and a
+  // settlement costs it nothing. The published waterfall then describes
+  // nothing: any revenue figure at all can be signed for free. The contract can
+  // only enforce address inequality, which is why the three addresses must also
+  // be separately controlled in the runbook, but the inequality is enforced at
+  // every point the addresses can be written.
+  {
+    const psX = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    ]);
+    const base = [await hcow.getAddress(), await usdt.getAddress(), deployer];
+
+    await reverts('constructor refuses a settler that is the game company',
+      deploy('HCOWProfitShare', deployerS,
+        [...base, gameCo, gameCo, teamAddr, TEST_FLOOR]), 'SettlerIsRecipient');
+    await reverts('constructor refuses a settler that is the team',
+      deploy('HCOWProfitShare', deployerS,
+        [...base, teamAddr, gameCo, teamAddr, TEST_FLOOR]), 'SettlerIsRecipient');
+    await reverts('constructor refuses a settler that is both recipients',
+      deploy('HCOWProfitShare', deployerS,
+        [...base, gameCo, gameCo, gameCo, TEST_FLOOR]), 'SettlerIsRecipient');
+
+    await rv('setSettler refuses the game company', psX, deployerS,
+      'setSettler', [gameCo], 'SettlerIsRecipient');
+    await rv('setSettler refuses the team', psX, deployerS,
+      'setSettler', [teamAddr], 'SettlerIsRecipient');
+    await rv('setRecipients refuses the settler as game company', psX, deployerS,
+      'setRecipients', [settler, teamAddr], 'SettlerIsRecipient');
+    await rv('setRecipients refuses the settler as team', psX, deployerS,
+      'setRecipients', [gameCo, settler], 'SettlerIsRecipient');
+
+    // and the legitimate moves still work, so the guard is not simply refusing
+    // everything, which is how this kind of check passes its own test wrongly
+    await (await psX.connect(deployerS).setSettler(alice)).wait();
+    eq('an unrelated settler is accepted', await psX.settler(), alice);
+    await (await psX.connect(deployerS).setRecipients(bob, teamAddr)).wait();
+    eq('unrelated recipients are accepted', await psX.gameCompany(), bob);
+    // the two recipients may be the same address as each other
+    await (await psX.connect(deployerS).setRecipients(bob, bob)).wait();
+    eq('the two recipients may be one address', await psX.team(), bob);
+
+    // address(this) is the same class of mistake as address(0) with a worse
+    // ending: every settlement would self transfer USDT into a balance
+    // accUsdtPerShare does not account for, with no sweep and no rescue.
+    const selfX = await psX.getAddress();
+    await rv('the contract itself cannot be made the game company', psX, deployerS,
+      'setRecipients', [selfX, teamAddr], 'ZeroAddress');
+    await rv('nor the team recipient', psX, deployerS,
+      'setRecipients', [gameCo, selfX], 'ZeroAddress');
+    await rv('nor the settler', psX, deployerS, 'setSettler', [selfX], 'ZeroAddress');
+  }
+
+  // ---- a stalled epoch can be closed by anyone ----
+  // MIN_EPOCH_INTERVAL bounded a settler that settled too often. Nothing
+  // bounded one that stopped, so deposits made into an abandoned epoch stayed
+  // quarantined forever while still carrying the deduction whenever a
+  // settlement eventually arrived.
+  {
+    const psS = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    ]);
+    const aS = await psS.getAddress();
+    const erinS = await provider.getSigner(8);
+    const erin = await erinS.getAddress();
+    await (await hcow.transfer(erin, E(1_000))).wait();
+    await (await hcow.connect(erinS).approve(aS, ethers.MaxUint256)).wait();
+    await (await usdt.connect(settlerS).approve(aS, ethers.MaxUint256)).wait();
+    await (await psS.connect(erinS).bond(E(1_000))).wait();
+
+    // The estimator is bypassed with an explicit gas limit throughout this
+    // block. ethers' automatic estimation for this call has been observed to
+    // run against a pre-warp state and report EpochNotStalled even when a raw
+    // eth_estimateGas with identical parameters succeeds, so the estimate is
+    // not a trustworthy oracle here. Correctness is asserted from eth_call and
+    // from the mined receipt instead.
+    const GAS = { gasLimit: 1_000_000 };
+
+    await rv('an epoch that is not stalled cannot be closed',
+             psS, bobS, 'closeStalledEpoch', [], 'EpochNotStalled');
+
+    // Before the first settlement the fuse is ninety days, not thirty. At
+    // thirty a stranger closed epoch 0 during the launch window with nothing
+    // wrong, then 1, 2 and 3 at thirty day intervals: four all-zero epochs
+    // burned before the operator had settled anything, each pushing the first
+    // real settlement out by another MIN_EPOCH_INTERVAL.
+    //
+    // Refusing the path outright until the first settlement was the obvious
+    // fix and it opened a liveness hole instead: a settler that never settles
+    // even once leaves every bonded position quarantined forever with no
+    // permissionless way to advance anything. Ninety days from deployment with
+    // no settlement at all is not a launch window, it is abandonment.
+    eq('the bootstrap fuse is ninety days, not thirty',
+       D0(await psS.epochStallDeadline()) - D0(await psS.deployedAt()), 90 * 86_400);
+    await provider.send('evm_increaseTime', [31 * 86_400]); await provider.send('evm_mine', []);
+    await rv('and thirty days of doing nothing does not change that',
+             psS, bobS, 'closeStalledEpoch', [], 'EpochNotStalled');
+
+    // settle once, so there is a cadence to have stopped
+    await (await psS.connect(settlerS).settleEpoch(0, E(1_000), 0, 0, 0)).wait();
+    ok('the deadline exists once a settlement has happened',
+       (await psS.epochStallDeadline()) > 0n);
+    await rv('a freshly settled epoch cannot be closed either',
+             psS, bobS, 'closeStalledEpoch', [], 'EpochNotStalled');
+    await provider.send('evm_increaseTime', [31 * 86_400]); await provider.send('evm_mine', []);
+    const before = await psS.nextEpoch();
+    const rc = await (await psS.connect(bobS).closeStalledEpoch(GAS)).wait();
+    eq('a stalled epoch closes', rc.status, 1);
+    eq('anyone can close a stalled epoch', await psS.nextEpoch(), Number(before) + 1);
+    const st1 = await psS.getSettlement(1);
+    eq('and it states no revenue', D(st1.grossReceivedUsdt), 0);
+    eq('and consumes no principal', D(st1.hcowDeducted), 0);
+    eq('the quarantine is lifted', D(await psS.eligibleSharesOf(erin)), 1_000);
+    ok('and it does not present itself as a settlement',
+       !rc.logs.some((l) => { try { return psS.interface.parseLog(l)?.name === 'EpochSettled'; }
+                             catch { return false; } }));
+    ok('it emits its own event instead',
+       rc.logs.some((l) => { try { return psS.interface.parseLog(l)?.name === 'StalledEpochClosed'; }
+                             catch { return false; } }));
+
+    // A pending unbond is priced against poolIndexAtEpoch[unbondEpoch], and a
+    // stall close is one of the two calls that writes that index. It deducts
+    // nothing, so it writes poolIndex unchanged and the pending position is
+    // charged for ZERO settlements rather than one. The header used to say
+    // "exactly one" and that was wrong. This is the direction that favours the
+    // holder, so it is left as it is and asserted rather than changed.
+    await (await psS.connect(erinS).requestUnbond(E(1_000))).wait();
+    const pendingBefore = D(await psS.pendingUnbondOf(erin));
+    await provider.send('evm_increaseTime', [31 * 86_400]); await provider.send('evm_mine', []);
+    await (await psS.connect(bobS).closeStalledEpoch(GAS)).wait();
+    near('an unbond whose epoch was closed by a stall is charged nothing at all',
+      D(await psS.pendingUnbondOf(erin)), pendingBefore);
   }
 
   // ---------------- report ----------------

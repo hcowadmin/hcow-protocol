@@ -28,6 +28,28 @@ subtask(TASK_COMPILE_SOLIDITY_GET_SOLC_BUILD, async (args, hre, runSuper) => {
 // signs from a hardware wallet through Remix, not from here.
 const key = process.env.DEPLOYER_KEY ? [process.env.DEPLOYER_KEY] : [];
 
+// evmVersion is pinned to "paris" DELIBERATELY, and it must not be changed
+// without changing it in every other place it appears.
+//
+// Why paris and not shanghai/cancun. The difference that matters is PUSH0
+// (shanghai) and transient storage plus MCOPY (cancun). BNB Chain has
+// supported all of them since the Feynman/Pascal upgrades, so the choice is
+// gas, not capability: paris costs a small amount more on constant pushes and
+// nothing else here, because no contract in this repository uses transient
+// storage or memory copying in a hot loop. What paris buys is that the
+// bytecode contains no opcode that a BSC-compatible chain, an archive node, a
+// tracing tool or a fork used by an auditor might not implement. For a set of
+// contracts whose whole security argument is that anyone can re-derive and
+// re-verify them, that is worth more than the gas.
+//
+// Why it must match everywhere. The compiler settings are part of the
+// verification input on BscScan. Source that compiles to identical bytecode
+// under paris and different bytecode under cancun will fail verification with
+// no useful error, and a contract that cannot be verified cannot be audited by
+// a reader. The same three settings, 0.8.34 / optimizer 200 / paris, appear
+// here, in this repository's foundry.toml, and in the hcow-contracts
+// repository's foundry.toml and compile.cjs. scripts/checkflat.cjs is what
+// notices if the flattened sources and the artifacts drift apart.
 module.exports = {
   solidity: {
     version: "0.8.34",
