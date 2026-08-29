@@ -2,3 +2,13 @@ node_modules/
 artifacts/
 cache/
 .env
+foundry-out/
+foundry-cache/
+foundry/lib/
+*.mutbak
+# Medusa: corpus, logs and the crytic-compile export are all reproducible
+medusa-corpus/
+medusa-corpus-staking/
+medusa-logs/
+medusa.run.log
+crytic-export/
