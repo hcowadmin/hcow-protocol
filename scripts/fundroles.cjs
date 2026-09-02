@@ -26,7 +26,13 @@ const TESTNET = 97n;
 // Gas floats. Deliberately small: these wallets are disposable and a testnet
 // faucet is not infinite. topUp() only sends the difference, so re-running the
 // script after a long smoke session costs almost nothing.
-const GAS_TARGET = ethers.parseEther('0.02');
+const GAS_TARGET = ethers.parseEther('0.01');
+
+// Only the roles that SIGN need gas. gameCompany and team never send a
+// transaction in this system: HCOWProfitShare pushes their legs to them during
+// settlement. Funding them anyway is how a 0.3 tBNB faucet claim, which is one
+// claim per address per 24 hours, turns into a two day wait for no reason.
+const SIGNING_ROLES = ['owner', 'anchorer', 'settler', 'funder'];
 const SETTLER_USDT = ethers.parseUnits('100000', 18);
 const FUNDER_HCOW = ethers.parseUnits('1000000', 18);
 
@@ -72,7 +78,12 @@ async function main() {
   };
 
   console.log('gas');
-  for (const [label, address] of Object.entries(roles)) await topUp(label, address);
+  for (const label of SIGNING_ROLES) await topUp(label, roles[label]);
+  for (const label of Object.keys(roles)) {
+    if (!SIGNING_ROLES.includes(label)) {
+      console.log(`  ${label.padEnd(13)} ${roles[label]}  no gas needed, receives only`);
+    }
+  }
 
   const give = async (token, symbol, label, address, want) => {
     if (!address || address.toLowerCase() === me.toLowerCase()) return;
