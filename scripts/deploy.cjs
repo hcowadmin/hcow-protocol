@@ -135,10 +135,21 @@ async function main() {
     }
   }
 
+  // Deployment transactions, recorded as they happen.
+  //
+  // The block a contract was deployed in is needed later by anything that
+  // scans logs, and it exists nowhere except the chain. Recovering it after
+  // the fact means either eth_getCode at a historical height, which needs an
+  // archive node that public BSC endpoints are not, or walking logs backwards,
+  // which public endpoints rate limit by block range. Both are avoidable by
+  // writing down the transaction hash at the one moment it is free.
+  const txs = {};
   const put = async (name, args) => {
     const c = await deploy(name, signer, args);
     const address = await c.getAddress();
-    console.log(`${name.padEnd(16)} ${address}  tx ${c.deploymentTransaction().hash}`);
+    const hash = c.deploymentTransaction().hash;
+    txs[name] = hash;
+    console.log(`${name.padEnd(16)} ${address}  tx ${hash}`);
     return address;
   };
 
@@ -289,7 +300,21 @@ async function main() {
       { HCOW: hcow, USDT: usdt, HCOWLedger: ledger, HCOWProfitShare: profitShare, HCOWStaking: staking },
       faucet ? { HCOWFaucet: faucet } : {},
     ),
+    deploymentTxs: txs,
   };
+
+  // Block numbers for everything this run deployed. Best effort: a receipt
+  // that cannot be fetched leaves the entry out rather than failing a
+  // deployment that has already succeeded on chain.
+  out.deploymentBlocks = {};
+  for (const [name, hash] of Object.entries(txs)) {
+    try {
+      const r = await provider.getTransactionReceipt(hash);
+      if (r) out.deploymentBlocks[name] = r.blockNumber;
+    } catch { /* left out deliberately */ }
+  }
+  const known = Object.values(out.deploymentBlocks);
+  if (known.length) out.genesisBlock = Math.min(...known);
 
   const dir = path.join(__dirname, '..', 'deployments');
   fs.mkdirSync(dir, { recursive: true });
