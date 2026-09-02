@@ -9,7 +9,16 @@
 //
 //   HCOW_ADDRESS=0x... USDT_ADDRESS=0x... npx hardhat run scripts/deploy.cjs --network bsc
 //
-// Roles default to the deployer so a testnet run needs no configuration.
+// Roles default to the deployer so a first testnet run needs no configuration.
+// Set REHEARSAL=yes on testnet to apply every mainnet role rule instead, which
+// is how a testnet run becomes a rehearsal of the mainnet deployment rather
+// than a functional smoke test:
+//
+//   REHEARSAL=yes OWNER_ADDRESS=0x... ANCHORER_ADDRESS=0x... \
+//   SETTLER_ADDRESS=0x... GAME_COMPANY_ADDRESS=0x... TEAM_ADDRESS=0x... \
+//   FUNDER_ADDRESS=0x... DEPLOYER_KEY=0x... \
+//   npx hardhat run scripts/deploy.cjs --network bscTestnet
+//
 // For mainnet every one of these must be set deliberately:
 //
 //   OWNER_ADDRESS          hardware wallet or multisig. can never rewrite history
@@ -50,10 +59,20 @@ async function main() {
   // export and one hot key owns the settler, both revenue recipients, the
   // reward funder and the anchorer, with the deployment recorded as canonical.
   const mainnet = net.chainId !== TESTNET;
+  // REHEARSAL=yes applies every mainnet role rule on testnet. The point of a
+  // testnet run is not to see the contracts appear on an explorer, it is to
+  // execute the mainnet procedure once where a mistake costs nothing. A run
+  // where all six roles silently default to the deploy key rehearses nothing
+  // and produces a deployment whose shape is exactly the one mainnet forbids.
+  //
+  // Everything about the ROLES is checked. Nothing about the TOKENS is: the
+  // BSC-USD address pin and the HCOW symbol and supply checks stay on mainnet
+  // only, because on testnet the tokens are stand-ins by design.
+  const strict = mainnet || process.env.REHEARSAL === 'yes';
   const role = (k) => {
-    if (!mainnet) return env(k, me);
+    if (!strict) return env(k, me);
     const v = process.env[k];
-    if (!v) throw new Error(`${k} must be set explicitly off testnet`);
+    if (!v) throw new Error(`${k} must be set explicitly (${mainnet ? 'off testnet' : 'REHEARSAL=yes'})`);
     const a = env(k, null);
     if (a.toLowerCase() === me.toLowerCase()) {
       throw new Error(`${k} must not be the deploy key`);
@@ -98,7 +117,7 @@ async function main() {
   //
   // ALLOW_SHARED_ROLES is the deliberate-choice escape hatch and it is spelt
   // out in the error, so nobody has to guess whether the check is a bug.
-  if (mainnet && process.env.ALLOW_SHARED_ROLES !== 'yes') {
+  if (strict && process.env.ALLOW_SHARED_ROLES !== 'yes') {
     const pairs = [
       ['OWNER_ADDRESS', owner, 'ANCHORER_ADDRESS', anchorer],
       ['OWNER_ADDRESS', owner, 'SETTLER_ADDRESS', settler],
@@ -287,6 +306,13 @@ async function main() {
     console.log(
       '\nWARNING: owner is the deploy key. Acceptable on testnet only. ' +
       'On mainnet the owner must be a hardware wallet or multisig.'
+    );
+  }
+  if (!mainnet && process.env.REHEARSAL !== 'yes') {
+    console.log(
+      '\nNOTE: this run did not use REHEARSAL=yes, so the mainnet role rules ' +
+      'were not applied. Treat it as a functional test, not as a rehearsal of ' +
+      'the mainnet deployment.'
     );
   }
 }
