@@ -76,10 +76,23 @@ const MAX_CHUNKS = 40;
  * was never going to answer.
  */
 const RANGE_ERRORS =
-  /block range|query returned more than|logs? matched|more than \d+ results|exceeds? (the )?(maximum|max|allowed) (block )?range|requested too many blocks|response size/i;
+  /block range|query returned more than|logs? matched|more than \d+ results|exceeds? (the )?(maximum|max|allowed) (block )?range|requested too many blocks|response size|limit exceeded|query timeout/i;
 
-/** Messages that mean "this endpoint, right now" and should move to the next one. */
-const ENDPOINT_ERRORS = /rate limit|too many requests|429|request count|quota|forbidden|unauthorized|timeout|timed out|econn|socket|fetch failed/i;
+/**
+ * Messages that mean "this endpoint, right now" and should move to the next one.
+ *
+ * "limit exceeded" and "query timeout" are in BOTH lists, as the comment in
+ * rpc() has always said they are. Until 2026-09-25 neither list matched
+ * "limit exceeded", so a node's refusal of an eth_getLogs range was neither
+ * retried smaller nor failed over: the run died on that chunk and the cursor
+ * did not move. On 2026-09-24 the run failed with exactly that message, but
+ * the underlying cause there was different (publicnode had pruned the
+ * September blocks and the bnbchain seed nodes refuse eth_getLogs at any
+ * width), and this change alone would not have recovered it. What it fixes is
+ * the case the comment in rpc() describes: a refusal that a narrower range or
+ * another endpoint would have served.
+ */
+const ENDPOINT_ERRORS = /rate limit|too many requests|429|request count|quota|forbidden|unauthorized|timeout|timed out|econn|socket|fetch failed|limit exceeded/i;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
