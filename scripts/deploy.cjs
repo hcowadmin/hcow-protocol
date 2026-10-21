@@ -25,8 +25,10 @@
 //   ANCHORER_ADDRESS       hot wallet the hourly worker signs with. gas only
 //   SETTLER_ADDRESS        wallet that funds and settles an epoch. holds USDT
 //   GAME_COMPANY_ADDRESS   receives 25%
-//   TEAM_ADDRESS           receives 25%
-//   FUNDER_ADDRESS         wallet that funds staking rewards in HCOW
+//   TEAM_ADDRESS           receives 25% of profit and 10% of consumed HCOW
+//   FUNDER_ADDRESS         keeper of HCOWRewardVault: decides when and over how
+//                          long the vault streams into staking. moves no HCOW
+//                          anywhere else. staking's rewardFunder is the vault
 
 const hre = require('hardhat');
 const fs = require('fs');
@@ -111,6 +113,9 @@ async function main() {
   //                          settler, so the incident-response lever is held
   //                          by the thing it exists to remove.
   //   OWNER == FUNDER        same shape, one key for governance and operations.
+  //   ANCHORER == FUNDER     the hourly hot key would also choose every reward
+  //                          stream's end date, and a bad end date binds later
+  //                          fundings until it passes.
   //   GAME_COMPANY == TEAM   allowed by the contract on purpose, but as a
   //                          deliberate choice rather than a typo, so it must
   //                          be stated.
@@ -122,6 +127,7 @@ async function main() {
       ['OWNER_ADDRESS', owner, 'ANCHORER_ADDRESS', anchorer],
       ['OWNER_ADDRESS', owner, 'SETTLER_ADDRESS', settler],
       ['OWNER_ADDRESS', owner, 'FUNDER_ADDRESS', funder],
+      ['ANCHORER_ADDRESS', anchorer, 'FUNDER_ADDRESS', funder],
       ['GAME_COMPANY_ADDRESS', gameCompany, 'TEAM_ADDRESS', team],
     ];
     for (const [an, a, bn, b] of pairs) {
@@ -279,9 +285,32 @@ async function main() {
     console.log(`  minPoolShares      ${MIN_POOL_SHARES} ` +
                 `(${(Number(MIN_POOL_SHARES * 10_000n / supply) / 100).toFixed(2)}% of supply, cap 5%)`);
   }
+  // Staking first, then the reward vault that streams into it, then Profit
+  // Share, which sends 70% of every consumed HCOW to that vault and stores its
+  // address immutably. The vault's keeper is the funder role: the address that
+  // used to call fundRewards directly now asks the vault to.
+  //
+  // Staking is deployed with the vault ALREADY as its rewardFunder. The vault
+  // needs the staking address, so its own address is computed from the deploy
+  // key's nonce first and checked after. Deploying staking with the funder
+  // key and switching later left a window, until the owner multisig acted, in
+  // which that key could fund staking directly and set an end date the vault
+  // would then be bound by. With the address known in advance there is no
+  // window and no owner action to forget.
+  // From the NonceManager that will sign, not from the node: it is what
+  // assigns the nonce, and the node's pending count was measured one behind.
+  const nonce = await signer.getNonce('pending');
+  const vaultAt = ethers.getCreateAddress({ from: me, nonce: nonce + 1 });
+  const staking = await put('HCOWStaking', [hcow, owner, vaultAt]);
+  const rewardVault = await put('HCOWRewardVault', [hcow, staking, owner, funder]);
+  if (rewardVault.toLowerCase() !== vaultAt.toLowerCase()) {
+    throw new Error(
+      `HCOWRewardVault landed at ${rewardVault}, not the precomputed ${vaultAt}. ` +
+      `HCOWStaking ${staking} names ${vaultAt} as its reward funder. Stop: ` +
+      'the owner must call setRewardFunder before anything else is deployed.');
+  }
   const profitShare = await put('HCOWProfitShare',
-    [hcow, usdt, owner, settler, gameCompany, team, MIN_POOL_SHARES]);
-  const staking = await put('HCOWStaking', [hcow, owner, funder]);
+    [hcow, usdt, owner, settler, gameCompany, team, MIN_POOL_SHARES, rewardVault]);
   // Testnet only, and deliberately so. The faucet gives away whatever is put
   // into it, which is meaningless for stand in tokens and unacceptable for
   // real ones. It was previously deployed by hand and recorded nowhere.
@@ -294,10 +323,11 @@ async function main() {
     network: hre.network.name,
     chainId: Number(net.chainId),
     deployedBy: me,
-    roles: { owner, anchorer, settler, gameCompany, team, funder },
+    roles: { owner, anchorer, settler, gameCompany, team, funder, vaultKeeper: funder },
     tokens: { HCOW: hcowMeta, USDT: usdtMeta },
     addresses: Object.assign(
-      { HCOW: hcow, USDT: usdt, HCOWLedger: ledger, HCOWProfitShare: profitShare, HCOWStaking: staking },
+      { HCOW: hcow, USDT: usdt, HCOWLedger: ledger, HCOWProfitShare: profitShare, HCOWStaking: staking,
+        HCOWRewardVault: rewardVault },
       faucet ? { HCOWFaucet: faucet } : {},
     ),
     deploymentTxs: txs,
@@ -323,6 +353,35 @@ async function main() {
 
   console.log('\n' + JSON.stringify(out.addresses, null, 2));
   console.log(`\nwritten to ${file}`);
+
+  // Read back the wiring the three contracts depend on, from the chain.
+  {
+    const RD = [
+      'function rewardFunder() view returns (address)',
+      'function staking() view returns (address)',
+      'function hcow() view returns (address)',
+      'function keeper() view returns (address)',
+      'function owner() view returns (address)',
+      'function rewardVault() view returns (address)',
+    ];
+    const st = new ethers.Contract(staking, RD, provider);
+    const rv = new ethers.Contract(rewardVault, RD, provider);
+    const ps = new ethers.Contract(profitShare, RD, provider);
+    const checks = [
+      ['HCOWStaking.rewardFunder', await st.rewardFunder(), rewardVault],
+      ['HCOWRewardVault.staking', await rv.staking(), staking],
+      ['HCOWRewardVault.hcow', await rv.hcow(), hcow],
+      ['HCOWRewardVault.keeper', await rv.keeper(), funder],
+      ['HCOWRewardVault.owner', await rv.owner(), owner],
+      ['HCOWProfitShare.rewardVault', await ps.rewardVault(), rewardVault],
+    ];
+    console.log('');
+    for (const [label, got, want] of checks) {
+      const okay = got.toLowerCase() === want.toLowerCase();
+      console.log(`  ${okay ? 'ok ' : 'BAD'}  ${label.padEnd(28)} ${got}`);
+      if (!okay) throw new Error(`${label} is ${got}, expected ${want}`);
+    }
+  }
 
   if (net.chainId === TESTNET) {
     console.log('\nThe test tokens above are not HCOW and have no value.');

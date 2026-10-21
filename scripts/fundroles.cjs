@@ -32,7 +32,7 @@ const GAS_TARGET = ethers.parseEther('0.01');
 // transaction in this system: HCOWProfitShare pushes their legs to them during
 // settlement. Funding them anyway is how a 0.3 tBNB faucet claim, which is one
 // claim per address per 24 hours, turns into a two day wait for no reason.
-const SIGNING_ROLES = ['owner', 'anchorer', 'settler', 'funder'];
+const SIGNING_ROLES = ['owner', 'anchorer', 'settler', 'funder', 'vaultKeeper'];
 const SETTLER_USDT = ethers.parseUnits('100000', 18);
 const FUNDER_HCOW = ethers.parseUnits('1000000', 18);
 

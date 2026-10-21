@@ -131,6 +131,11 @@ const PROFIT_SHARE_EVENTS = [
   // The other direction. Without it a settlement's legs do not reconcile to its
   // distributable profit in the epoch that releases a carried balance.
   "event ParticipantUsdtReleased(uint64 indexed epoch, uint256 amount, uint256 carriedTotal)",
+  // Where consumed HCOW went: 70% reward vault, 20% burn address, 10% team.
+  // account is the position that forfeited, or the zero address for a
+  // settlement deduction. Without this row "burned" can only be computed as
+  // hcowDeducted, which overstates the burn fivefold since the split.
+  "event ConsumedHcowRouted(address indexed account, uint256 toRewards, uint256 burned, uint256 toTeam)",
 ];
 
 const LEDGER_EVENTS = [

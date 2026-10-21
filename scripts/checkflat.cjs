@@ -32,7 +32,7 @@ const artifactFor = (name) => {
 // "0 match, 0 differ" and exits 0. A gate that verifies nothing while
 // reporting green is the defect class this whole estate has been bitten by.
 const REQUIRED = [
-  "HCOWLedger", "HCOWProfitShare", "HCOWStaking", "HCOWFaucet",
+  "HCOWLedger", "HCOWProfitShare", "HCOWStaking", "HCOWRewardVault", "HCOWFaucet",
   "MockHCOW", "MockUSDT",
 ];
 

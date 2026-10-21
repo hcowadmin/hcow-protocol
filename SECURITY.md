@@ -24,6 +24,9 @@ second report exists:
   `4a3e373`. The fixes in section 20 are **after** those commits and are
   therefore outside the first report's scope. Anyone quoting the first report
   must quote it against those commits, not against this tree.
+- **The consumed HCOW split, section 23, is after every external review.**
+  It changes where `HCOWProfitShare` sends consumed principal and adds a
+  contract, `HCOWRewardVault`. Neither report covers it.
 
 ## What has been done
 
@@ -412,9 +415,10 @@ Stated here rather than discovered later.
   empty it in a block. Someone willing to fund many EOAs can still take a
   day's allocation. It is a testnet contract holding stand-in tokens; the
   exposure is the public testnet campaign, not money.
-- **Consumed principal is transferred to `0x…dEaD`, not burned through the
-  token.** That removes the dependency on an external `burn()` (A-4) and adds a
-  smaller one: the deployed HCOW must permit transfers to that address and
+- **The burn leg of consumed principal, 20% since section 23, is transferred
+  to `0x…dEaD`, not burned through the token.** The other 80% goes to the
+  reward vault and the team address by the same plain transfer. That removes
+  the dependency on an external `burn()` (A-4) and adds a smaller one: the deployed HCOW must permit transfers to that address and
   charge no transfer fee. It also means `totalSupply()` never moves, so any
   circulating or burned figure must read `balanceOf(0xdEaD)` rather than
   subtracting from supply. Both are mainnet deployment gates.
@@ -644,10 +648,10 @@ bound is now a measured number, in `test/adversary.settler.cjs`:
 
 | A stolen settler key can | Bound |
 | --- | --- |
-| destroy principal, over 365 days | **28.31%**, across 22 deducting settlements |
-| burn HCOW per USDT it spends | 100,000 HCOW |
+| consume principal, over 365 days | **28.31%**, across 22 deducting settlements. Since section 23, 20% of that is burned, 70% goes to stakers and 10% to team |
+| consume HCOW per USDT it spends | 100,000 HCOW |
 | recover USDT it funded | **0.** It pays 100% and gets nothing back |
-| move bonded HCOW to itself | **0.** Only to the burn address |
+| move bonded HCOW to itself | **0** to the settler address. Since section 23, 10% of what it consumes reaches the team address and up to 7% more can reach representative payouts the staking owner sets; with the roles held by one operator that is up to 17%, more with a stake. See section 23 |
 | touch USDT already owed to claimants | **0** |
 | dilute an honest holder's leg | **0%** since K-1, beyond four wei of rounding. It was 99.9%, by two separate levers |
 | under-report gross revenue | **unbounded** |
@@ -1134,6 +1138,49 @@ Not in scope and not proposed for it, but load-bearing: `lib/anchor.js`,
 functions, both SQL files, `web/verify.html`, `web/hcow-record.js` and
 `scripts/deploy.cjs`. The two worst findings of the 25 August round were in
 that list, not in the contracts.
+
+### 23. Consumed HCOW split 70 / 20 / 10, 21 October 2026
+
+**Change.** `HCOWProfitShare` used to send every consumed HCOW to `0x…dEaD`.
+The settlement deduction and the forfeit on both unbond exits are now split by
+compile time constants: 70% to `HCOWRewardVault`, 20% to `0x…dEaD`, 10% to the
+`team` address. Burn and team legs are floored and the reward leg takes the
+remainder. `rewardVault` is an immutable constructor argument with no setter.
+
+**New contract.** `HCOWRewardVault` holds the 70% leg. HCOW leaves it by one
+path, `HCOWStaking.fundRewards` on the staking contract fixed at construction,
+called by a keeper the owner appoints. No withdraw, no sweep. The keeper picks
+the duration within 7 to 30 days. Staking's `rewardFunder` is the vault, and
+`scripts/deploy.cjs` deploys staking with the vault's precomputed address so
+there is no window in which another key is the funder.
+
+**Why the vault is a separate contract.** Profit Share does not call
+`fundRewards` itself. `fundRewards` reverts on its duration and rate floors,
+and a settlement or an exit that could revert on another contract's state would
+make Profit Share's liveness depend on it. A plain transfer cannot.
+
+**Internal review, two adversarial passes, every claim reproduced.**
+
+| ID | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| S-1 | Medium | The operator can receive more than the 10% the first header stated. The team leg is 10%; as staking owner it sets representative payout and commission, up to 7% more; a stake it holds earns its share of the 70%. Measured: 1,699 bps of a deduction with no stake, 7,999 bps with all of staking, and over the worst thirty day window 4.66% of the bonded pool for about 4 USDT net. | Disclosed. The header and the roles table now state up to 17% without stake and up to 80% with a dominant stake, bounded by the deduction rate limit. The 10% team leg is a decision, not a defect. No on-chain check can see stake held through other addresses. |
+| S-2 | Medium | With a 365 day vault maximum, one keeper call of a dust amount over a year forced every later deposit onto that end date. Measured 52 fold slower delivery for twelve months; replacing the keeper does not undo it, because staking never lets a funding end earlier or slow the rate. | `MAX_DURATION` lowered to 30 days. The worst case is now thirty days of slowed delivery. |
+| S-3 | Low | The pre-switch window: staking deployed with the funder key and switched to the vault later left that key able to set the lock in S-2 until the owner acted. | Staking is deployed with the vault's precomputed address as funder. The script stops if the vault does not land there. |
+| S-4 | Low | The constructor's vault checks were described as ruling out an externally owned account. Any contract answering `hcow()` passes, including an account delegated under EIP-7702, and a genuine vault on a fake staking contract passed too. | Added a check that the vault's staking contract streams the same HCOW, and corrected the comment: these are sanity checks against a wrong argument. That the address is the genuine vault on the genuine staking contract is a deployment fact, read back by `scripts/deploy.cjs` and listed in the README. |
+| S-5 | Info | The three routing counters were written after the two USDT pushes in `settleEpoch`, so a hooked USDT could observe them stale. | Routing now runs before the USDT pushes. |
+| S-6 | Info | Keeper operation: a weekly job that lands inside the tail of a live period needs a deposit at least as large as the last, and a refused call costs the week. Simulated over 26 weeks with shrinking deposits, a blind weekly job lost about 63 days of emission; one gated on `periodFinish` lost seconds. | Documented in the vault header and the roles table: fund at or after `periodFinish`, with the whole balance, over 7 days. |
+| S-7 | Info | `sql/002` computed `burned_*` as the sum of `hcowDeducted`, which since the split overstates the burn fivefold. | `sql/004` reads the burn from `ConsumedHcowRouted`, keeps the column names, and adds `consumed_*`, `to_rewards_30d` and `to_team_30d`. The views still do not filter by contract, which predates this change. |
+
+**What held.** No path moves consumed HCOW anywhere but the three legs; the
+legs sum to the consumed amount exactly (fuzzed to 1e60); the vault's balance
+equals the reward leg and the burn address's equals the burn leg in every
+invariant run; every exit and settlement still completes with any team address
+the setters accept; a forfeit can never return more than 80% of itself to the
+operator, so it cannot beat the rate meter; the vault has exactly five state
+changing functions and none moves HCOW except into staking.
+
+**Not reviewed outside this repository.** The SolidProof diff audit for this
+change has not been commissioned.
 
 ## What is still missing
 

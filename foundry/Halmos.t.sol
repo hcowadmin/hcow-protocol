@@ -3,6 +3,8 @@ pragma solidity 0.8.34;
 
 import {Test} from "forge-std/Test.sol";
 import {HCOWProfitShare} from "../contracts/HCOWProfitShare.sol";
+import {HCOWStaking} from "../contracts/HCOWStaking.sol";
+import {HCOWRewardVault} from "../contracts/HCOWRewardVault.sol";
 import {MockHCOW, MockUSDT} from "../contracts/test/Mocks.sol";
 
 /**
@@ -38,7 +40,10 @@ contract HalmosProfitShare is Test {
     function setUp() public {
         hcow = new MockHCOW();
         usdt = new MockUSDT();
-        ps = new HCOWProfitShare(address(hcow), address(usdt), owner, settler, gameCo, team, MIN_POOL);
+        // the 70% leg of consumed HCOW needs a real vault for this token
+        HCOWRewardVault vault = new HCOWRewardVault(
+            address(hcow), address(new HCOWStaking(address(hcow), owner, owner)), owner, owner);
+        ps = new HCOWProfitShare(address(hcow), address(usdt), owner, settler, gameCo, team, MIN_POOL, address(vault));
 
         hcow.transfer(holder, 10_000_000e18);
         vm.prank(holder);

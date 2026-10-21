@@ -83,6 +83,7 @@ async function main() {
   console.log(`LEDGER_ADDRESS=${a.HCOWLedger}`);
   console.log(`PROFIT_SHARE_ADDRESS=${a.HCOWProfitShare}`);
   console.log(`STAKING_ADDRESS=${a.HCOWStaking}`);
+  if (a.HCOWRewardVault) console.log(`REWARD_VAULT_ADDRESS=${a.HCOWRewardVault}`);
 
   console.log(`\n${bar}\nDAPP BUILD ENVIRONMENT  (only if not using the committed defaults)\n${bar}`);
   console.log(`VITE_CHAIN_ID=${net.chainId}`);
@@ -90,6 +91,7 @@ async function main() {
   console.log(`VITE_USDT_ADDRESS=${a.USDT}`);
   console.log(`VITE_PROFIT_SHARE_ADDRESS=${a.HCOWProfitShare}`);
   console.log(`VITE_STAKING_ADDRESS=${a.HCOWStaking}`);
+  if (a.HCOWRewardVault) console.log(`VITE_REWARD_VAULT_ADDRESS=${a.HCOWRewardVault}`);
   console.log(`VITE_LEDGER_ADDRESS=${a.HCOWLedger}`);
   if (a.HCOWFaucet) console.log(`VITE_FAUCET_ADDRESS=${a.HCOWFaucet}`);
 

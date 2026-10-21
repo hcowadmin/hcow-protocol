@@ -109,9 +109,18 @@ async function main() {
   const hcow = await deploy('MockHCOW', deployerS);
   const usdt = await deploy('MockUSDT', deployerS);
 
+  // The 70% leg of consumed HCOW goes to a reward vault, which the constructor
+  // requires to be a contract reporting this same token. One vault serves every
+  // Profit Share instance below; it is not bound to any of them.
+  const stakingV = await deploy('HCOWStaking', deployerS,
+    [await hcow.getAddress(), deployer, deployer]);
+  const vaultC = await deploy('HCOWRewardVault', deployerS,
+    [await hcow.getAddress(), await stakingV.getAddress(), deployer, deployer]);
+  const VAULT = await vaultC.getAddress();
+
   const ps = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
   ]);
   IFACE = ps.interface;
   const psAddr = await ps.getAddress();
@@ -138,7 +147,7 @@ async function main() {
   await reverts('zero address rejected in constructor',
     deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      ethers.ZeroAddress, settler, gameCo, teamAddr, TEST_FLOOR]), 'ZeroAddress');
+      ethers.ZeroAddress, settler, gameCo, teamAddr, TEST_FLOOR, VAULT]), 'ZeroAddress');
 
   // ---------------- bonding ----------------
   await rv('cannot bond zero', ps, aliceS, 'bond', [0], 'ZeroAmount');
@@ -197,7 +206,7 @@ async function main() {
   eq('pool shrank by the deduction', D(await ps.totalBondedHcow()), 3920);
   eq('alice principal shrank 2%', D(await ps.bondedOf(alice)), 980);
   eq('bob principal shrank 2%', D(await ps.bondedOf(bob)), 2940);
-  eq('deducted hcow was burned',
+  eq('deducted hcow left the contract',
     D(await hcow.balanceOf(psAddr)), 3920);
   eq('total deducted recorded', D(await ps.totalHcowDeducted()), 80);
 
@@ -346,7 +355,7 @@ async function main() {
   step('no participants'); // ---------------- no participants ----------------
   const ps2 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
   ]);
   const a2 = await ps2.getAddress();
   await (await usdt.connect(settlerS).approve(a2, ethers.MaxUint256)).wait();
@@ -414,7 +423,7 @@ async function main() {
   step('funding required'); // ----------------
   const ps3 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
   ]);
   await rv('unfunded settlement reverts', ps3, settlerS, 'settleEpoch', [0, E(1_000), 0, 0, 0], '');
 
@@ -430,7 +439,7 @@ async function main() {
   // scenarios above. Two bonders, one settlement, one full exit.
   const ps4 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
   ]);
   const ps4Addr = await ps4.getAddress();
   await (await usdt.connect(settlerS).approve(ps4Addr, ethers.MaxUint256)).wait();
@@ -496,7 +505,7 @@ async function main() {
   step('flash bond'); // ---- bonding into a settlement earns nothing ----
   const ps6 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
   ]);
   const ps6Addr = await ps6.getAddress();
   await (await usdt.connect(settlerS).approve(ps6Addr, ethers.MaxUint256)).wait();
@@ -564,7 +573,7 @@ async function main() {
   // the position sat pending.
   const ps5 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
   ]);
   const ps5Addr = await ps5.getAddress();
   await (await usdt.connect(settlerS).approve(ps5Addr, ethers.MaxUint256)).wait();
@@ -585,7 +594,7 @@ async function main() {
   near('the honest participant pays the same', D(await ps5.bondedOf(bob)), 980);
   near('the forfeit is counted apart from settlement deductions',
     D(await ps5.totalHcowDeducted()), burnedThisEpoch);
-  near('the forfeit was burned', D(await ps5.totalHcowForfeited()), 20);
+  near('the forfeit is recorded', D(await ps5.totalHcowForfeited()), 20);
   eq('hcow held still matches the books', D(await hcow.balanceOf(ps5Addr)),
     D((await ps5.totalBondedHcow()) + (await ps5.totalPendingUnbond())));
 
@@ -621,7 +630,7 @@ async function main() {
   step('charge window'); // ---- a settlement inside the cooldown does bite ----
   const ps7 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
   ]);
   await (await usdt.connect(settlerS).approve(await ps7.getAddress(), ethers.MaxUint256)).wait();
   await (await hcow.connect(aliceS).approve(await ps7.getAddress(), ethers.MaxUint256)).wait();
@@ -645,7 +654,7 @@ async function main() {
   step('decay window'); // ---- the cumulative ceiling holds ----
   const ps8 = await deploy('HCOWProfitShare', deployerS, [
     await hcow.getAddress(), await usdt.getAddress(),
-    deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+    deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
   ]);
   await (await usdt.connect(settlerS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
   await (await hcow.connect(aliceS).approve(await ps8.getAddress(), ethers.MaxUint256)).wait();
@@ -717,7 +726,7 @@ async function main() {
     const heidi = await heidiS.getAddress();
     const psP = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
     await (await usdt.connect(settlerS).approve(await psP.getAddress(), ethers.MaxUint256)).wait();
     await (await hcow.transfer(heidi, E(1_000_000))).wait();
@@ -782,7 +791,7 @@ async function main() {
     const ivan = await ivanS.getAddress();
     const psQ = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
     await (await usdt.connect(settlerS).approve(await psQ.getAddress(), ethers.MaxUint256)).wait();
     await (await hcow.transfer(ivan, E(1_000_000))).wait();
@@ -845,7 +854,7 @@ async function main() {
   {
     const psD = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
     const aD = await psD.getAddress();
     await (await usdt.connect(settlerS).approve(aD, ethers.MaxUint256)).wait();
@@ -896,7 +905,7 @@ async function main() {
   {
     const ps9 = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
     const a9 = await ps9.getAddress();
     await (await usdt.connect(settlerS).approve(a9, ethers.MaxUint256)).wait();
@@ -934,7 +943,7 @@ async function main() {
   {
     const psR = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
     const aR = await psR.getAddress();
     await (await usdt.connect(settlerS).approve(aR, ethers.MaxUint256)).wait();
@@ -965,7 +974,7 @@ async function main() {
     const MAINNET_FLOOR = E(1_000_000);
     const psL = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR,
+      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR, VAULT,
     ]);
     const aL = await psL.getAddress();
     await (await usdt.mint(settler, E(4_000_000))).wait();
@@ -1018,7 +1027,7 @@ async function main() {
     const MAINNET_FLOOR = E(1_000_000);
     const psW = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR,
+      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR, VAULT,
     ]);
     const aW = await psW.getAddress();
     await (await usdt.mint(settler, E(2_000_000))).wait();
@@ -1066,7 +1075,7 @@ async function main() {
     const dave = await daveS.getAddress();
     const psP = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR,
+      deployer, settler, gameCo, teamAddr, MAINNET_FLOOR, VAULT,
     ]);
     const aP = await psP.getAddress();
     await (await usdt.mint(settler, E(2_000_000))).wait();
@@ -1105,7 +1114,7 @@ async function main() {
   {
     const psO = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
 
     // A single step wrote the new owner immediately, so a mistyped or
@@ -1147,17 +1156,17 @@ async function main() {
     await reverts('a floor above 5% of supply is refused',
       deploy('HCOWProfitShare', deployerS, [
         await hcow.getAddress(), await usdt.getAddress(),
-        deployer, settler, gameCo, teamAddr, cap + 1n,
+        deployer, settler, gameCo, teamAddr, cap + 1n, VAULT,
       ]), 'MinPoolSharesTooHigh');
     const psCap = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, cap,
+      deployer, settler, gameCo, teamAddr, cap, VAULT,
     ]);
     eq('a floor exactly at the cap is accepted', D(await psCap.minPoolShares()), 10_000_000);
     await reverts('a zero floor is refused',
       deploy('HCOWProfitShare', deployerS, [
         await hcow.getAddress(), await usdt.getAddress(),
-        deployer, settler, gameCo, teamAddr, 0n,
+        deployer, settler, gameCo, teamAddr, 0n, VAULT,
       ]), 'ZeroAmount');
   }
 
@@ -1172,7 +1181,7 @@ async function main() {
   {
     const psA = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
     const aA = await psA.getAddress();
     const frankS = await provider.getSigner(9);
@@ -1208,19 +1217,19 @@ async function main() {
   {
     const psX = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
     const base = [await hcow.getAddress(), await usdt.getAddress(), deployer];
 
     await reverts('constructor refuses a settler that is the game company',
       deploy('HCOWProfitShare', deployerS,
-        [...base, gameCo, gameCo, teamAddr, TEST_FLOOR]), 'SettlerIsRecipient');
+        [...base, gameCo, gameCo, teamAddr, TEST_FLOOR, VAULT]), 'SettlerIsRecipient');
     await reverts('constructor refuses a settler that is the team',
       deploy('HCOWProfitShare', deployerS,
-        [...base, teamAddr, gameCo, teamAddr, TEST_FLOOR]), 'SettlerIsRecipient');
+        [...base, teamAddr, gameCo, teamAddr, TEST_FLOOR, VAULT]), 'SettlerIsRecipient');
     await reverts('constructor refuses a settler that is both recipients',
       deploy('HCOWProfitShare', deployerS,
-        [...base, gameCo, gameCo, gameCo, TEST_FLOOR]), 'SettlerIsRecipient');
+        [...base, gameCo, gameCo, gameCo, TEST_FLOOR, VAULT]), 'SettlerIsRecipient');
 
     await rv('setSettler refuses the game company', psX, deployerS,
       'setSettler', [gameCo], 'SettlerIsRecipient');
@@ -1260,7 +1269,7 @@ async function main() {
   {
     const psS = await deploy('HCOWProfitShare', deployerS, [
       await hcow.getAddress(), await usdt.getAddress(),
-      deployer, settler, gameCo, teamAddr, TEST_FLOOR,
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, VAULT,
     ]);
     const aS = await psS.getAddress();
     const erinS = await provider.getSigner(8);
@@ -1332,6 +1341,202 @@ async function main() {
     await (await psS.connect(bobS).closeStalledEpoch(GAS)).wait();
     near('an unbond whose epoch was closed by a stall is charged nothing at all',
       D(await psS.pendingUnbondOf(erin)), pendingBefore);
+  }
+
+  // ---------------- consumed HCOW is split 70 / 20 / 10 ----------------
+  //
+  // Every HCOW amount the contract consumes, the settlement deduction and the
+  // forfeit charged on either exit of a pending unbond, leaves in three legs:
+  // 70% to the reward vault, 20% to the burn address, 10% to the team address.
+  // Before this change all of it went to the burn address.
+  step('consumed split');
+  {
+    const DEAD = '0x000000000000000000000000000000000000dEaD';
+    const B = (v) => BigInt(v);
+
+    eq('the reward leg is 70%', await ps.CONSUMED_REWARDS_BPS(), 7000);
+    eq('the burn leg is 20%', await ps.CONSUMED_BURN_BPS(), 2000);
+    eq('the team leg is 10%', await ps.CONSUMED_TEAM_BPS(), 1000);
+    eq('the three legs are the whole',
+       B(await ps.CONSUMED_REWARDS_BPS()) + B(await ps.CONSUMED_BURN_BPS()) +
+       B(await ps.CONSUMED_TEAM_BPS()), 10000);
+    eq('rewardVault is the constructor value', await ps.rewardVault(), VAULT);
+    {
+      const [r, b, t] = await ps.consumedSplit(E(100));
+      eq('100 splits to 70 rewards', D(r), 70);
+      eq('20 burned', D(b), 20);
+      eq('10 to the team', D(t), 10);
+    }
+    {
+      // 9 wei: burn floor(1.8) = 1, team floor(0.9) = 0, rewards take the rest
+      const [r, b, t] = await ps.consumedSplit(9n);
+      eq('rounding dust goes to the reward leg', r, 8n);
+      eq('the burn leg is floored', b, 1n);
+      eq('the team leg is floored, never above its tenth', t, 0n);
+      const [r1, b1, t1] = await ps.consumedSplit(1n);
+      eq('one wei goes entirely to rewards', `${r1}/${b1}/${t1}`, '1/0/0');
+    }
+
+    // A fresh instance with its own vault, so every balance below is a clean delta.
+    const stk2 = await deploy('HCOWStaking', deployerS, [await hcow.getAddress(), deployer, deployer]);
+    const v2 = await deploy('HCOWRewardVault', deployerS,
+      [await hcow.getAddress(), await stk2.getAddress(), deployer, deployer]);
+    const V2 = await v2.getAddress();
+    const psV = await deploy('HCOWProfitShare', deployerS, [
+      await hcow.getAddress(), await usdt.getAddress(),
+      deployer, settler, gameCo, teamAddr, TEST_FLOOR, V2,
+    ]);
+    const aV = await psV.getAddress();
+    const [fayS, gusS, halS, newTeamS] = await Promise.all([14, 15, 16, 17].map((i) => provider.getSigner(i)));
+    const [fay, gus, hal, newTeam] = await Promise.all([fayS, gusS, halS, newTeamS].map((s) => s.getAddress()));
+    for (const s of [fayS, gusS, halS]) {
+      await (await hcow.transfer(await s.getAddress(), E(1_000))).wait();
+      await (await hcow.connect(s).approve(aV, ethers.MaxUint256)).wait();
+      await (await psV.connect(s).bond(E(1_000))).wait();
+    }
+    await (await usdt.connect(settlerS).approve(aV, ethers.MaxUint256)).wait();
+    const warp = async () => { await provider.send('evm_increaseTime', [DAY]); await provider.send('evm_mine', []); };
+    const routed = (rc) => rc.logs
+      .map((l) => { try { return psV.interface.parseLog(l); } catch { return null; } })
+      .filter((p) => p && p.name === 'ConsumedHcowRouted');
+    const dead0 = await hcow.balanceOf(DEAD);
+    const team0 = await hcow.balanceOf(teamAddr);
+    const settlerHcow0 = await hcow.balanceOf(settler);
+
+    // epoch 0 lifts the quarantine, epoch 1 deducts 2% of 3,000 = 60
+    await (await psV.connect(settlerS).settleEpoch(0, E(1_000), 0, 0, 0)).wait();
+    await warp();
+    const rc1 = await (await psV.connect(settlerS).settleEpoch(1, E(1_000), 0, 0, 20_000)).wait();
+    eq('a settlement consumes 60', D(await psV.totalHcowDeducted()), 60);
+    eq('42 reach the vault', D(await hcow.balanceOf(V2)), 42);
+    eq('12 reach the burn address', D((await hcow.balanceOf(DEAD)) - dead0), 12);
+    eq('6 reach the team', D((await hcow.balanceOf(teamAddr)) - team0), 6);
+    {
+      const ev = routed(rc1);
+      eq('the settlement emits one routing event', ev.length, 1);
+      eq('a settlement routes from address zero', ev[0]?.args.account, ethers.ZeroAddress);
+      eq('and states its three legs', ev[0] && `${D(ev[0].args.toRewards)}/${D(ev[0].args.burned)}/${D(ev[0].args.toTeam)}`, '42/12/6');
+    }
+
+    // Two holders step out before epoch 2; each is charged that one settlement.
+    await (await psV.connect(gusS).requestUnbond(await psV.bondedOf(gus))).wait();
+    await (await psV.connect(fayS).requestUnbond(await psV.bondedOf(fay))).wait();
+    await warp();
+    await (await psV.connect(settlerS).settleEpoch(2, E(1_000), 0, 0, 20_000)).wait();
+
+    // cancel path
+    {
+      const f0 = await psV.totalHcowForfeited();
+      const v0 = await hcow.balanceOf(V2), d0 = await hcow.balanceOf(DEAD), t0 = await hcow.balanceOf(teamAddr);
+      const rc = await (await psV.connect(gusS).cancelUnbond()).wait();
+      const F = (await psV.totalHcowForfeited()) - f0;
+      ok('cancelling a charged unbond forfeits something', F > 0n, `forfeit ${F}`);
+      const [r, b, t] = await psV.consumedSplit(F);
+      eq('the cancel forfeit reaches the vault at 70%', (await hcow.balanceOf(V2)) - v0, r);
+      eq('the burn address at 20%', (await hcow.balanceOf(DEAD)) - d0, b);
+      eq('the team at 10%', (await hcow.balanceOf(teamAddr)) - t0, t);
+      const ev = routed(rc);
+      eq('the cancel names the account that forfeited', ev[0]?.args.account, gus);
+    }
+    // withdraw path
+    {
+      const f0 = await psV.totalHcowForfeited();
+      const v0 = await hcow.balanceOf(V2), d0 = await hcow.balanceOf(DEAD), t0 = await hcow.balanceOf(teamAddr);
+      const fay0 = await hcow.balanceOf(fay);
+      const pending = await psV.pendingUnbondOf(fay);
+      const rc = await (await psV.connect(fayS).withdrawUnbonded()).wait();
+      const F = (await psV.totalHcowForfeited()) - f0;
+      ok('withdrawing a charged unbond forfeits something', F > 0n, `forfeit ${F}`);
+      const [r, b, t] = await psV.consumedSplit(F);
+      eq('the withdraw forfeit reaches the vault at 70%', (await hcow.balanceOf(V2)) - v0, r);
+      eq('the burn address at 20%', (await hcow.balanceOf(DEAD)) - d0, b);
+      eq('the team at 10%', (await hcow.balanceOf(teamAddr)) - t0, t);
+      // pendingUnbondOf already reports the charged figure
+      eq('the holder receives exactly what pendingUnbondOf showed',
+         (await hcow.balanceOf(fay)) - fay0, B(pending));
+      const ev = routed(rc);
+      eq('the withdraw names the account that forfeited', ev[0]?.args.account, fay);
+    }
+
+    // the team leg follows the team address, as the USDT team leg does
+    await (await psV.connect(deployerS).setRecipients(gameCo, newTeam)).wait();
+    await warp();
+    const nt0 = await hcow.balanceOf(newTeam);
+    const consumed0 = await psV.totalHcowDeducted();
+    await (await psV.connect(settlerS).settleEpoch(3, E(1_000), 0, 0, 20_000)).wait();
+    const [, , tNew] = await psV.consumedSplit((await psV.totalHcowDeducted()) - consumed0);
+    ok('the next settlement consumes something', tNew > 0n);
+    eq('a changed team address receives the next team leg', (await hcow.balanceOf(newTeam)) - nt0, tNew);
+
+    // books
+    const consumed = B(await psV.totalHcowDeducted()) + B(await psV.totalHcowForfeited());
+    eq('the three legs reconcile to everything consumed',
+       B(await psV.totalHcowToRewards()) + B(await psV.totalHcowBurned()) + B(await psV.totalHcowToTeam()),
+       consumed);
+    eq('the vault holds exactly the reward leg', await hcow.balanceOf(V2), await psV.totalHcowToRewards());
+    eq('the burn address received exactly the burn leg',
+       (await hcow.balanceOf(DEAD)) - dead0, await psV.totalHcowBurned());
+    eq('the two team addresses received exactly the team leg',
+       ((await hcow.balanceOf(teamAddr)) - team0) + ((await hcow.balanceOf(newTeam)) - nt0) - 0n,
+       await psV.totalHcowToTeam());
+    eq('the settler received no HCOW at all', (await hcow.balanceOf(settler)) - settlerHcow0, 0n);
+    eq('hcow held still matches the books', await hcow.balanceOf(aV),
+       B(await psV.totalBondedHcow()) + B(await psV.totalPendingUnbond()));
+
+    // constructor and setters refuse a vault that a key could spend
+    const head = [await hcow.getAddress(), await usdt.getAddress()];
+    await reverts('constructor refuses a zero vault',
+      deploy('HCOWProfitShare', deployerS, [...head, deployer, settler, gameCo, teamAddr, TEST_FLOOR, ethers.ZeroAddress]),
+      'BadRewardVault');
+    await reverts('constructor refuses an externally owned vault',
+      deploy('HCOWProfitShare', deployerS, [...head, deployer, settler, gameCo, teamAddr, TEST_FLOOR, bob]),
+      'BadRewardVault');
+    {
+      const other = await deploy('MockHCOW', deployerS);
+      const stkO = await deploy('HCOWStaking', deployerS, [await other.getAddress(), deployer, deployer]);
+      const vO = await deploy('HCOWRewardVault', deployerS,
+        [await other.getAddress(), await stkO.getAddress(), deployer, deployer]);
+      // A vault reporting this HCOW but pointing at staking for another token.
+      // A genuine HCOWRewardVault cannot be built that way, so a double is used.
+      const fake = await deploy('FakeVault', deployerS, [await hcow.getAddress(), await stkO.getAddress()]);
+      await reverts('constructor refuses a vault whose staking streams another token',
+        deploy('HCOWProfitShare', deployerS,
+          [...head, deployer, settler, gameCo, teamAddr, TEST_FLOOR, await fake.getAddress()]),
+        'BadRewardVault');
+      // And the mirror: a vault on the right staking contract that reports the
+      // wrong token itself. Only the vault's own hcow() check catches this one.
+      const fake2 = await deploy('FakeVault', deployerS, [await other.getAddress(), await stk2.getAddress()]);
+      await reverts('constructor refuses a vault that reports another token',
+        deploy('HCOWProfitShare', deployerS,
+          [...head, deployer, settler, gameCo, teamAddr, TEST_FLOOR, await fake2.getAddress()]),
+        'BadRewardVault');
+      await reverts('constructor refuses a vault for another token',
+        deploy('HCOWProfitShare', deployerS,
+          [...head, deployer, settler, gameCo, teamAddr, TEST_FLOOR, await vO.getAddress()]),
+        'BadRewardVault');
+    }
+    await reverts('constructor refuses a contract that is not a vault',
+      deploy('HCOWProfitShare', deployerS,
+        [...head, deployer, settler, gameCo, teamAddr, TEST_FLOOR, await usdt.getAddress()]));
+    await reverts('constructor refuses a vault that is also the team',
+      deploy('HCOWProfitShare', deployerS, [...head, deployer, settler, gameCo, V2, TEST_FLOOR, V2]),
+      'BadRewardVault');
+    await reverts('or the game company',
+      deploy('HCOWProfitShare', deployerS, [...head, deployer, settler, V2, teamAddr, TEST_FLOOR, V2]),
+      'BadRewardVault');
+    await reverts('or the settler',
+      deploy('HCOWProfitShare', deployerS, [...head, deployer, V2, gameCo, teamAddr, TEST_FLOOR, V2]),
+      'BadRewardVault');
+    await reverts('or the owner',
+      deploy('HCOWProfitShare', deployerS, [...head, V2, settler, gameCo, teamAddr, TEST_FLOOR, V2]),
+      'BadRewardVault');
+    await rv('setRecipients refuses the vault as team', psV, deployerS,
+      'setRecipients', [gameCo, V2], 'BadRewardVault');
+    await rv('setRecipients refuses the vault as game company', psV, deployerS,
+      'setRecipients', [V2, newTeam], 'BadRewardVault');
+    await rv('setSettler refuses the vault', psV, deployerS, 'setSettler', [V2], 'BadRewardVault');
+    ok('there is no setter for the vault',
+       !psV.interface.fragments.some((f) => f.type === 'function' && /vault/i.test(f.name) && f.stateMutability !== 'view' && f.stateMutability !== 'pure'));
   }
 
   // ---------------- report ----------------

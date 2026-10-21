@@ -2139,6 +2139,11 @@ interface IERC20Supply {
     function totalSupply() external view returns (uint256);
 }
 
+interface IRewardVaultToken {
+    function hcow() external view returns (IERC20);
+    function staking() external view returns (IRewardVaultToken);
+}
+
 /**
  * @title HCOWProfitShare
  * @notice Bonded Deposit. Participants bond HCOW, the bonded pool is consumed
@@ -2176,6 +2181,31 @@ interface IERC20Supply {
  *     the money that moved are the same figures.
  *   - Epochs are strictly sequential and settle exactly once. There is no
  *     function that edits a settled epoch.
+ *   - Where consumed HCOW goes. Every HCOW amount this contract consumes, the
+ *     settlement deduction and the forfeit charged to a pending unbond alike,
+ *     is split by compile time constants: 70% to rewardVault, which can only
+ *     stream it into HCOWStaking rewards, 20% to the burn address, and 10% to
+ *     the team address. The split is computed here and never passed in.
+ *
+ * WHAT THAT SPLIT MEANS FOR THE SETTLER
+ *   Before the split, consumed principal was burned and no role gained from a
+ *   deduction. Now part of it can reach the operator, and the settler, the
+ *   team and the owner are the same operator in practice. The settler is
+ *   therefore paid, indirectly, for deducting. The channels, measured:
+ *     - the team leg, 10% of what is consumed;
+ *     - representative commission in HCOWStaking. The staking owner sets each
+ *       representative's payout and commission, up to MAX_COMMISSION_BPS, so
+ *       up to 10% of the 70% reward leg, 7% of what is consumed, can reach the
+ *       operator without it holding any stake;
+ *     - any stake the operator holds, which earns its share of the reward leg
+ *       like any other stake.
+ *   Without stake that is up to 17% of what is consumed; with a dominant stake
+ *   it approaches 80%. What bounds every channel is the rate limit and nothing
+ *   else: MAX_DEDUCT_PPM per settlement and the window ceiling, 5.871% of the
+ *   pool over any thirty days at worst, of which up to 17% (0.998% of the
+ *   pool) reaches the operator without stake. That is a disclosure, not a
+ *   defect, and it belongs in the public description next to the deduction
+ *   rule. No check here can see stake held through other addresses.
  *
  * WHAT THE CHAIN CANNOT ENFORCE
  *   Gross revenue and the cost lines are produced off chain. Apple and Google
@@ -2219,7 +2249,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint256 private constant RAY = 1e27;
 
     /**
-     * @notice Where consumed principal goes.
+     * @notice Where the burn leg of consumed HCOW goes. See CONSUMED_BURN_BPS.
      *
      * Deliberately a transfer to the standard burn address rather than a call
      * to the token's own burn function. An exit must never depend on an
@@ -2230,9 +2260,21 @@ contract HCOWProfitShare is ReentrancyGuard {
      */
     address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
 
+    /**
+     * @notice How consumed HCOW is split. Compile time constants, so the split
+     *         is part of the verified bytecode and no role can move it.
+     *
+     * The burn and team legs are floored and the reward leg takes the
+     * remainder, so rounding dust goes to stakers and the team never receives
+     * more than its tenth.
+     */
+    uint16 public constant CONSUMED_REWARDS_BPS = 7000; // 70% to rewardVault
+    uint16 public constant CONSUMED_BURN_BPS = 2000;    // 20% to BURN_ADDRESS
+    uint16 public constant CONSUMED_TEAM_BPS = 1000;    // 10% to team
+
     /// @notice A settlement must distribute at least this much to participants
     ///         before it may consume principal. One USDT. This is a sanity
-    ///         floor against an epoch that pays a rounding error and burns two
+    ///         floor against an epoch that pays a rounding error and consumes two
     ///         percent of the pool, not an economic bound. The economic bound
     ///         is the rate limit below.
     uint256 public constant MIN_PARTICIPANT_USDT = 1e18;
@@ -2337,8 +2379,8 @@ contract HCOWProfitShare is ReentrancyGuard {
      * close to twice this figure. That is the honest bound; it is stated here
      * rather than rounded down in the documentation.
      *
-     * It bounds what settlements burn. HCOW forfeited by a position leaving
-     * around a settlement is burned outside this meter, deliberately: metering
+     * It bounds what settlements consume. HCOW forfeited by a position leaving
+     * around a settlement is consumed outside this meter, deliberately: metering
      * it would let a large holder exhaust the window at will and veto every
      * deduction for thirty days.
      */
@@ -2360,6 +2402,23 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     IERC20 public immutable hcow;
     IERC20 public immutable usdt;
+
+    /**
+     * @notice Receives the 70% reward leg of consumed HCOW.
+     *
+     * Immutable on purpose. A setter would let the owner point the largest
+     * leg at any address, which is a withdrawal path for participant
+     * principal.
+     *
+     * The constructor checks that it has code, that it reports this HCOW, and
+     * that the staking contract it reports also streams this HCOW. Those are
+     * sanity checks against a wrong argument, not proof of what the address
+     * is: any contract can answer them, including an account delegated under
+     * EIP-7702. That the address is a genuine HCOWRewardVault on the genuine
+     * HCOWStaking is a deployment fact, verified off chain against the
+     * published bytecode and the vault's staking() target.
+     */
+    address public immutable rewardVault;
 
     address public owner;
     address public settler;
@@ -2545,14 +2604,20 @@ contract HCOWProfitShare is ReentrancyGuard {
     uint256 public participantCount;
     uint256 public totalUsdtDistributed;
 
-    /// @notice HCOW burned by settlements. Equals the sum of every settled
+    /// @notice HCOW consumed by settlements. Equals the sum of every settled
     ///         epoch's hcowDeducted, and nothing else, so the two reconcile.
     uint256 public totalHcowDeducted;
 
-    /// @notice HCOW burned when a pending unbond settled the deductions it sat
-    ///         through. Counted apart from totalHcowDeducted so that neither
-    ///         figure has to be explained twice.
+    /// @notice HCOW consumed when a pending unbond settled the deductions it
+    ///         sat through. Counted apart from totalHcowDeducted so that
+    ///         neither figure has to be explained twice.
     uint256 public totalHcowForfeited;
+
+    /// @notice Where the two figures above went. The three always sum to
+    ///         totalHcowDeducted + totalHcowForfeited exactly.
+    uint256 public totalHcowToRewards;
+    uint256 public totalHcowBurned;
+    uint256 public totalHcowToTeam;
 
     /// @notice Next epoch expected. Also the number of settled epochs.
     uint64 public nextEpoch;
@@ -2578,14 +2643,20 @@ contract HCOWProfitShare is ReentrancyGuard {
 
     event Bonded(address indexed account, uint256 hcowAmount, uint256 sharesMinted);
     event UnbondRequested(address indexed account, uint256 hcowAmount, uint64 readyAt);
-    /// @dev forfeited is HCOW burned on the way out. Without it in the log an
-    ///      indexer cannot attribute the burn to an account, and a published
-    ///      burn total built from settlements alone is short by this channel.
+    /// @dev forfeited is HCOW consumed on the way out, split 70 / 20 / 10 like
+    ///      a deduction. Without it in the log an indexer cannot attribute it
+    ///      to an account, and a consumed total built from settlements alone is
+    ///      short by this channel.
     event UnbondCancelled(
         address indexed account, uint256 hcowAmount, uint256 sharesMinted, uint256 forfeited
     );
     event Unbonded(address indexed account, uint256 hcowAmount, uint256 forfeited);
     event UsdtClaimed(address indexed account, uint256 amount);
+    /// @notice How one consumed amount was split. `account` is the position
+    ///         that forfeited, or address(0) for a settlement deduction. Sits
+    ///         next to the EpochSettled, UnbondCancelled or Unbonded event of
+    ///         the same transaction, whose figure it divides.
+    event ConsumedHcowRouted(address indexed account, uint256 toRewards, uint256 burned, uint256 toTeam);
 
     /**
      * @dev The two fixed legs are stated rather than left to be reconstructed.
@@ -2669,6 +2740,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     error NoPendingUnbond();
     error CooldownActive(uint64 readyAt);
     error NothingToClaim();
+    error BadRewardVault();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -2687,7 +2759,8 @@ contract HCOWProfitShare is ReentrancyGuard {
         address initialSettler,
         address gameCompany_,
         address team_,
-        uint256 minPoolShares_
+        uint256 minPoolShares_,
+        address rewardVault_
     ) {
         if (
             hcowToken == address(0) || usdtToken == address(0) ||
@@ -2704,6 +2777,17 @@ contract HCOWProfitShare is ReentrancyGuard {
         if (initialSettler == gameCompany_ || initialSettler == team_) {
             revert SettlerIsRecipient();
         }
+        // The reward leg must reach a contract that holds the same token and
+        // is none of the other roles. An externally owned vault, or one that
+        // is also a payout address, would turn the 70% into something a key
+        // can spend.
+        if (
+            rewardVault_ == address(0) || rewardVault_.code.length == 0 ||
+            rewardVault_ == initialOwner || rewardVault_ == initialSettler ||
+            rewardVault_ == gameCompany_ || rewardVault_ == team_
+        ) revert BadRewardVault();
+        if (address(IRewardVaultToken(rewardVault_).hcow()) != hcowToken) revert BadRewardVault();
+        if (address(IRewardVaultToken(rewardVault_).staking().hcow()) != hcowToken) revert BadRewardVault();
 
         // The floor the participant leg is measured against. Zero would let a
         // single wei take an entire distribution; too high would keep a real
@@ -2725,6 +2809,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         settler = initialSettler;
         gameCompany = gameCompany_;
         team = team_;
+        rewardVault = rewardVault_;
 
         emit OwnershipTransferred(address(0), initialOwner);
         emit SettlerChanged(initialSettler);
@@ -2829,7 +2914,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     /**
      * @notice Put a pending unbond back to work at the current share price.
      * @dev Rejoining is not free. The amount is scaled by the pool decay that
-     *      happened while it sat pending, and the difference is burned. A
+     *      happened while it sat pending, and the difference is consumed. A
      *      participant who genuinely leaves pays nothing; a participant who
      *      steps out around a settlement and back in afterwards pays exactly
      *      what staying would have cost. Without this the deduction is
@@ -2873,10 +2958,10 @@ contract HCOWProfitShare is ReentrancyGuard {
         if (forfeited > 0) {
             a.settledDeducted += forfeited;
             totalHcowForfeited += forfeited;
-            hcow.safeTransfer(BURN_ADDRESS, forfeited);
         }
 
         emit UnbondCancelled(msg.sender, restored, minted, forfeited);
+        if (forfeited > 0) _routeConsumed(msg.sender, forfeited);
     }
 
     /**
@@ -2909,10 +2994,10 @@ contract HCOWProfitShare is ReentrancyGuard {
         if (forfeited > 0) {
             a.settledDeducted += forfeited;
             totalHcowForfeited += forfeited;
-            hcow.safeTransfer(BURN_ADDRESS, forfeited);
         }
-        if (payout > 0) hcow.safeTransfer(msg.sender, payout);
         emit Unbonded(msg.sender, payout, forfeited);
+        if (forfeited > 0) _routeConsumed(msg.sender, forfeited);
+        if (payout > 0) hcow.safeTransfer(msg.sender, payout);
     }
 
     /// @notice Take the USDT accumulated across settled epochs.
@@ -3169,7 +3254,14 @@ contract HCOWProfitShare is ReentrancyGuard {
         // ---- interactions, last ----
         //
         // Checks, effects, interactions, in that order. Every piece of state
-        // above is written before any of these three transfers runs.
+        // above is written before any of these transfers runs.
+        //
+        // The consumed HCOW is routed first because routing writes its own
+        // three counters. Placed after the USDT pushes, those counters were
+        // stale while the pushes ran: measured against a USDT with a transfer
+        // hook, a recipient reading this contract mid-call saw the legs at
+        // zero with 2e23 consumed. BSC-USD has no hook, so it was a read-only
+        // inconsistency and not an exploit, but the ordering costs nothing.
         //
         // The incoming transferFrom has to be first, because the amount that
         // actually arrives is an input to the arithmetic; that is a pull, and
@@ -3180,9 +3272,9 @@ contract HCOWProfitShare is ReentrancyGuard {
         // facts about the deployment" is a weaker statement than "ordered
         // correctly", and this is the one place in the contract where the
         // ordering was not free. It is now.
+        if (hcowToDeduct > 0) _routeConsumed(address(0), hcowToDeduct);
         if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);
         if (toTeam > 0) usdt.safeTransfer(team, toTeam);
-        if (hcowToDeduct > 0) hcow.safeTransfer(BURN_ADDRESS, hcowToDeduct);
     }
 
     // ------------------------------------------------------------------
@@ -3278,7 +3370,18 @@ contract HCOWProfitShare is ReentrancyGuard {
         return _settlements[epoch];
     }
 
-    /// @notice Maximum opex that would be accepted for a given revenue pair.
+    /// @notice How a consumed amount would be split, using the same arithmetic
+    ///         as the transfers.
+    function consumedSplit(uint256 amount)
+        public
+        pure
+        returns (uint256 toRewards, uint256 burned, uint256 toTeam)
+    {
+        burned = (amount * CONSUMED_BURN_BPS) / 10_000;
+        toTeam = (amount * CONSUMED_TEAM_BPS) / 10_000;
+        toRewards = amount - burned - toTeam;
+    }
+
     /// @notice HCOW a settlement at this rate would consume right now.
     ///         The settler converts the published value rule into a rate and
     ///         checks it here before signing.
@@ -3297,6 +3400,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         return block.timestamp >= openAt ? 0 : openAt;
     }
 
+    /// @notice Maximum opex that would be accepted for a given revenue pair.
     function opexCapFor(uint256 grossReceivedUsdt, uint256 directCostsUsdt)
         external
         pure
@@ -3313,6 +3417,7 @@ contract HCOWProfitShare is ReentrancyGuard {
     function setSettler(address account) external onlyOwner {
         if (account == address(0) || account == address(this)) revert ZeroAddress();
         if (account == gameCompany || account == team) revert SettlerIsRecipient();
+        if (account == rewardVault) revert BadRewardVault();
         settler = account;
         emit SettlerChanged(account);
     }
@@ -3333,6 +3438,10 @@ contract HCOWProfitShare is ReentrancyGuard {
         if (gameCompany_ == address(0) || team_ == address(0)) revert ZeroAddress();
         if (gameCompany_ == address(this) || team_ == address(this)) revert ZeroAddress();
         if (gameCompany_ == settler || team_ == settler) revert SettlerIsRecipient();
+        // The vault's leg and the team's leg are separate by construction. A
+        // team address set to the vault would double the reward leg; a game
+        // company set to it would send USDT somewhere with no USDT exit.
+        if (gameCompany_ == rewardVault || team_ == rewardVault) revert BadRewardVault();
         gameCompany = gameCompany_;
         team = team_;
         emit RecipientsChanged(gameCompany_, team_);
@@ -3471,6 +3580,26 @@ contract HCOWProfitShare is ReentrancyGuard {
     // ------------------------------------------------------------------
     // internal
     // ------------------------------------------------------------------
+
+    /**
+     * @dev Split one consumed amount and send its three legs.
+     *
+     * Every leg is a plain ERC20 transfer to a fixed or owner-set address, so
+     * none of them can be refused by a rule of another contract: the vault is
+     * paid by transfer, not by calling into staking. That is what keeps a
+     * settlement and an exit from depending on HCOWStaking's funding floors.
+     * Called after every state write of the function that calls it.
+     */
+    function _routeConsumed(address account, uint256 amount) private {
+        (uint256 toRewards, uint256 burned, uint256 toTeam) = consumedSplit(amount);
+        totalHcowToRewards += toRewards;
+        totalHcowBurned += burned;
+        totalHcowToTeam += toTeam;
+        emit ConsumedHcowRouted(account, toRewards, burned, toTeam);
+        if (toRewards > 0) hcow.safeTransfer(rewardVault, toRewards);
+        if (burned > 0) hcow.safeTransfer(BURN_ADDRESS, burned);
+        if (toTeam > 0) hcow.safeTransfer(team, toTeam);
+    }
 
     /**
      * @notice Splits one epoch's profit. Pure: no storage, no time, no caller.
@@ -3651,7 +3780,7 @@ contract HCOWProfitShare is ReentrancyGuard {
         // Rounded up for the same reason as rewardDebt above. This one is a
         // published figure rather than a payout, so a drift here cannot strand
         // anyone's money, but it can make the sum of every account's lifetime
-        // deduction exceed the burn that actually happened, and a reconciliation
+        // deduction exceed what was actually consumed, and a reconciliation
         // that does not reconcile is its own kind of defect.
         a.deductDebt = Math.mulDiv(s, accDeductedPerShare, ACC_PRECISION, Math.Rounding.Ceil);
     }

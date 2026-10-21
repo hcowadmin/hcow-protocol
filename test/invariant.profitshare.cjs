@@ -74,6 +74,10 @@ async function runSeed(seed, opCount) {
 
   const hcow = await deploy('MockHCOW', deployer);
   const usdt = await deploy('MockUSDT', deployer);
+  const stk = await deploy('HCOWStaking', deployer,
+    [await hcow.getAddress(), await deployer.getAddress(), await deployer.getAddress()]);
+  const vault = await (await deploy('HCOWRewardVault', deployer,
+    [await hcow.getAddress(), await stk.getAddress(), await deployer.getAddress(), await deployer.getAddress()])).getAddress();
   const ps = await deploy('HCOWProfitShare', deployer, [
     await hcow.getAddress(),
     await usdt.getAddress(),
@@ -82,7 +86,7 @@ async function runSeed(seed, opCount) {
     await gameCo.getAddress(),
     await team.getAddress(),
     // the participant floor, set to this campaign's own scale
-    ethers.parseEther('1000'),
+    ethers.parseEther('1000'), vault,
   ]);
   const psAddr = await ps.getAddress();
 
@@ -285,6 +289,25 @@ async function runSeed(seed, opCount) {
     must(seed, op, 'I14 bonded HCOW is fully attributed',
       totalBonded - sumBondedOf <= BigInt(actors.length),
       `unattributed=${totalBonded - sumBondedOf} holders=${holders}`);
+
+    // I18 Consumed HCOW leaves by its three legs and nowhere else. The legs sum
+    //     to everything consumed, the vault holds exactly the reward leg, the
+    //     burn address exactly the burn leg, and the team leg never exceeds
+    //     its tenth of the total.
+    {
+      const forfeited = await ps.totalHcowForfeited();
+      const toR = await ps.totalHcowToRewards();
+      const toB = await ps.totalHcowBurned();
+      const toT = await ps.totalHcowToTeam();
+      must(seed, op, 'I18 consumed legs reconcile', toR + toB + toT === deducted + forfeited,
+        `legs=${toR + toB + toT} consumed=${deducted + forfeited}`);
+      must(seed, op, 'I18 vault holds the reward leg', (await hcow.balanceOf(vault)) === toR,
+        `vault=${await hcow.balanceOf(vault)} leg=${toR}`);
+      must(seed, op, 'I18 burn address holds the burn leg',
+        (await hcow.balanceOf('0x000000000000000000000000000000000000dEaD')) === toB);
+      must(seed, op, 'I18 team leg at most a tenth', toT * 10n <= deducted + forfeited,
+        `team=${toT} consumed=${deducted + forfeited}`);
+    }
 
     // I17 Shares bonded during the open epoch are counted, and never exceed
     //     the total. If they did, the settlement divisor would underflow.

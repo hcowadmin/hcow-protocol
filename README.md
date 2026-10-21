@@ -7,6 +7,7 @@ The contracts and the tooling around them.
 | `HCOWLedger` | public integrity anchor for game results |
 | `HCOWProfitShare` | Bonded Deposit. net profit distributed in USDT each epoch |
 | `HCOWStaking` | delegated staking with representatives and commission |
+| `HCOWRewardVault` | holds 70% of consumed HCOW; its only exit is the staking reward stream |
 | `HCOWFaucet` | test token faucet. testnet only, never deployed to mainnet |
 
 `HCOWProfitShare` and `HCOWStaking` are what the dApp's data adapter calls.
@@ -149,13 +150,14 @@ without the second command `test:all` stops at `test:web`. That step is what
 proves `web/verify.html` computes byte-identical leaves and roots to `lib/`,
 and that the page refuses a lying RPC endpoint, so it is not optional.
 
-Measured 29 August 2026.
+Measured 29 August 2026; re-measured 21 October 2026 after the consumed HCOW split, except the Medusa row.
 
 | suite | result |
 |---|---|
 | `HCOWLedger` | 145 passed, 0 failed |
-| `HCOWProfitShare` | 232 passed, 0 failed |
+| `HCOWProfitShare` | 284 passed, 0 failed |
 | `HCOWStaking` | 107 passed, 0 failed |
+| `HCOWRewardVault` | 46 passed, 0 failed |
 | `HCOWFaucet` | 49 passed, 0 failed |
 | keccak256 against a reference | 318 of 318 match |
 | browser page against the libraries | every vector and proof matches, and a lying RPC is refused |
@@ -163,9 +165,9 @@ Measured 29 August 2026.
 | merkle builder against the on-chain verifier | 294 checks across 26 tree sizes, both implementations driven |
 | what a stolen settler key is worth (`npm run test:adversary`) | every measured bound at or inside the published figure |
 | machine-searched invariants (`npm run test:fuzz`) | 25 properties + 6 tests, 32,768 calls each |
-| the same properties, second engine (`npm run test:medusa`) | 300,481 calls over 3,000 sequences, 0 failures |
-| flattened sources against the artifacts (`npm run check:flat`) | 6 of 6 byte-identical |
-| guards deleted one at a time (`npm run test:mutate`) | 40 of 40 caught by the assertion that names them |
+| the same properties, second engine (`npm run test:medusa`) | 300,481 calls over 3,000 sequences, 0 failures. Measured before section 23 of SECURITY.md and not re-run since |
+| flattened sources against the artifacts (`npm run check:flat`) | 7 of 7 byte-identical |
+| guards deleted one at a time (`npm run test:mutate`) | 53 of 53 caught by the assertion that names them |
 
 ### One thing to know before writing more tests
 
@@ -320,13 +322,13 @@ There are two routes. They produce the same bytecode.
 
 ### Route A, browser only
 
-No tooling to install. `flat/` holds five self contained files with every
+No tooling to install. `flat/` holds six self contained files with every
 import inlined, one per contract plus `TestTokens.flat.sol` carrying both
 mocks, ready to paste into Remix. `scripts/checkflat.cjs`
 compiles each of those files standalone and compares the creation bytecode
 against the artifact Hardhat built from the original imported sources, so a
 flattened file that had drifted would fail the check rather than reach a
-chain. All six currently match.
+chain. All seven currently match.
 
 Deploy order, because most of them take the token addresses as constructor
 arguments. **Step 1 is testnet only.** On mainnet the token comes from the
@@ -337,12 +339,21 @@ section below before doing any of this against chain 56.
 1  TestTokens.flat.sol      MockHCOW, then MockUSDT      no arguments
                             TESTNET ONLY. Never on mainnet.
 2  HCOWLedger.flat.sol      HCOWLedger(owner, anchorer)
-3  HCOWProfitShare.flat.sol HCOWProfitShare(hcow, usdt, owner, settler,
-                                           gameCompany, team, minPoolShares)
-4  HCOWStaking.flat.sol     HCOWStaking(hcow, owner, funder)
-5  HCOWFaucet.flat.sol      HCOWFaucet(hcow, usdt, owner)
+3  HCOWStaking.flat.sol     HCOWStaking(hcow, owner, funder)
+4  HCOWRewardVault.flat.sol HCOWRewardVault(hcow, staking, owner, keeper)
+                            keeper = the funder address
+5  HCOWProfitShare.flat.sol HCOWProfitShare(hcow, usdt, owner, settler,
+                                           gameCompany, team, minPoolShares,
+                                           rewardVault)
+6  from owner               HCOWStaking.setRewardFunder(rewardVault)
+                            until this runs the vault cannot stream
+7  HCOWFaucet.flat.sol      HCOWFaucet(hcow, usdt, owner)
                             TESTNET ONLY. It gives away whatever is in it.
 ```
+
+`scripts/deploy.cjs` does not need step 6: it computes the vault's address
+from the deploy key's nonce and deploys staking with the vault already as its
+funder, so there is no window in which the funder key funds staking directly.
 
 Compiler 0.8.34, optimizer on, 200 runs, EVM version paris. Anything else
 produces different bytecode and a later verification will not match.
@@ -413,11 +424,11 @@ because that is exactly the configuration that must never reach mainnet.
 
 ### Deploying to BSC mainnet
 
-There are six contracts across two repositories and nobody had written down the
+There are seven contracts across two repositories and nobody had written down the
 order. This is it.
 
 `hcow-contracts` holds the token and the vesting contract. `hcow-protocol`,
-this repository, holds the other four. The token must exist before the two
+this repository, holds the other five. The token must exist before the two
 economic contracts, because both take its address as an immutable constructor
 argument, and a wrong one there is not a mistake that can be corrected.
 
@@ -431,20 +442,33 @@ hcow-contracts   1  HCOWToken(treasury)
                        do 5 and 6 in ONE TRANSACTION, via fundAndSeal
 
 hcow-protocol    7  HCOWLedger(owner, anchorer)
-                 8  HCOWProfitShare(hcow, usdt, owner, settler,
-                                    gameCompany, team, minPoolShares)
+                 8  HCOWStaking(hcow, owner, rewardVault)
+                    rewardVault is the address step 9 will land at
+                 9  HCOWRewardVault(hcow, staking, owner, keeper)
+                    keeper = FUNDER_ADDRESS
+                10  HCOWProfitShare(hcow, usdt, owner, settler,
+                                    gameCompany, team, minPoolShares,
+                                    rewardVault)
                     minPoolShares = 1_000_000e18 on mainnet
-                 9  HCOWStaking(hcow, owner, funder)
                     no faucet, no mock tokens, ever
 
-off chain       10  sql/001, sql/002, sql/003; deploy both edge functions;
+off chain       11  sql/001 to sql/004; deploy both edge functions;
                     schedule the anchorer; publish verify.html
 ```
 
-Steps 7 to 9 do not depend on 4 to 6, only on 1. They can go up first if that
+Steps 7 to 10 do not depend on 4 to 6, only on 1. They can go up first if that
 is more convenient.
 
-Run `scripts/deploy.cjs` for steps 7 to 9 rather than pasting constructor
+After step 10, read back and compare against the plan:
+`HCOWStaking.rewardFunder() == rewardVault`, `HCOWRewardVault.staking() ==
+staking`, `HCOWRewardVault.hcow() == hcow`, `HCOWRewardVault.keeper() == funder`,
+`HCOWRewardVault.owner() == owner`, `HCOWProfitShare.rewardVault() ==
+rewardVault`. `scripts/deploy.cjs` does this itself and stops on any mismatch.
+The vault address is immutable in Profit Share, and the checks Profit Share
+runs on it are sanity checks, not proof: that it is the genuine vault on the
+genuine staking contract is confirmed here, against the verified bytecode.
+
+Run `scripts/deploy.cjs` for steps 7 to 10 rather than pasting constructor
 arguments into Remix by hand. Every guard that stops a role being the deploy
 key, being zero, or being both settler and payout recipient lives in that
 script, and pasting into a browser form runs none of them. It also asks both
@@ -462,11 +486,12 @@ them against this list before touching chain 56.
 | Role | Contracts | What a compromise costs | Custody |
 |---|---|---|---|
 | treasury | Token, Vesting | the entire supply until it is inside the vesting contract and sealed | multisig, mandatory |
-| owner | Ledger, ProfitShare, Staking, Faucet | can set the settler and both payout recipients, so it can recover half of every settlement while burning bonded principal at the ceiling. Cannot take bonded HCOW. `HCOWProfitShare` and `HCOWStaking` have no `renounceOwnership`, so a lost key freezes those roles forever. On all four contracts the role moves in two steps: `transferOwnership` nominates, `acceptOwnership` is called by the nominee, and `cancelOwnershipTransfer` withdraws a nomination, so an unreachable address cannot be handed the role | multisig |
-| settler | ProfitShare | cannot take bonded HCOW. Can burn up to 3% of the bonded pool per decay window; the window is fixed rather than sliding and is anchored by the first deduction in it, so windows can be packed and the worst case is 5.87% over any thirty days (59,999 ppm summed) and 6.82% over any thirty-seven (70,000 ppm), at a partly refunded cost | hardware wallet, holds live USDT |
+| owner | Ledger, ProfitShare, Staking, RewardVault, Faucet | can set the settler and both payout recipients, so it can recover half of every settlement while consuming bonded principal at the ceiling. Through the team address it receives 10% of everything consumed, and as staking owner it sets representative payouts and commission, up to another 7%: up to 17% of consumed HCOW in all without holding stake, bounded by the deduction rate limit. Cannot take the other 83%. On the vault it can only replace the keeper. `HCOWProfitShare` and `HCOWStaking` have no `renounceOwnership`, so a lost key freezes those roles forever. On all five contracts the role moves in two steps: `transferOwnership` nominates, `acceptOwnership` is called by the nominee, and `cancelOwnershipTransfer` withdraws a nomination, so an unreachable address cannot be handed the role | multisig |
+| settler | ProfitShare | cannot take bonded HCOW itself. Can consume up to 3% of the bonded pool per decay window, split 70% to the reward vault, 20% burned and 10% to team; the window is fixed rather than sliding and is anchored by the first deduction in it, so windows can be packed and the worst case is 5.87% over any thirty days (59,999 ppm summed) and 6.82% over any thirty-seven (70,000 ppm), at a partly refunded cost | hardware wallet, holds live USDT |
 | anchorer | Ledger | junk roots in elapsed periods. Loud, and revocable by the owner. Cannot touch history or future periods | hot wallet, gas only |
 | gameCompany / team | ProfitShare | its own 25% leg, and never more. Cannot take any part of the participant leg: an exit or an arrival mid-epoch leaves the leg with the eligible pool, and a pool below `minPoolShares` has its leg carried inside the contract rather than handed over | multisig |
-| rewardFunder | Staking | cannot extract, and cannot slow a live stream: a funding may add tokens or add time, never redistribute what is promised. Can decline to fund new money, but a balance already carried inside the contract can be released without any: `fundRewards(0, duration)` re-streams the carry under the same floors | hardware wallet, holds HCOW |
+| rewardFunder | Staking | the reward vault, a contract. Cannot extract, and cannot slow a live stream: a funding may add tokens or add time, never redistribute what is promised | contract, no key |
+| keeper (FUNDER) | RewardVault | chooses when the vault streams and over how long, 7 to 30 days. Cannot send HCOW anywhere but staking. A bad end date binds later fundings until it passes, so the worst case is thirty days of slowed delivery; replacing the keeper does not undo a stream already set. Fund at or after `periodFinish`, with the whole balance, over 7 days | hardware wallet, gas only |
 | deployer | all | on a hand-typed Remix deployment, whatever it types | hardware wallet, tuples checked by a second person |
 | Supabase `service_role` | off chain | **can insert rounds that then anchor as genuine.** The chain proves nothing was altered after anchoring, not that it was true before | treat as a key, rotate, never leaves the dashboard |
 

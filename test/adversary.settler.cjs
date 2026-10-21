@@ -66,6 +66,10 @@ async function deploy(name, signer, args = []) {
 
   const fresh = async () => {
     const hcow = await deploy('MockHCOW', dep), usdt = await deploy('MockUSDT', dep);
+    const stk = await deploy('HCOWStaking', dep,
+      [await hcow.getAddress(), await dep.getAddress(), await dep.getAddress()]);
+    const vault = await (await deploy('HCOWRewardVault', dep,
+      [await hcow.getAddress(), await stk.getAddress(), await dep.getAddress(), await dep.getAddress()])).getAddress();
     const ps = await deploy('HCOWProfitShare', dep, [
       await hcow.getAddress(), await usdt.getAddress(),
       await dep.getAddress(), await settler.getAddress(),
@@ -76,7 +80,7 @@ async function deploy(name, signer, args = []) {
       // pool that is already past the floor. A mainnet-scale floor here would
       // put these scenarios in the sub-floor branch and the numbers would be
       // measuring the floor instead of the adversary.
-      E(1_000)]);
+      E(1_000), vault]);
     const a = await ps.getAddress();
     await (await usdt.mint(await settler.getAddress(), E(1_000_000_000))).wait();
     await (await usdt.connect(settler).approve(a, ethers.MaxUint256)).wait();
@@ -84,7 +88,7 @@ async function deploy(name, signer, args = []) {
       await (await hcow.transfer(await s.getAddress(), E(60_000_000))).wait();
       await (await hcow.connect(s).approve(a, ethers.MaxUint256)).wait();
     }
-    return { hcow, usdt, ps, a };
+    return { hcow, usdt, ps, a, vault };
   };
 
   const warp = async (d) => { await provider.send('evm_increaseTime', [d]); await provider.send('evm_mine', []); };
@@ -180,9 +184,14 @@ async function deploy(name, signer, args = []) {
       + `${carried.toLocaleString()} withheld and carried, 0 to the settler`;
   });
 
-  // ---- 5. Can bonded principal be taken rather than burned? ----
+  // ---- 5. Can bonded principal be taken, or sent anywhere but its three legs? ----
+  //
+  // Consumed principal used to go to the burn address in full. It is now split
+  // 70 / 20 / 10 between the reward vault, the burn address and the team
+  // address. The settler must still receive none of it, and nothing may leave
+  // the pool except through those three legs at exactly those weights.
   await run('bonded HCOW the settler can move to itself', async () => {
-    const { ps, hcow } = await fresh();
+    const { ps, hcow, vault } = await fresh();
     await (await ps.connect(victim).bond(E(1_000_000))).wait();
     await warp(7 * DAY + 1);
     await (await ps.connect(settler).settleEpoch(0, E(100), E(100), 0, 0)).wait();  // make it eligible
@@ -191,12 +200,19 @@ async function deploy(name, signer, args = []) {
     await (await ps.connect(settler).settleEpoch(1, E(1_000), 0, 0, 20_000)).wait();
     const after = D(await hcow.balanceOf(await settler.getAddress()));
     const dead = D(await hcow.balanceOf('0x000000000000000000000000000000000000dEaD'));
-    // The one that matters most: bonded principal can be destroyed, never
-    // taken. Every wei of a deduction goes to the burn address.
+    const toVault = D(await hcow.balanceOf(vault));
+    const toTeam = D(await hcow.balanceOf(await tm.getAddress()));
     exactly('bonded HCOW the settler can move to itself', Number((after - before).toFixed(6)), 0);
-    bound('HCOW that left the pool but did not reach the burn address',
-          Number((20_000 - dead).toFixed(6)), 0);
-    return `${(after - before).toFixed(0)} HCOW to the settler; ${dead.toLocaleString()} went to the burn address instead`;
+    bound('HCOW that left the pool but reached none of the three legs',
+          Number((20_000 - dead - toVault - toTeam).toFixed(6)), 0);
+    exactly('the reward vault leg', Number(toVault.toFixed(6)), 14_000);
+    exactly('the burn leg', Number(dead.toFixed(6)), 4_000);
+    // The team address is the one leg an operator can spend. It is bounded by
+    // the deduction rate limit and nothing else: a tenth of 5.871% of the pool
+    // over any thirty days at worst.
+    exactly('the team leg', Number(toTeam.toFixed(6)), 2_000);
+    return `${(after - before).toFixed(0)} HCOW to the settler; ${toVault.toLocaleString()} to the reward vault, ` +
+           `${dead.toLocaleString()} burned, ${toTeam.toLocaleString()} to the team`;
   });
 
   // ---- 6. Can a settlement be used to take USDT already owed to claimants? ----

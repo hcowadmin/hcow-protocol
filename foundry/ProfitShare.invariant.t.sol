@@ -3,6 +3,8 @@ pragma solidity 0.8.34;
 
 import {Test} from "forge-std/Test.sol";
 import {HCOWProfitShare} from "../contracts/HCOWProfitShare.sol";
+import {HCOWStaking} from "../contracts/HCOWStaking.sol";
+import {HCOWRewardVault} from "../contracts/HCOWRewardVault.sol";
 import {MockHCOW, MockUSDT} from "../contracts/test/Mocks.sol";
 import {ProfitShareHandler} from "./handlers/ProfitShareHandler.sol";
 
@@ -30,6 +32,7 @@ contract ProfitShareInvariants is Test {
     MockHCOW internal hcow;
     MockUSDT internal usdt;
     ProfitShareHandler internal handler;
+    HCOWRewardVault internal vault;
 
     address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
     address internal owner   = address(0xA11CE0);
@@ -40,7 +43,10 @@ contract ProfitShareInvariants is Test {
     function setUp() public {
         hcow = new MockHCOW();
         usdt = new MockUSDT();
-        ps = new HCOWProfitShare(address(hcow), address(usdt), owner, settler, gameCo, team, MIN_POOL);
+        // the 70% leg of consumed HCOW needs a real vault for this token
+        vault = new HCOWRewardVault(
+            address(hcow), address(new HCOWStaking(address(hcow), owner, owner)), owner, owner);
+        ps = new HCOWProfitShare(address(hcow), address(usdt), owner, settler, gameCo, team, MIN_POOL, address(vault));
 
         // MockHCOW mints its whole fixed supply to the deployer, exactly as
         // HCOWToken does, so the actors are funded from here rather than minted.
@@ -101,12 +107,20 @@ contract ProfitShareInvariants is Test {
             "contract owes more USDT than it holds, counting the carry");
     }
 
+    /// Consumed HCOW leaves by its three legs only, each to its own address,
+    /// and together they are everything the two counters say was consumed.
+    /// Name kept so the Medusa property that wraps it still finds it.
     function invariant_burnAccounted() public view {
+        uint256 consumed = ps.totalHcowDeducted() + ps.totalHcowForfeited();
         assertEq(
-            hcow.balanceOf(DEAD),
-            ps.totalHcowDeducted() + ps.totalHcowForfeited(),
-            "burned HCOW does not match the two counters"
+            ps.totalHcowToRewards() + ps.totalHcowBurned() + ps.totalHcowToTeam(),
+            consumed,
+            "the three legs do not sum to what was consumed"
         );
+        assertEq(hcow.balanceOf(DEAD), ps.totalHcowBurned(), "burn address does not match the burn leg");
+        assertEq(hcow.balanceOf(address(vault)), ps.totalHcowToRewards(), "vault does not match the reward leg");
+        assertEq(hcow.balanceOf(team), ps.totalHcowToTeam(), "team does not match the team leg");
+        assertLe(ps.totalHcowToTeam() * 10, consumed, "team leg above its tenth");
     }
 
     // ------------------------------------------------------------- accounting

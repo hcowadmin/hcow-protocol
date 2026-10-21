@@ -20,6 +20,7 @@ const ROOT = path.join(__dirname, '..');
 const PS = 'contracts/HCOWProfitShare.sol';
 const LG = 'contracts/HCOWLedger.sol';
 const ST = 'contracts/HCOWStaking.sol';
+const RV = 'contracts/HCOWRewardVault.sol';
 
 const HH = (f) => `npx hardhat compile >/dev/null 2>&1; npx hardhat run ${f}`;
 
@@ -75,12 +76,14 @@ const MUTATIONS = [
     // The adversary script's figures are quoted as what a stolen settler key is
     // worth. It had no assertion in it at all and exited 0 whatever it
     // measured, so a regression would have printed a different number and
-    // passed. This sends the deduction to the settler instead of the burn
-    // address, which is the single worst regression it is meant to catch.
-    name: 'a deduction pays the settler instead of the burn address',
+    // passed. This sends the largest leg of consumed HCOW, the 70% that
+    // belongs to the reward vault, to the caller instead, which in a
+    // settlement is the settler. It is the single worst regression the script
+    // is meant to catch.
+    name: 'a deduction pays the settler instead of the reward vault',
     file: PS,
-    from: '        if (hcowToDeduct > 0) hcow.safeTransfer(BURN_ADDRESS, hcowToDeduct);',
-    to:   '        if (hcowToDeduct > 0) hcow.safeTransfer(msg.sender, hcowToDeduct);',
+    from: '        if (toRewards > 0) hcow.safeTransfer(rewardVault, toRewards);',
+    to:   '        if (toRewards > 0) hcow.safeTransfer(msg.sender, toRewards);',
     run: HH('test/adversary.settler.cjs'),
     expect: 'bonded HCOW the settler can move to itself',
   },
@@ -215,7 +218,7 @@ const MUTATIONS = [
   {
     name: 'settleEpoch pays out before it writes its state again',
     file: PS,
-    from: '        if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);\n        if (toTeam > 0) usdt.safeTransfer(team, toTeam);\n        if (hcowToDeduct > 0) hcow.safeTransfer(BURN_ADDRESS, hcowToDeduct);',
+    from: '        if (hcowToDeduct > 0) _routeConsumed(address(0), hcowToDeduct);\n        if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);\n        if (toTeam > 0) usdt.safeTransfer(team, toTeam);',
     to:   '        if (toGameCompany > 0) usdt.safeTransfer(gameCompany, toGameCompany);\n        if (toTeam > 0) usdt.safeTransfer(team, toTeam);',
     run: HH('test/profitshare.test.cjs'),
     expect: 'hcow held equals bonded plus pending',
@@ -227,6 +230,114 @@ const MUTATIONS = [
     to:   '        if (false) revert NoParticipantsToCarryFor();',
     run: HH('test/profitshare.test.cjs'),
     expect: 'a settlement with revenue and no shares at all is refused',
+  },
+
+  // ---- HCOWProfitShare, the 70 / 20 / 10 split of consumed HCOW ----
+  {
+    name: 'the team leg is doubled',
+    file: PS,
+    from: '        toTeam = (amount * CONSUMED_TEAM_BPS) / 10_000;',
+    to:   '        toTeam = (amount * CONSUMED_TEAM_BPS * 2) / 10_000;',
+    run: HH('test/profitshare.test.cjs'),
+    expect: '6 reach the team',
+  },
+  {
+    name: 'rounding dust goes to the team instead of the reward leg',
+    file: PS,
+    from: '        toTeam = (amount * CONSUMED_TEAM_BPS) / 10_000;\n        toRewards = amount - burned - toTeam;',
+    to:   '        toRewards = (amount * CONSUMED_REWARDS_BPS) / 10_000;\n        toTeam = amount - burned - toRewards;',
+    run: HH('test/profitshare.test.cjs'),
+    expect: 'rounding dust goes to the reward leg',
+  },
+  {
+    name: 'a cancelled unbond keeps its forfeit in the contract',
+    file: PS,
+    from: '        emit UnbondCancelled(msg.sender, restored, minted, forfeited);\n        if (forfeited > 0) _routeConsumed(msg.sender, forfeited);',
+    to:   '        emit UnbondCancelled(msg.sender, restored, minted, forfeited);',
+    run: HH('test/profitshare.test.cjs'),
+    expect: 'the cancel forfeit reaches the vault at 70%',
+  },
+  {
+    name: 'a withdrawn unbond keeps its forfeit in the contract',
+    file: PS,
+    from: '        emit Unbonded(msg.sender, payout, forfeited);\n        if (forfeited > 0) _routeConsumed(msg.sender, forfeited);',
+    to:   '        emit Unbonded(msg.sender, payout, forfeited);',
+    run: HH('test/profitshare.test.cjs'),
+    expect: 'the withdraw forfeit reaches the vault at 70%',
+  },
+  {
+    name: 'the vault is not asked which token it holds',
+    file: PS,
+    from: '        if (address(IRewardVaultToken(rewardVault_).hcow()) != hcowToken) revert BadRewardVault();',
+    to:   '        if (false) revert BadRewardVault();',
+    run: HH('test/profitshare.test.cjs'),
+    expect: 'constructor refuses a vault that reports another token',
+  },
+  {
+    name: 'the vault is not asked which token its staking contract streams',
+    file: PS,
+    from: '        if (address(IRewardVaultToken(rewardVault_).staking().hcow()) != hcowToken) revert BadRewardVault();',
+    to:   '        if (false) revert BadRewardVault();',
+    run: HH('test/profitshare.test.cjs'),
+    expect: 'constructor refuses a vault whose staking streams another token',
+  },
+  {
+    name: 'the vault may be the team address at construction',
+    file: PS,
+    from: '            rewardVault_ == gameCompany_ || rewardVault_ == team_\n',
+    to:   '            rewardVault_ == gameCompany_\n',
+    run: HH('test/profitshare.test.cjs'),
+    expect: 'constructor refuses a vault that is also the team',
+  },
+  {
+    name: 'setRecipients may name the vault',
+    file: PS,
+    from: '        if (gameCompany_ == rewardVault || team_ == rewardVault) revert BadRewardVault();',
+    to:   '        if (false) revert BadRewardVault();',
+    run: HH('test/profitshare.test.cjs'),
+    expect: 'setRecipients refuses the vault as team',
+  },
+  {
+    name: 'setSettler may name the vault',
+    file: PS,
+    from: '        if (account == rewardVault) revert BadRewardVault();',
+    to:   '        if (false) revert BadRewardVault();',
+    run: HH('test/profitshare.test.cjs'),
+    expect: 'setSettler refuses the vault',
+  },
+
+  // ---- HCOWRewardVault ----
+  {
+    name: 'anyone may stream the vault',
+    file: RV,
+    from: '        if (msg.sender != keeper) revert NotKeeper();',
+    to:   '        if (false) revert NotKeeper();',
+    run: HH('test/rewardvault.test.cjs'),
+    expect: 'a stranger cannot fund',
+  },
+  {
+    name: 'the vault stream may be shorter than a week',
+    file: RV,
+    from: '        if (duration < MIN_DURATION || duration > MAX_DURATION) revert BadDuration(duration);',
+    to:   '        if (duration > MAX_DURATION) revert BadDuration(duration);',
+    run: HH('test/rewardvault.test.cjs'),
+    expect: 'a stream shorter than a week is refused',
+  },
+  {
+    name: 'the vault is not checked against the staking token',
+    file: RV,
+    from: '        if (address(IHCOWStakingFunding(stakingContract).hcow()) != hcowToken) revert WrongToken();',
+    to:   '        if (false) revert WrongToken();',
+    run: HH('test/rewardvault.test.cjs'),
+    expect: 'refuses a staking contract for another token',
+  },
+  {
+    name: 'the keeper may replace itself',
+    file: RV,
+    from: '    function setKeeper(address account) external onlyOwner {',
+    to:   '    function setKeeper(address account) external {',
+    run: HH('test/rewardvault.test.cjs'),
+    expect: 'the keeper cannot replace itself',
   },
 
   // ---- HCOWStaking ----

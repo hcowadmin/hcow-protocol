@@ -277,7 +277,9 @@ async function main() {
     // one day period and check that it starts flowing rather than that it has
     // finished.
     const REWARD = E(100);
-    const DURATION = 24 * 60 * 60;
+    // Seven days, the reward vault's minimum, so the same figure works whether
+    // the stream is funded directly or through the vault.
+    const DURATION = 7 * 24 * 60 * 60;
     const funder = await as("funder");
     if (!funder.signer) {
       skip("reward funding", funder.why);
@@ -290,9 +292,21 @@ async function main() {
         skip("reward funding", `funder ${funderAddr} holds ${fmt(held)} HCOW, needs 100. ` +
                                `Run scripts/fundroles.cjs`);
       } else {
-        tx = await hcowAsFunder.approve(a.HCOWStaking, REWARD); await tx.wait();
-        tx = await asFunder.fundRewards(REWARD, DURATION); rc = await tx.wait();
-        console.log(`  funded ${fmt(REWARD)} HCOW over ${DURATION}s as funder  tx ${rc.hash}`);
+        // Once staking names the reward vault as its funder, the funder role
+        // is the vault's keeper and funds through it: top the vault up, then
+        // ask it to stream. Before the switch it funds staking directly.
+        const viaVault = a.HCOWRewardVault &&
+          (await staking.rewardFunder()).toLowerCase() === a.HCOWRewardVault.toLowerCase();
+        if (viaVault) {
+          const vault = await at("HCOWRewardVault", a.HCOWRewardVault, funder.signer);
+          tx = await hcowAsFunder.transfer(a.HCOWRewardVault, REWARD); await tx.wait();
+          tx = await vault.fund(REWARD, DURATION); rc = await tx.wait();
+        } else {
+          tx = await hcowAsFunder.approve(a.HCOWStaking, REWARD); await tx.wait();
+          tx = await asFunder.fundRewards(REWARD, DURATION); rc = await tx.wait();
+        }
+        console.log(`  funded ${fmt(REWARD)} HCOW over ${DURATION}s as funder` +
+                    `${viaVault ? " through the reward vault" : ""}  tx ${rc.hash}`);
 
         const rate = await staking.rewardRate();
         ok("reward rate is the amount over the duration", rate === REWARD / BigInt(DURATION), String(rate));
