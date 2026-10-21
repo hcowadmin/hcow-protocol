@@ -320,9 +320,16 @@ async function main() {
         ok("and is accruing less than the whole period", pending < REWARD, fmt(pending));
         const commission = await staking.commissionOf(REP);
         ok("commission is accruing to the representative", commission > 0n, fmt(commission));
+        // Commission and the delegator's net share are floored on separate
+        // paths in HCOWStaking, so the two drift apart by a few wei per
+        // accrual step. Measured: 14 wei on testnet, up to 18 locally, with a
+        // one day stream as well as a seven day one. Two wei was luck. The
+        // check is about the 5% ratio, so it is held to one part in a
+        // billion plus a thousand wei, not to the last wei.
+        const gap = commission * 19n > pending ? commission * 19n - pending : pending - commission * 19n;
         ok("commission is 5% of what has been released",
-           commission * 19n >= pending - 2n && commission * 19n <= pending + 2n,
-           `${fmt(commission)} vs ${fmt(pending)}`);
+           gap <= pending / 1_000_000_000n + 1000n,
+           `${fmt(commission)} vs ${fmt(pending)}, gap ${gap} wei`);
       }
     }
   }
