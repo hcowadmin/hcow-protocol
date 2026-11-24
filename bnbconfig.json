@@ -1,0 +1,27 @@
+{
+  "project": "HashCow",
+  "website": "https://hash-cow.io",
+  "repository": "https://github.com/hcowadmin/hcow-protocol",
+  "networks": {
+    "bsc": {
+      "name": "BNB Smart Chain Mainnet",
+      "chainId": 56,
+      "rpc": "https://bsc-dataseed.bnbchain.org",
+      "explorer": "https://bscscan.com",
+      "contracts": {
+        "HCOW": "0x794b4a94782302b9fA2636CE12D1FE5AD7026f2D",
+        "HCOWLedger": "0xB04088D44E0BEb56C4bf8e5b719d9906a058402c",
+        "HCOWStaking": "0x6e5Abb5b2eF0566caa47887cC425fBBfF12EE9ED",
+        "HCOWRewardVault": "0x0d051e1Ff4AbBe75dB750f14774FB5EA70B41e6E",
+        "HCOWProfitShare": "0x1108264D82e95787f367a531cf0386C51Abfd470"
+      },
+      "deploymentRecord": "deployments/bsc.json"
+    },
+    "bscTestnet": {
+      "name": "BNB Smart Chain Testnet",
+      "chainId": 97,
+      "rpc": "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+      "explorer": "https://testnet.bscscan.com"
+    }
+  }
+}

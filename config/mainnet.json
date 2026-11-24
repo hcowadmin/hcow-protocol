@@ -1,0 +1,47 @@
+{
+  "_comment": "BNB Chain mainnet protocol deployment, 2026-11. Every address here was transcribed from the project records of 2026-09-18/19 and 2026-09-28 and is checked against the chain by scripts/mainnet-preflight.cjs before anything is sent. ANCHORER set 2026-11-09 (CEO, new MetaMask SRP).",
+  "chainId": 56,
+  "tokens": {
+    "HCOW": "0x794b4a94782302b9fA2636CE12D1FE5AD7026f2D",
+    "USDT": "0x55d398326f99059fF775485246999027B3197955"
+  },
+  "vesting": "0xc65710D96192893Eff4Dde05499FC4dCdF9364A5",
+  "roles": {
+    "owner": "0x70cD840cb3d56fa18277FBa0F34ff299b91F05f9",
+    "anchorer": "0x1255efB45e39821190d6e59573c477cdEF05eeD7",
+    "settler": "0xe6FF44Cc1C4fc85A3B892a1eF436aA7A0895a487",
+    "gameCompany": "0x8B35fe37F6807b82feee5fF17Bcb8Be5ce090122",
+    "team": "0xA7B46aDfdf8DD160c658D604dC8dD3f5571D40Cd",
+    "funder": "0xEB55eC373B3A56BaEd30451eb1C99e8990cb33E1"
+  },
+  "safeSigners": [
+    "0x0d28f440EC89887c148033a7df6300890eA4a54C",
+    "0xACa2957a0A877AF19c8b24EABD39C8ea4d776Dfd",
+    "0x49e660492cb85e0AF0cb9D1c4f103F0e6bDC6005"
+  ],
+  "safeMinThreshold": 2,
+  "deployerHint": { "prefix": "0x1EFb", "suffix": "eC2A" },
+  "incentivesSafe": "0x14E21429F61c33D70Ff44EC2f5c00310D8e42869",
+  "rewards": { "firstAmountHcow": "10000", "durationSeconds": 2592000 },
+  "representatives": [
+    {
+      "id": "hashcow",
+      "name": "HashCow",
+      "payout": "0x3cE2861978414a8e6a02419C24E49e7433Ca298E",
+      "commissionBps": 0,
+      "isFoundation": true
+    }
+  ],
+  "dapp": {
+    "rpcUrl": "https://bsc-dataseed.bnbchain.org",
+    "explorerBase": "https://bscscan.com",
+    "chainName": "BNB Smart Chain",
+    "nativeSymbol": "BNB",
+    "indexerUrl": "https://nkmsgvgwleyaognxqfnb.supabase.co"
+  },
+  "indexerRpcUrls": [
+    "https://bsc-rpc.publicnode.com",
+    "https://bsc-dataseed.bnbchain.org",
+    "https://bsc-dataseed1.defibit.io"
+  ]
+}

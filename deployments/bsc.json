@@ -1,0 +1,47 @@
+{
+  "network": "bsc",
+  "chainId": 56,
+  "deployedBy": "0x1EFb71888D3c03520E6143C7Cce5c332f079eC2A",
+  "roles": {
+    "owner": "0x70cD840cb3d56fa18277FBa0F34ff299b91F05f9",
+    "anchorer": "0x1255efB45e39821190d6e59573c477cdEF05eeD7",
+    "settler": "0xe6FF44Cc1C4fc85A3B892a1eF436aA7A0895a487",
+    "gameCompany": "0x8B35fe37F6807b82feee5fF17Bcb8Be5ce090122",
+    "team": "0xA7B46aDfdf8DD160c658D604dC8dD3f5571D40Cd",
+    "funder": "0xEB55eC373B3A56BaEd30451eb1C99e8990cb33E1",
+    "vaultKeeper": "0xEB55eC373B3A56BaEd30451eb1C99e8990cb33E1"
+  },
+  "tokens": {
+    "HCOW": {
+      "symbol": "HCOW",
+      "decimals": 18,
+      "supply": "200000000000000000000000000"
+    },
+    "USDT": {
+      "symbol": "USDT",
+      "decimals": 18,
+      "supply": "9184991536508259774116723649"
+    }
+  },
+  "addresses": {
+    "HCOW": "0x794b4a94782302b9fA2636CE12D1FE5AD7026f2D",
+    "USDT": "0x55d398326f99059fF775485246999027B3197955",
+    "HCOWLedger": "0xB04088D44E0BEb56C4bf8e5b719d9906a058402c",
+    "HCOWProfitShare": "0x1108264D82e95787f367a531cf0386C51Abfd470",
+    "HCOWStaking": "0x6e5Abb5b2eF0566caa47887cC425fBBfF12EE9ED",
+    "HCOWRewardVault": "0x0d051e1Ff4AbBe75dB750f14774FB5EA70B41e6E"
+  },
+  "deploymentTxs": {
+    "HCOWLedger": "0xf6e297b99c865db9dac1b2500ed92a640e66de64c725957d16246edd20afeda8",
+    "HCOWStaking": "0x12a319e32f3996ee1c3bcf1d4e2277f0660d4d082f7bbdec01283696dcdd6c81",
+    "HCOWRewardVault": "0xb28155a5022d255d2c9a56b9b6832a89bbe1dfdb025d3f30c1a5093ad817edfb",
+    "HCOWProfitShare": "0x40fccd3dacd327cfad8ec6401eaf82ab23f81f4519548eabbbafcbf0b89c66ca"
+  },
+  "deploymentBlocks": {
+    "HCOWLedger": 133283980,
+    "HCOWStaking": 133283990,
+    "HCOWRewardVault": 133284000,
+    "HCOWProfitShare": 133284010
+  },
+  "genesisBlock": 133283980
+}
